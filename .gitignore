@@ -1,0 +1,9 @@
+.DS_Store
+*.log
+.env*
+selected-account.json
+state.json
+sessions/
+*.db
+*.db-shm
+*.db-wal

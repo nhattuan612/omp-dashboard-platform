@@ -1,0 +1,13 @@
+#!/bin/zsh
+
+if [[ "$1" == "--list-models" ]]; then
+  print 'provider model context max-out thinking images'
+  print 'google-antigravity gemini-3.8-flash 1000000 65536 yes yes'
+  exit 0
+fi
+
+if (( $+commands[omp] )); then
+  exec omp "$@"
+fi
+
+exec "${HOME}/.bun/bin/omp" "$@"

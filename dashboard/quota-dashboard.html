@@ -1,0 +1,1618 @@
+<!doctype html>
+<html lang="vi" data-density="compact">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OMP Gemini Quota · Port 4177</title>
+  <style>
+    /* ─────────────────────────────────────────────────────────────────────────
+     * Material Design Tokens & Compact Dashboard Foundation
+     * ───────────────────────────────────────────────────────────────────────── */
+    :root {
+      --bg: #f8fafd;
+      --surface: #ffffff;
+      --surface-warm: #e8f0fe;
+      --fg: #202124;
+      --fg-2: #3c4043;
+      --muted: #5f6368;
+      --meta: #1a73e8;
+      --border: #dadce0;
+      --border-soft: #edf0f2;
+      --accent: #1a73e8;
+      --accent-on: #ffffff;
+      --accent-hover: color-mix(in oklab, var(--accent), black 8%);
+      --accent-active: color-mix(in oklab, var(--accent), black 14%);
+      --success: #188038;
+      --warn: #b06000;
+      --warn-bg: #fef7e0;
+      --danger: #d93025;
+      --danger-bg: #fce8e6;
+      --font-display: "Google Sans", Roboto, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+      --font-body: Roboto, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+      --font-mono: "Roboto Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
+
+      --text-xs: 11px;
+      --text-sm: 13px;
+      --text-base: 14px;
+      --text-lg: 16px;
+      --text-xl: 20px;
+      --text-2xl: 26px;
+
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 20px;
+      --space-6: 24px;
+
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
+      --radius-pill: 9999px;
+
+      --elev-flat: none;
+      --elev-card: 0 1px 3px rgba(60, 64, 67, 0.1), 0 1px 2px rgba(60, 64, 67, 0.06);
+      --elev-hover: 0 4px 12px rgba(60, 64, 67, 0.15);
+      --focus-ring: 0 0 0 3px rgba(26, 115, 232, 0.25);
+
+      --motion-fast: 140ms;
+      --motion-base: 220ms;
+      --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+
+      --container-max: 1320px;
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--fg);
+      font-family: var(--font-body);
+      font-size: var(--text-base);
+      line-height: 1.4;
+      -webkit-font-smoothing: antialiased;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    h1, h2, h3, h4 {
+      font-family: var(--font-display);
+      color: var(--fg);
+      line-height: 1.2;
+    }
+
+    .num {
+      font-family: var(--font-mono);
+      font-feature-settings: "tnum" 1;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .container {
+      width: 100%;
+      max-width: var(--container-max);
+      margin-left: auto;
+      margin-right: auto;
+      padding-left: var(--space-4);
+      padding-right: var(--space-4);
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────────
+     * Top Bar (Compact Header)
+     * ───────────────────────────────────────────────────────────────────────── */
+    .topbar {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+    }
+
+    .topbar-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 48px;
+      gap: var(--space-3);
+    }
+
+    .brand-wrap {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+    }
+
+    .brand-icon {
+      width: 26px;
+      height: 26px;
+      background: var(--accent);
+      color: var(--accent-on);
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .brand-title {
+      font-size: var(--text-base);
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      color: var(--fg);
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+    }
+
+    .brand-badge {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--accent);
+      background: var(--surface-warm);
+      padding: 1px 6px;
+      border-radius: var(--radius-sm);
+    }
+
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: var(--space-3);
+    }
+
+    .live-indicator {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: var(--text-xs);
+      color: var(--muted);
+      background: var(--bg);
+      padding: 3px 8px;
+      border-radius: var(--radius-pill);
+      border: 1px solid var(--border-soft);
+    }
+
+    .live-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 0 2px rgba(24, 128, 56, 0.2);
+      animation: pulse 2.2s infinite ease-in-out;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.9); }
+    }
+
+    .btn {
+      font-family: var(--font-body);
+      font-size: var(--text-sm);
+      font-weight: 500;
+      height: 32px;
+      padding: 0 12px;
+      border-radius: var(--radius-pill);
+      border: 1px solid transparent;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all var(--motion-fast) var(--ease-standard);
+      white-space: nowrap;
+    }
+
+    .btn:active {
+      transform: scale(0.98);
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: var(--accent-on);
+    }
+
+    .btn-primary:hover {
+      background: var(--accent-hover);
+    }
+
+    .btn-secondary {
+      background: var(--surface);
+      color: var(--fg);
+      border-color: var(--border);
+    }
+
+    .btn-secondary:hover {
+      background: var(--bg);
+      border-color: var(--muted);
+    }
+
+    /* Density switcher */
+    .density-toggle {
+      display: inline-flex;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-pill);
+      padding: 2px;
+      gap: 2px;
+    }
+
+    .density-btn {
+      border: none;
+      background: transparent;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+      padding: 2px 8px;
+      border-radius: var(--radius-pill);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      transition: all var(--motion-fast);
+    }
+
+    .density-btn.active {
+      background: var(--surface);
+      color: var(--accent);
+      box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────────
+     * Ultra-Compact Overview Section (KPIs + Windows Bar)
+     * ───────────────────────────────────────────────────────────────────────── */
+    .overview-strip {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: var(--space-3) 0;
+      margin-bottom: var(--space-3);
+    }
+
+    .overview-layout {
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      gap: var(--space-4);
+      align-items: center;
+    }
+
+    /* Left: Account Health Chips */
+    .kpi-mini-col {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      border-right: 1px solid var(--border-soft);
+      padding-right: var(--space-4);
+    }
+
+    .kpi-row-headline {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-2);
+    }
+
+    .kpi-title-badge {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .kpi-total-pill {
+      font-size: var(--text-xs);
+      font-weight: 600;
+      background: var(--surface-warm);
+      color: var(--accent);
+      padding: 2px 8px;
+      border-radius: var(--radius-pill);
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .kpi-status-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      align-items: center;
+    }
+
+    .kpi-chip {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 7px;
+      border-radius: var(--radius-sm);
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      border: 1px solid transparent;
+    }
+
+    .chip-ok { background: #e6f4ea; color: var(--success); border-color: #ceead6; }
+    .chip-warn { background: var(--warn-bg); color: var(--warn); border-color: #fde293; }
+    .chip-danger { background: var(--danger-bg); color: var(--danger); border-color: #fad2cf; }
+    .chip-neutral { background: var(--bg); color: var(--fg-2); border-color: var(--border-soft); }
+
+    .kpi-meta-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    /* Right: 4 Windows in a clean 4-col compact grid */
+    .windows-mini-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: var(--space-3);
+    }
+
+    .window-mini-box {
+      background: var(--bg);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-md);
+      padding: 8px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      transition: border-color var(--motion-fast);
+    }
+
+    .window-mini-box:hover {
+      border-color: var(--accent);
+    }
+
+    .win-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--fg-2);
+    }
+
+    .win-type {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .win-val {
+      font-size: var(--text-sm);
+      font-weight: 700;
+      color: var(--fg);
+    }
+
+    .win-track {
+      height: 6px;
+      background: #e0e0e0;
+      border-radius: var(--radius-pill);
+      overflow: hidden;
+      position: relative;
+    }
+
+    .win-fill {
+      height: 100%;
+      border-radius: var(--radius-pill);
+      transition: width var(--motion-base) var(--ease-standard);
+    }
+
+    .fill-normal { background: var(--accent); }
+    .fill-good { background: var(--success); }
+    .fill-warn { background: var(--warn); }
+    .fill-danger { background: var(--danger); }
+
+    .win-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 10px;
+      color: var(--muted);
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────────
+     * Compact Filter & Search Toolbar
+     * ───────────────────────────────────────────────────────────────────────── */
+    .toolbar-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-3);
+      margin-bottom: var(--space-3);
+      flex-wrap: wrap;
+    }
+
+    .filter-tabs {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      overflow-x: auto;
+      padding-bottom: 2px;
+    }
+
+    .filter-btn {
+      font-family: var(--font-body);
+      font-size: var(--text-xs);
+      font-weight: 600;
+      color: var(--fg-2);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 5px 10px;
+      border-radius: var(--radius-pill);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      white-space: nowrap;
+      transition: all var(--motion-fast);
+    }
+
+    .filter-btn:hover {
+      background: var(--bg);
+      border-color: var(--muted);
+    }
+
+    .filter-btn.active {
+      background: var(--fg);
+      color: var(--surface);
+      border-color: var(--fg);
+    }
+
+    .filter-btn.is-hidden { display: none; }
+
+    .filter-count {
+      font-size: 10px;
+      font-family: var(--font-mono);
+      background: rgba(0,0,0,0.08);
+      padding: 1px 5px;
+      border-radius: var(--radius-pill);
+    }
+
+    .filter-btn.active .filter-count {
+      background: rgba(255,255,255,0.25);
+    }
+
+    .tools-right {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      flex-grow: 1;
+      justify-content: flex-end;
+    }
+
+    .search-box-wrap {
+      position: relative;
+      max-width: 260px;
+      width: 100%;
+    }
+
+    .search-icon {
+      position: absolute;
+      left: 9px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--muted);
+      pointer-events: none;
+    }
+
+    .search-input {
+      width: 100%;
+      height: 30px;
+      padding: 0 10px 0 28px;
+      font-size: var(--text-xs);
+      font-family: var(--font-body);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-pill);
+      color: var(--fg);
+      outline: none;
+      transition: border-color var(--motion-fast);
+    }
+
+    .search-input:focus {
+      border-color: var(--accent);
+      box-shadow: var(--focus-ring);
+    }
+
+    .sort-select {
+      height: 30px;
+      font-size: var(--text-xs);
+      font-family: var(--font-body);
+      color: var(--fg);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-pill);
+      padding: 0 10px;
+      outline: none;
+      cursor: pointer;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────────
+     * 1 ACCOUNT = 1 BLOCK GRID
+     * Desktop: 3 block / hàng
+     * Tablet: 2 block / hàng
+     * Mobile: 1 block / hàng
+     * ───────────────────────────────────────────────────────────────────────── */
+    .accounts-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: var(--space-3);
+      margin-bottom: var(--space-5);
+    }
+
+    .history-section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      box-shadow: var(--elev-card);
+      padding: 14px;
+      margin-bottom: var(--space-5);
+    }
+
+    .history-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .history-title {
+      margin: 0;
+      color: var(--fg);
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    .history-subtitle {
+      color: var(--fg-2);
+      font-size: 11px;
+      margin-top: 3px;
+    }
+
+    .history-summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .history-kpi {
+      background: var(--bg);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-sm);
+      padding: 8px 10px;
+    }
+
+    .history-kpi-label {
+      color: var(--fg-2);
+      font-size: 10px;
+    }
+
+    .history-kpi-value {
+      color: var(--fg);
+      display: block;
+      font-family: var(--font-mono);
+      font-size: 16px;
+      font-weight: 800;
+      margin-top: 3px;
+    }
+
+    .history-table-wrap {
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-sm);
+      overflow-x: auto;
+    }
+
+    .history-table {
+      border-collapse: collapse;
+      min-width: 760px;
+      width: 100%;
+    }
+
+    .history-table th,
+    .history-table td {
+      border-bottom: 1px solid var(--border-soft);
+      padding: 8px 10px;
+      text-align: left;
+      white-space: nowrap;
+    }
+
+    .history-table th {
+      background: var(--bg);
+      color: var(--fg-2);
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    .history-table td {
+      color: var(--fg);
+      font-size: 11px;
+    }
+
+    .history-table tbody tr:last-child td { border-bottom: 0; }
+    .history-table .num { font-family: var(--font-mono); }
+    .history-account { font-family: var(--font-mono); font-weight: 700; }
+    .history-model { color: var(--fg-2); }
+    .history-empty { color: var(--fg-2); padding: 18px; text-align: center; }
+
+    @media (max-width: 720px) {
+      .history-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .history-heading { align-items: flex-start; flex-direction: column; }
+    }
+
+    .account-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      box-shadow: var(--elev-card);
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      position: relative;
+      transition: transform var(--motion-fast), box-shadow var(--motion-fast), border-color var(--motion-fast);
+    }
+
+    .account-card:hover {
+      transform: translateY(-2px);
+      box-shadow: var(--elev-hover);
+      border-color: #b0c4de;
+    }
+
+    /* State indicators via left border accent */
+    .account-card.state-exhausted { border-left: 4px solid var(--danger); }
+    .account-card.state-critical  { border-left: 4px solid var(--danger); }
+    .account-card.state-warning   { border-left: 4px solid var(--warn); }
+    .account-card.state-ok        { border-left: 4px solid var(--success); }
+    .account-card.is-active {
+      border: 2px solid var(--accent);
+      border-left-width: 5px;
+      box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.14), var(--elev-card);
+    }
+
+    /* Card Row 1: Header (Email + Status) */
+    .acc-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .acc-identity {
+      min-width: 0;
+      flex: 1;
+    }
+
+    .acc-email {
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      font-weight: 700;
+      color: var(--fg);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: block;
+      letter-spacing: -0.01em;
+    }
+
+    .acc-tags {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 3px;
+      flex-wrap: wrap;
+    }
+
+    .acc-provider {
+      font-size: 10.5px;
+      font-weight: 600;
+      color: var(--fg-2);
+      background: var(--bg);
+      padding: 1px 6px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-soft);
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+    }
+
+    .acc-login {
+      font-size: 10px;
+      font-family: var(--font-mono);
+      color: var(--success);
+      background: #e6f4ea;
+      padding: 1px 6px;
+      border-radius: var(--radius-pill);
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+    }
+
+    .active-account-badge {
+      font-size: 9px;
+      font-weight: 800;
+      padding: 1px 6px;
+      border-radius: var(--radius-pill);
+      display: inline-flex;
+      align-items: center;
+      letter-spacing: 0.03em;
+    }
+
+    .active-account-badge {
+      color: var(--accent);
+      background: #e8f0fe;
+      border: 1px solid #aecbfa;
+    }
+
+    .status-pill {
+      font-size: 10.5px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: var(--radius-pill);
+      white-space: nowrap;
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+
+    .status-pill.status-exhausted { background: var(--danger-bg); color: var(--danger); }
+    .status-pill.status-critical  { background: var(--danger-bg); color: var(--danger); }
+    .status-pill.status-warning   { background: var(--warn-bg); color: var(--warn); }
+    .status-pill.status-ok        { background: #e6f4ea; color: var(--success); }
+
+    /* Card Row 2: Window Quota Rails */
+    .acc-windows {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      background: var(--bg);
+      border: 1px solid var(--border-soft);
+      border-radius: var(--radius-sm);
+      padding: 8px 10px;
+    }
+
+    .window-item {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    .window-top-info {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      font-size: 11px;
+    }
+
+    .window-name {
+      font-weight: 600;
+      color: var(--fg-2);
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .window-rates {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .rate-used {
+      color: var(--fg);
+    }
+
+    .rate-used.critical { color: var(--danger); }
+    .rate-used.warning  { color: var(--warn); }
+    .rate-remain {
+      color: var(--muted);
+      font-weight: 400;
+    }
+
+    .quota-progress-track {
+      height: 6px;
+      background: #e2e4e8;
+      border-radius: var(--radius-pill);
+      overflow: hidden;
+      position: relative;
+    }
+
+    .quota-progress-fill {
+      height: 100%;
+      border-radius: var(--radius-pill);
+      transition: width var(--motion-base);
+    }
+
+    .quota-progress-fill.fill-normal { background: var(--accent); }
+    .quota-progress-fill.fill-ok { background: var(--success); }
+    .quota-progress-fill.fill-warn { background: var(--warn); }
+    .quota-progress-fill.fill-danger { background: var(--danger); }
+
+    .window-sub-info {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 10px;
+      color: var(--muted);
+    }
+
+    /* Missing telemetry badge */
+    .missing-data-alert {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10.5px;
+      color: var(--warn);
+      background: var(--warn-bg);
+      border: 1px dashed #fde293;
+      padding: 4px 6px;
+      border-radius: var(--radius-sm);
+      margin-top: 2px;
+    }
+
+    /* Card Row 3: Footer Timers & Details */
+    .acc-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      padding-top: 6px;
+      border-top: 1px solid var(--border-soft);
+    }
+
+    .acc-actions {
+      display: flex;
+      justify-content: flex-end;
+    }
+
+    .use-account-btn {
+      min-height: 28px;
+      padding: 0 10px;
+      font-size: 11px;
+    }
+
+    .use-account-btn:disabled {
+      cursor: default;
+      opacity: 0.72;
+    }
+
+    .reset-countdown {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      color: var(--fg-2);
+    }
+
+    .reset-countdown strong {
+      font-family: var(--font-mono);
+      font-weight: 700;
+      color: var(--fg);
+    }
+
+    .reset-countdown.urgent strong {
+      color: var(--danger);
+    }
+
+    .data-integrity-badge {
+      font-size: 10.5px;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+    }
+
+    .data-integrity-badge.complete { color: var(--success); }
+    .data-integrity-badge.missing  { color: var(--warn); font-weight: 600; }
+
+    /* ─────────────────────────────────────────────────────────────────────────
+     * Comfortable Mode Override (toggleable)
+     * ───────────────────────────────────────────────────────────────────────── */
+    html[data-density="comfortable"] .account-card {
+      padding: 16px 18px;
+      gap: 14px;
+    }
+
+    html[data-density="comfortable"] .acc-windows {
+      padding: 12px 14px;
+      gap: 12px;
+    }
+
+    html[data-density="comfortable"] .quota-progress-track {
+      height: 8px;
+    }
+
+    /* ─────────────────────────────────────────────────────────────────────────
+     * Responsive Breakpoints
+     * Desktop: 3 block / hàng
+     * Tablet: 2 block / hàng (<= 1060px)
+     * Mobile: 1 block / hàng (<= 680px)
+     * ───────────────────────────────────────────────────────────────────────── */
+    @media (max-width: 1080px) {
+      .overview-layout {
+        grid-template-columns: 1fr;
+        gap: var(--space-3);
+      }
+      .kpi-mini-col {
+        border-right: none;
+        border-bottom: 1px solid var(--border-soft);
+        padding-right: 0;
+        padding-bottom: var(--space-3);
+      }
+      .accounts-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 720px) {
+      .windows-mini-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .accounts-grid {
+        grid-template-columns: 1fr;
+      }
+      .toolbar-row {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .tools-right {
+        justify-content: stretch;
+      }
+      .search-box-wrap {
+        max-width: none;
+      }
+    }
+
+    /* Toast Notification */
+    .toast {
+      position: fixed;
+      bottom: 16px;
+      right: 16px;
+      background: #202124;
+      color: #ffffff;
+      padding: 8px 14px;
+      border-radius: var(--radius-sm);
+      font-size: var(--text-xs);
+      font-weight: 500;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(8px);
+      transition: all var(--motion-fast);
+      z-index: 1000;
+    }
+
+    .toast.show {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateY(0);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Topbar Navigation -->
+  <header class="topbar">
+    <div class="container topbar-inner">
+      <div class="brand-wrap">
+        <div class="brand-icon">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+          </svg>
+        </div>
+        <span class="brand-title">
+          OMP Gemini Quota
+          <span class="brand-badge">Port 4177</span>
+        </span>
+      </div>
+
+      <div class="topbar-right">
+        <!-- Live status -->
+        <span class="live-indicator">
+          <span class="live-dot"></span>
+          Đồng bộ: <strong class="num" id="live-sync-time">14:48:12</strong>
+        </span>
+
+        <!-- Density Switcher -->
+        <div class="density-toggle" title="Chuyển đổi mật độ không gian">
+          <button class="density-btn active" id="btn-density-compact" onclick="setDensity('compact')">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+            Gọn
+          </button>
+          <button class="density-btn" id="btn-density-comfortable" onclick="setDensity('comfortable')">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+            Rộng
+          </button>
+        </div>
+
+        <button class="btn btn-secondary" onclick="triggerSync()" style="height: 28px; padding: 0 10px; font-size: 11px;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+          Sync lại
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Workspace -->
+  <main class="container" style="flex: 1; padding-top: var(--space-3);">
+
+    <!-- Ultra-Compact Overview Section (Zero Wasted Space) -->
+    <section class="overview-strip" data-od-id="overview-strip">
+      <div class="overview-layout">
+        
+        <!-- Left: Account Health Mini Column -->
+        <div class="kpi-mini-col">
+          <div class="kpi-row-headline">
+            <span class="kpi-title-badge">Hệ Thống Tài Khoản</span>
+            <span class="kpi-total-pill">
+              <strong>5/5</strong> Account OMP
+            </span>
+          </div>
+
+          <div class="kpi-status-chips">
+            <span class="kpi-chip chip-ok" title="Đang vận hành tốt">
+              ● 2 OK
+            </span>
+            <span class="kpi-chip chip-warn" title="Mức dùng > 75%">
+              ▲ 1 Cảnh báo &gt;75%
+            </span>
+            <span class="kpi-chip chip-danger" title="Mức dùng > 90%">
+              ■ 1 Nguy hiểm &gt;90%
+            </span>
+            <span class="kpi-chip chip-danger" title="Đã hết quota hoàn toàn">
+              ✕ 1 Đã hết (100%)
+            </span>
+          </div>
+
+          <div class="kpi-meta-row">
+            <span>5 có quota · 0 chưa lấy · 0 disabled</span>
+            <span style="color: var(--danger); font-weight: 600;">Reset sớm: 28p (gemini-prod)</span>
+          </div>
+        </div>
+
+        <!-- Right: 4 Quota Windows Breakdown (Separated, No Cross-Summing) -->
+        <div class="windows-mini-grid">
+          <!-- Window 1: Gemini 5h -->
+          <div class="window-mini-box">
+            <div class="win-head">
+              <span class="win-type">Gemini 5 Giờ</span>
+              <span class="win-val num">48.5%</span>
+            </div>
+            <div class="win-track" title="Trung bình: 48.5% | Đỉnh: 100%">
+              <div class="win-fill fill-danger" style="width: 48.5%;"></div>
+            </div>
+            <div class="win-meta">
+              <span>Đỉnh: 100% (Hết)</span>
+              <span>Reset: 28p</span>
+            </div>
+          </div>
+
+          <!-- Window 2: Gemini Tuần -->
+          <div class="window-mini-box">
+            <div class="win-head">
+              <span class="win-type">Gemini Tuần</span>
+              <span class="win-val num">76.0%</span>
+            </div>
+            <div class="win-track" title="Trung bình: 76.0% | Đỉnh: 84%">
+              <div class="win-fill fill-warn" style="width: 76%;"></div>
+            </div>
+            <div class="win-meta">
+              <span>Đỉnh: 84%</span>
+              <span>Reset: 1d 04h</span>
+            </div>
+          </div>
+
+          <!-- Window 3: Claude/GPT Shared 5h -->
+          <div class="window-mini-box">
+            <div class="win-head">
+              <span class="win-type">Claude/GPT 5h</span>
+              <span class="win-val num">32.3%</span>
+            </div>
+            <div class="win-track" title="Trung bình: 32.3% | Đỉnh: 78%">
+              <div class="win-fill fill-warn" style="width: 32.3%;"></div>
+            </div>
+            <div class="win-meta">
+              <span>Đỉnh: 78% (Shared)</span>
+              <span>Reset: 1g 14p</span>
+            </div>
+          </div>
+
+          <!-- Window 4: Claude/GPT Shared Tuần -->
+          <div class="window-mini-box">
+            <div class="win-head">
+              <span class="win-type">Claude/GPT Tuần</span>
+              <span class="win-val num">38.5%</span>
+            </div>
+            <div class="win-track" title="Trung bình: 38.5% | 1 acc thiếu metric">
+              <div class="win-fill fill-normal" style="width: 38.5%;"></div>
+            </div>
+            <div class="win-meta">
+              <span>1 acc thiếu metric</span>
+              <span>Reset: 2d 16h</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- Compact Toolbar (Filters, Search & Sort) -->
+    <div class="toolbar-row" data-od-id="toolbar-row">
+      <div class="filter-tabs">
+        <button class="filter-btn active" data-filter="all" onclick="applyFilter('all', this)">
+          Tất cả <span class="filter-count">5</span>
+        </button>
+        <button class="filter-btn" data-filter="warning" onclick="applyFilter('warning', this)">
+          Cảnh báo &gt;75% <span class="filter-count">1</span>
+        </button>
+        <button class="filter-btn" data-filter="critical" onclick="applyFilter('critical', this)">
+          Nguy hiểm &gt;90% <span class="filter-count">1</span>
+        </button>
+        <button class="filter-btn" data-filter="exhausted" onclick="applyFilter('exhausted', this)">
+          Đã hết <span class="filter-count">1</span>
+        </button>
+        <button class="filter-btn" data-filter="ok" onclick="applyFilter('ok', this)">
+          Bình thường <span class="filter-count">2</span>
+        </button>
+      </div>
+
+      <div class="tools-right">
+        <div class="search-box-wrap">
+          <svg class="search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="search-input" class="search-input" placeholder="Lọc email hoặc provider..." oninput="handleSearch(this.value)" />
+        </div>
+
+        <select id="sort-select" class="sort-select" onchange="handleSort(this.value)">
+          <option value="usage-desc">Mức dùng cao nhất</option>
+          <option value="reset-asc">Reset sớm nhất</option>
+          <option value="email-asc">Tên Email A-Z</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- 1 Account = 1 Block Grid (Desktop: 3 block/hàng, Tablet: 2, Mobile: 1) -->
+    <section class="accounts-grid" id="accounts-grid" data-od-id="accounts-grid">
+
+      <!-- BLOCK 1: Exhausted (gemini-flash-runner) -->
+      <article class="account-card state-exhausted" data-id="acc-4" data-status="exhausted" data-used="100" data-reset-mins="42" data-email="gemini-flash-runner@enterprise.vn">
+        <div class="acc-header">
+          <div class="acc-identity">
+            <span class="acc-email" title="gemini-flash-runner@enterprise.vn">gemini-flash-runner@enterprise.vn</span>
+            <div class="acc-tags">
+              <span class="acc-provider">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="9"/></svg>
+                Google Gemini
+              </span>
+              <span class="acc-login">● Đã đăng nhập</span>
+            </div>
+          </div>
+          <span class="status-pill status-exhausted">Hết Quota</span>
+        </div>
+
+        <div class="acc-windows">
+          <!-- Window: 5 Giờ -->
+          <div class="window-item">
+            <div class="window-top-info">
+              <span class="window-name">Cửa sổ 5 Giờ (Chính)</span>
+              <span class="window-rates">
+                <strong class="rate-used critical">Đã dùng: 100%</strong>
+                <span class="rate-remain">· Còn: 0%</span>
+              </span>
+            </div>
+            <div class="quota-progress-track">
+              <div class="quota-progress-fill fill-danger" style="width: 100%;"></div>
+            </div>
+            <div class="window-sub-info">
+              <span>Bắt đầu: <strong class="num">13:50:00</strong></span>
+              <span>Reset: <strong class="num">18:50:00</strong></span>
+            </div>
+          </div>
+
+          <!-- Window: 7 Ngày -->
+          <div class="window-item">
+            <div class="window-top-info">
+              <span class="window-name">Cửa sổ Tuần (7 Ngày)</span>
+              <span class="window-rates">
+                <strong class="rate-used">Đã dùng: 68%</strong>
+                <span class="rate-remain">· Còn: 32%</span>
+              </span>
+            </div>
+            <div class="quota-progress-track">
+              <div class="quota-progress-fill fill-normal" style="width: 68%;"></div>
+            </div>
+            <div class="window-sub-info">
+              <span>Bắt đầu: <strong class="num">11/09</strong></span>
+              <span>Reset: <strong class="num">18/09 (3d 08h)</strong></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="acc-footer">
+          <span class="reset-countdown urgent">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            Reset sau: <strong>0g 42p</strong>
+          </span>
+          <span class="data-integrity-badge complete">✓ Đầy đủ dữ liệu</span>
+        </div>
+      </article>
+
+      <!-- BLOCK 2: Critical >90% (gemini-prod-core) -->
+      <article class="account-card state-critical" data-id="acc-2" data-status="critical" data-used="92" data-reset-mins="28" data-email="gemini-prod-core@company.ai">
+        <div class="acc-header">
+          <div class="acc-identity">
+            <span class="acc-email" title="gemini-prod-core@company.ai">gemini-prod-core@company.ai</span>
+            <div class="acc-tags">
+              <span class="acc-provider">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="9"/></svg>
+                Gemini Advanced
+              </span>
+              <span class="acc-login">● Đã đăng nhập</span>
+            </div>
+          </div>
+          <span class="status-pill status-critical">Nguy hiểm &gt;90%</span>
+        </div>
+
+        <div class="acc-windows">
+          <!-- Window: 5 Giờ -->
+          <div class="window-item">
+            <div class="window-top-info">
+              <span class="window-name">Cửa sổ 5 Giờ</span>
+              <span class="window-rates">
+                <strong class="rate-used critical">Đã dùng: 92%</strong>
+                <span class="rate-remain">· Còn: 8%</span>
+              </span>
+            </div>
+            <div class="quota-progress-track">
+              <div class="quota-progress-fill fill-danger" style="width: 92%;"></div>
+            </div>
+            <div class="window-sub-info">
+              <span>Bắt đầu: <strong class="num">14:15:00</strong></span>
+              <span>Reset: <strong class="num">15:16:00</strong></span>
+            </div>
+          </div>
+
+          <!-- Window: 7 Ngày -->
+          <div class="window-item">
+            <div class="window-top-info">
+              <span class="window-name">Cửa sổ Tuần (7 Ngày)</span>
+              <span class="window-rates">
+                <strong class="rate-used warning">Đã dùng: 84%</strong>
+                <span class="rate-remain">· Còn: 16%</span>
+              </span>
+            </div>
+            <div class="quota-progress-track">
+              <div class="quota-progress-fill fill-warn" style="width: 84%;"></div>
+            </div>
+            <div class="window-sub-info">
+              <span>Bắt đầu: <strong class="num">09/09</strong></span>
+              <span>Reset: <strong class="num">17/09 (1d 04h)</strong></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="acc-footer">
+          <span class="reset-countdown urgent">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            Reset sau: <strong>0g 28p</strong>
+          </span>
+          <span class="data-integrity-badge complete">✓ Đầy đủ dữ liệu</span>
+        </div>
+      </article>
+
+      <!-- BLOCK 3: Warning >75% (workspace-dev-alpha) -->
+      <article class="account-card state-warning" data-id="acc-1" data-status="warning" data-used="78" data-reset-mins="74" data-email="workspace-dev-alpha@example.com">
+        <div class="acc-header">
+          <div class="acc-identity">
+            <span class="acc-email" title="workspace-dev-alpha@example.com">workspace-dev-alpha@example.com</span>
+            <div class="acc-tags">
+              <span class="acc-provider">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+                Claude / GPT Shared
+              </span>
+              <span class="acc-login">● Đã đăng nhập</span>
+            </div>
+          </div>
+          <span class="status-pill status-warning">Cảnh báo &gt;75%</span>
+        </div>
+
+        <div class="acc-windows">
+          <!-- Window: 5 Giờ -->
+          <div class="window-item">
+            <div class="window-top-info">
+              <span class="window-name">Cửa sổ 5 Giờ (Shared)</span>
+              <span class="window-rates">
+                <strong class="rate-used warning">Đã dùng: 78%</strong>
+                <span class="rate-remain">· Còn: 22%</span>
+              </span>
+            </div>
+            <div class="quota-progress-track">
+              <div class="quota-progress-fill fill-warn" style="width: 78%;"></div>
+            </div>
+            <div class="window-sub-info">
+              <span>Bắt đầu: <strong class="num">13:30:00</strong></span>
+              <span>Reset: <strong class="num">16:02:00</strong></span>
+            </div>
+          </div>
+
+          <!-- Window: 7 Ngày -->
+          <div class="window-item">
+            <div class="window-top-info">
+              <span class="window-name">Cửa sổ Tuần (Shared)</span>
+              <span class="window-rates">
+                <strong class="rate-used">Đã dùng: 45%</strong>
+                <span class="rate-remain">· Còn: 55%</span>
+              </span>
+            </div>
+            <div class="quota-progress-track">
+              <div class="quota-progress-fill fill-normal" style="width: 45%;"></div>
+            </div>
+            <div class="window-sub-info">
+              <span>Bắt đầu: <strong class="num">10/09</strong></span>
+              <span>Reset: <strong class="num">19/09 (2d 16h)</strong></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="acc-footer">
+          <span class="reset-countdown">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            Reset sau: <strong>1g 14p</strong>
+          </span>
+          <span class="data-integrity-badge complete">✓ Đầy đủ dữ liệu</span>
+        </div>
+      </article>
+
+      <!-- BLOCK 4: OK (research-anthropic-team) -->
+      <article class="account-card state-ok" data-id="acc-3" data-status="ok" data-used="14" data-reset-mins="225" data-email="research-anthropic-team@corp.io">
+        <div class="acc-header">
+          <div class="acc-identity">
+            <span class="acc-email" title="research-anthropic-team@corp.io">research-anthropic-team@corp.io</span>
+            <div class="acc-tags">
+              <span class="acc-provider">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+                Claude / GPT Shared
+              </span>
+              <span class="acc-login">● Đã đăng nhập</span>
+            </div>
+          </div>
+          <span class="status-pill status-ok">OK</span>
+        </div>
+
+        <div class="acc-windows">
+          <!-- Window: 5 Giờ -->
+          <div class="window-item">
+            <div class="window-top-info">
+              <span class="window-name">Cửa sổ 5 Giờ (Shared)</span>
+              <span class="window-rates">
+                <strong class="rate-used" style="color: var(--success);">Đã dùng: 14%</strong>
+                <span class="rate-remain">· Còn: 86%</span>
+              </span>
+            </div>
+            <div class="quota-progress-track">
+              <div class="quota-progress-fill fill-ok" style="width: 14%;"></div>
+            </div>
+            <div class="window-sub-info">
+              <span>Bắt đầu: <strong class="num">11:00:00</strong></span>
+              <span>Reset: <strong class="num">18:33:00</strong></span>
+            </div>
+          </div>
+
+          <!-- Window: 7 Ngày -->
+          <div class="window-item">
+            <div class="window-top-info">
+              <span class="window-name">Cửa sổ Tuần (Shared)</span>
+              <span class="window-rates">
+                <strong class="rate-used">Đã dùng: 32%</strong>
+                <span class="rate-remain">· Còn: 68%</span>
+              </span>
+            </div>
+            <div class="quota-progress-track">
+              <div class="quota-progress-fill fill-normal" style="width: 32%;"></div>
+            </div>
+            <div class="window-sub-info">
+              <span>Bắt đầu: <strong class="num">12/09</strong></span>
+              <span>Reset: <strong class="num">21/09 (4d 18h)</strong></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="acc-footer">
+          <span class="reset-countdown">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            Reset sau: <strong>3g 45p</strong>
+          </span>
+          <span class="data-integrity-badge complete">✓ Đầy đủ dữ liệu</span>
+        </div>
+      </article>
+
+      <!-- BLOCK 5: OK with Missing Data Alert on Weekly Window (ops-multi-backup) -->
+      <article class="account-card state-ok" data-id="acc-5" data-status="ok" data-used="5" data-reset-mins="250" data-email="ops-multi-backup@devops.net">
+        <div class="acc-header">
+          <div class="acc-identity">
+            <span class="acc-email" title="ops-multi-backup@devops.net">ops-multi-backup@devops.net</span>
+            <div class="acc-tags">
+              <span class="acc-provider">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+                Claude / GPT Shared
+              </span>
+              <span class="acc-login">● Đã đăng nhập</span>
+            </div>
+          </div>
+          <span class="status-pill status-ok">OK</span>
+        </div>
+
+        <div class="acc-windows">
+          <!-- Window: 5 Giờ -->
+          <div class="window-item">
+            <div class="window-top-info">
+              <span class="window-name">Cửa sổ 5 Giờ (Shared)</span>
+              <span class="window-rates">
+                <strong class="rate-used" style="color: var(--success);">Đã dùng: 5%</strong>
+                <span class="rate-remain">· Còn: 95%</span>
+              </span>
+            </div>
+            <div class="quota-progress-track">
+              <div class="quota-progress-fill fill-ok" style="width: 5%;"></div>
+            </div>
+            <div class="window-sub-info">
+              <span>Bắt đầu: <strong class="num">10:30:00</strong></span>
+              <span>Reset: <strong class="num">18:58:00</strong></span>
+            </div>
+          </div>
+
+          <!-- Window: 7 Ngày (Missing Telemetry Alert) -->
+          <div class="window-item">
+            <div class="window-top-info">
+              <span class="window-name">Cửa sổ Tuần (7 Ngày)</span>
+              <span class="window-rates" style="color: var(--warn);">
+                <strong>Thiếu telemetry</strong>
+              </span>
+            </div>
+            <div class="missing-data-alert">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              <span>Chưa lấy được quota tuần (Đang đợi collector sync)</span>
+            </div>
+            <div class="window-sub-info" style="margin-top: 2px;">
+              <span>Bắt đầu: <strong class="num">Chưa xác định</strong></span>
+              <span>Reset: <strong class="num">Đang kiểm tra</strong></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="acc-footer">
+          <span class="reset-countdown">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            Reset sau: <strong>4g 10p</strong>
+          </span>
+          <span class="data-integrity-badge missing">▲ Thiếu quota tuần</span>
+        </div>
+      </article>
+
+    </section>
+
+    <section class="history-section" id="token-history" aria-labelledby="token-history-title">
+      <div class="history-heading">
+        <div>
+          <h2 class="history-title" id="token-history-title">History · Nhật ký token OMP</h2>
+          <div class="history-subtitle">Dữ liệu lấy từ các lượt OMP đã ghi nhận; không đọc nội dung prompt hay tool output.</div>
+        </div>
+        <button class="btn btn-secondary" id="history-refresh" type="button">Làm mới History</button>
+      </div>
+      <div class="history-summary" id="history-summary">
+        <div class="history-kpi"><span class="history-kpi-label">Request hôm nay</span><strong class="history-kpi-value" id="history-requests">—</strong></div>
+        <div class="history-kpi"><span class="history-kpi-label">Tổng token hôm nay</span><strong class="history-kpi-value" id="history-total">—</strong></div>
+        <div class="history-kpi"><span class="history-kpi-label">Input + cache read</span><strong class="history-kpi-value" id="history-input">—</strong></div>
+        <div class="history-kpi"><span class="history-kpi-label">Output</span><strong class="history-kpi-value" id="history-output">—</strong></div>
+      </div>
+      <div class="history-table-wrap">
+        <table class="history-table">
+          <thead><tr><th>Thời gian</th><th>Account OMP</th><th>Model</th><th>Input</th><th>Output</th><th>Cache</th><th>Tổng</th></tr></thead>
+          <tbody id="history-rows"><tr><td class="history-empty" colspan="7">Đang đọc nhật ký OMP…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="toast" role="status" aria-live="polite">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+    <span id="toast-msg">Đã đồng bộ hạn mức quota mới nhất!</span>
+  </div>
+
+  <script>
+    // Density Mode Controller
+    function setDensity(mode) {
+      document.documentElement.setAttribute('data-density', mode);
+      document.getElementById('btn-density-compact').classList.toggle('active', mode === 'compact');
+      document.getElementById('btn-density-comfortable').classList.toggle('active', mode === 'comfortable');
+      localStorage.setItem('quota_density', mode);
+    }
+
+    // Init density from localStorage
+    const savedDensity = localStorage.getItem('quota_density') || 'compact';
+    setDensity(savedDensity);
+
+    // Filter Controller
+    let currentFilter = 'all';
+    let currentSearch = '';
+
+    function applyFilter(filter, el) {
+      currentFilter = filter;
+      document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
+      if (el) el.classList.add('active');
+      renderCards();
+    }
+
+    function handleSearch(val) {
+      currentSearch = val.trim().toLowerCase();
+      renderCards();
+    }
+
+    function renderCards() {
+      const cards = document.querySelectorAll('.account-card');
+      cards.forEach(card => {
+        const status = card.dataset.status;
+        const email = card.dataset.email.toLowerCase();
+        const provider = card.querySelector('.acc-provider').textContent.toLowerCase();
+
+        // Check filter
+        let matchFilter = false;
+        if (currentFilter === 'all') matchFilter = true;
+        else if (currentFilter === 'warning') matchFilter = (status === 'warning');
+        else if (currentFilter === 'critical') matchFilter = (status === 'critical');
+        else if (currentFilter === 'exhausted') matchFilter = (status === 'exhausted');
+        else if (currentFilter === 'ok') matchFilter = (status === 'ok');
+
+        // Check search
+        let matchSearch = true;
+        if (currentSearch) {
+          matchSearch = email.includes(currentSearch) || provider.includes(currentSearch);
+        }
+
+        card.style.display = (matchFilter && matchSearch) ? 'flex' : 'none';
+      });
+    }
+
+    // Sort Controller
+    function handleSort(criteria) {
+      const container = document.getElementById('accounts-grid');
+      const cards = Array.from(container.querySelectorAll('.account-card'));
+
+      cards.sort((a, b) => {
+        if (criteria === 'usage-desc') {
+          return parseFloat(b.dataset.used || '0') - parseFloat(a.dataset.used || '0');
+        } else if (criteria === 'reset-asc') {
+          return parseInt(a.dataset.resetMins || '9999') - parseInt(b.dataset.resetMins || '9999');
+        } else if (criteria === 'email-asc') {
+          return a.dataset.email.localeCompare(b.dataset.email);
+        }
+        return 0;
+      });
+
+      cards.forEach(card => container.appendChild(card));
+    }
+
+    // Sync button toast simulation
+    function triggerSync() {
+      const now = new Date();
+      const timeStr = String(now.getHours()).padStart(2, '0') + ':' +
+                      String(now.getMinutes()).padStart(2, '0') + ':' +
+                      String(now.getSeconds()).padStart(2, '0');
+      document.getElementById('live-sync-time').textContent = timeStr;
+
+      const toast = document.getElementById('toast');
+      document.getElementById('toast-msg').textContent = 'Đã làm mới dữ liệu OMP thành công lúc ' + timeStr;
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 2600);
+    }
+  </script>
+</body>
+</html>
