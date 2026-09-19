@@ -53,7 +53,7 @@ Harness nên dùng `integrations/deepseek-harness-omp/client.mjs` từ host/plug
 
 ### Bật route OMP trong DSH Web trên máy hiện tại
 
-Bundle `dsh-omp-client` đã có patch native `ctx.llm.registerAdapter`, route `omp-google-pro` và model `gemini-3.8-flash`. Cài lại sau mỗi lần đổi connector:
+Bundle `dsh-omp-client` đã có patch native `ctx.llm.registerAdapter`, hai route `OMP · Gemini Pro`/`OMP · Gemini Pro · Ego` và model `gemini-3.8-flash`. Cài lại sau mỗi lần đổi connector:
 
 ```sh
 pnpm --dir integrations/deepseek-harness-omp pack --pack-destination ~/.omp/usage-dashboard
@@ -62,7 +62,7 @@ dsh plugin --profile web add ~/.omp/usage-dashboard/dsh-omp-client-0.1.0.tgz
 dsh web --no-open
 ```
 
-DSH Web dùng OMP route khi chọn `OMP · Gemini Pro`; tài khoản, quota, skill và Ego vẫn do OMP quản lý. Không đưa `.dsh/.credentials.yaml` hoặc token vào repository.
+DSH Web dùng OMP route khi chọn `OMP · Gemini Pro` hoặc `OMP · Gemini Pro · Ego`; tài khoản, quota, skill và Ego vẫn do OMP quản lý. Không đưa `.dsh/.credentials.yaml` hoặc token vào repository.
 
 ## OMP Web Console
 

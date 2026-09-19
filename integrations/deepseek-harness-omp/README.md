@@ -30,6 +30,8 @@ for await (const event of omp.streamPrompt("harness-session-1", "Mở trang loca
 
 `streamPrompt()` tự mở SSE trước rồi mới gửi prompt, nên không mất event đầu lượt. `useEgoBrowser: true` được chuyển thành `/skill:ego-browser`; không cần copy skill vào Harness.
 
+Trong DSH Web, bundle đăng ký hai route: `OMP · Gemini Pro` và `OMP · Gemini Pro · Ego`. Chọn route Ego để mọi prompt của session đó đi qua skill `ego-browser`; chọn route thường để dùng OMP không mở browser.
+
 ## Contract
 
 - `GET /api/omp/v1/capabilities`

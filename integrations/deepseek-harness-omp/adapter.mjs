@@ -5,6 +5,7 @@ export const name = "llm-omp-gateway";
 export const inject = ["llm"];
 
 const DEFAULT_PROVIDER = "omp-google-pro";
+const DEFAULT_EGO_PROVIDER = "omp-google-pro-ego";
 const DEFAULT_MODEL = "gemini-3.8-flash";
 
 function textFromMessage(message) {
@@ -41,13 +42,14 @@ class OmpAdapter extends LlmAdapter {
   constructor(config) {
     super();
     this.provider = config.provider || DEFAULT_PROVIDER;
+    this.egoProvider = config.egoProvider || DEFAULT_EGO_PROVIDER;
     this.model = config.model || DEFAULT_MODEL;
     this.cwd = config.cwd || process.cwd();
     this.client = new OmpGatewayClient({ baseUrl: config.baseUrl || "http://127.0.0.1:4177" });
   }
 
   providerInfo(provider) {
-    return { id: provider, name: "OMP · Gemini Pro" };
+    return { id: provider, name: provider === this.egoProvider ? "OMP · Gemini Pro · Ego" : "OMP · Gemini Pro" };
   }
 
   async listModels(provider) {
@@ -69,6 +71,7 @@ class OmpAdapter extends LlmAdapter {
     try {
       for await (const event of this.client.streamPrompt(session.sessionId, prompt, {
         signal: options.signal,
+        useEgoBrowser: options.provider === this.egoProvider,
         ...(images.length ? { images } : {}),
       })) {
         if (event.type === "text-start") {
@@ -100,5 +103,6 @@ class OmpAdapter extends LlmAdapter {
 
 export function apply(ctx, config = {}) {
   const provider = config.provider || DEFAULT_PROVIDER;
-  ctx.llm.registerAdapter([provider], new OmpAdapter({ ...config, provider }));
+  const egoProvider = config.egoProvider || DEFAULT_EGO_PROVIDER;
+  ctx.llm.registerAdapter([...new Set([provider, egoProvider])], new OmpAdapter({ ...config, provider, egoProvider }));
 }
