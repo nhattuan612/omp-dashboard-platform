@@ -1,16 +1,21 @@
 import http from "node:http";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { ConsoleBridge } from "./console-bridge.mjs";
 
 const ROOT = join(homedir(), ".omp/usage-dashboard");
+const CA_BUNDLE = join(ROOT, "ca-bundle.pem");
+const OMP_ENV = existsSync(CA_BUNDLE) ? { ...process.env, NODE_EXTRA_CA_CERTS: CA_BUNDLE } : process.env;
 const STATE_FILE = `${ROOT}/state.json`;
 const SELECTED_ACCOUNT_FILE = `${ROOT}/selected-account.json`;
 const OMP_BIN = join(homedir(), ".bun/bin/omp");
 const OMP_SESSION_ROOT = join(homedir(), ".omp/agent/sessions");
-const PORT = 4177;
+const PORT = Number(process.env.OMP_DASHBOARD_PORT || 4177);
 const THRESHOLD = 0.9;
 let latest = { ok: false, error: "Đang tải dữ liệu…", updatedAt: null, accounts: [], accountsWithoutUsage: [], disabledCredentials: [], capacity: {}, preferredAccountEmail: null };
 let refreshing = null;
@@ -20,7 +25,7 @@ let historyCache = { loadedAt: 0, items: [] };
 
 function runUsage() {
   return new Promise((resolve, reject) => {
-    const child = spawn(OMP_BIN, ["usage", "--json"], { env: process.env });
+    const child = spawn(OMP_BIN, ["usage", "--json"], { env: OMP_ENV });
     let out = "";
     let err = "";
     const timer = setTimeout(() => child.kill("SIGTERM"), 30000);
@@ -150,6 +155,22 @@ async function selectedAccount() {
   catch { return null; }
 }
 
+async function findSessionPath(sessionId) {
+  if (typeof sessionId !== "string" || !sessionId) throw new Error("sessionId là bắt buộc");
+  for (const file of await sessionFiles()) {
+    let content;
+    try { content = await readFile(file, "utf8"); } catch { continue; }
+    for (const line of content.split("\n").slice(0, 6)) {
+      if (!line) continue;
+      try {
+        const record = JSON.parse(line);
+        if (record.type === "session" && record.id === sessionId) return file;
+      } catch { break; }
+    }
+  }
+  throw new Error("Không tìm thấy session OMP");
+}
+
 async function readState() {
   try { return JSON.parse(await readFile(STATE_FILE, "utf8")); }
   catch { return { alerted: {} }; }
@@ -242,7 +263,7 @@ async function historyPayload(limit = 50) {
 function startLogin() {
   if (loginProcess) return;
   login = { state: "starting", url: null, message: "Đang tạo phiên đăng nhập Google…" };
-  const child = spawn(OMP_BIN, ["auth-broker", "login", "google-antigravity"], { env: process.env });
+  const child = spawn(OMP_BIN, ["auth-broker", "login", "google-antigravity"], { env: OMP_ENV });
   loginProcess = child;
   let output = "";
   let opened = false;
@@ -273,16 +294,111 @@ function startLogin() {
   });
 }
 
-const DESIGN_FILE = `${ROOT}/quota-dashboard.html`;
-const LIVE_SCRIPT_FILE = `${ROOT}/dashboard-live.js`;
+const consoleBridge = new ConsoleBridge();
+const SOURCE_ROOT = fileURLToPath(new URL("./", import.meta.url));
+
+async function readDashboardAsset(name) {
+  try { return await readFile(join(SOURCE_ROOT, name), "utf8"); }
+  catch (error) {
+    if (ROOT === SOURCE_ROOT) throw error;
+    return readFile(join(ROOT, name), "utf8");
+  }
+}
+
+async function jsonBody(req) {
+  try { return await readJsonBody(req); }
+  catch (error) { throw new Error(`JSON không hợp lệ: ${error.message}`); }
+}
+
+function json(res, status, payload) {
+  res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+  res.end(JSON.stringify(payload));
+}
+
 async function designHtml() {
-  const template = await readFile(DESIGN_FILE, "utf8");
+  const template = await readDashboardAsset("quota-dashboard.html");
   return template.replace("</body>", '<script src="/dashboard-live.js"></script></body>');
 }
 
 const server = http.createServer(async (req, res) => {
+  try {
+  if (req.url === "/console" && req.method === "GET") {
+    const page = await readDashboardAsset("console.html");
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+    return res.end(page);
+  }
+  if (req.url === "/console-live.js" && req.method === "GET") {
+    const script = await readDashboardAsset("console-live.js");
+    res.writeHead(200, { "content-type": "application/javascript; charset=utf-8", "cache-control": "no-store" });
+    return res.end(script);
+  }
+  if (req.url === "/api/console/connect" && req.method === "POST") {
+    return json(res, 200, { ok: true, clientId: consoleBridge.createClient() });
+  }
+  if (req.url === "/api/console/state" && req.method === "GET") {
+    return json(res, 200, consoleBridge.state());
+  }
+  if ((req.url === "/api/console/sessions" || req.url?.startsWith("/api/console/sessions?")) && req.method === "GET") {
+    try {
+      const query = new URL(req.url, "http://127.0.0.1").searchParams;
+      return json(res, 200, { ok: true, ...(await consoleBridge.listSessions(query.get("cwd") || undefined)) });
+    } catch (error) { return json(res, 400, { ok: false, message: error.message }); }
+  }
+  if (req.url === "/api/console/start" && req.method === "POST") {
+    try { return json(res, 200, { ok: true, context: await consoleBridge.start(await jsonBody(req)) }); }
+    catch (error) { return json(res, 400, { ok: false, message: error.message }); }
+  }
+  if ((req.url === "/api/console/events" || req.url?.startsWith("/api/console/events?")) && req.method === "GET") {
+    const query = new URL(req.url, "http://127.0.0.1").searchParams;
+    const clientId = query.get("clientId");
+    const contextId = query.get("contextId");
+    try {
+      if (!clientId || !contextId) throw new Error("clientId và contextId là bắt buộc");
+      consoleBridge.get(contextId);
+      res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", connection: "keep-alive" });
+      res.write(": connected\n\n");
+      consoleBridge.subscribe(contextId, clientId, res);
+      req.on("close", () => consoleBridge.removeClient(clientId));
+      return;
+    } catch (error) { return json(res, 400, { ok: false, message: error.message }); }
+  }
+  if (req.url === "/api/console/command" && req.method === "POST") {
+    try {
+      const body = await jsonBody(req);
+      consoleBridge.send(body.contextId, body.command);
+      return json(res, 200, { ok: true });
+    } catch (error) { return json(res, 400, { ok: false, message: error.message }); }
+  }
+  if (req.url === "/api/console/session" && req.method === "POST") {
+    try {
+      const body = await jsonBody(req);
+      const action = typeof body.action === "string" ? body.action : "";
+      const command = { id: `session-${Date.now()}` };
+      if (action === "new") Object.assign(command, { type: "new_session" });
+      else if (action === "switch") Object.assign(command, { type: "switch_session", sessionPath: await findSessionPath(body.sessionId) });
+      else if (action === "fork") Object.assign(command, { type: "new_session", parentSession: await findSessionPath(body.sessionId) });
+      else if (action === "branch") Object.assign(command, { type: "branch", entryId: String(body.entryId || "") });
+      else if (action === "rename") Object.assign(command, { type: "set_session_name", name: String(body.name || "").trim().slice(0, 200) });
+      else if (action === "compact") Object.assign(command, { type: "compact", customInstructions: String(body.instructions || "").slice(0, 4000) || undefined });
+      else if (action === "export") Object.assign(command, { type: "export_html" });
+      else if (action === "handoff") Object.assign(command, { type: "handoff", customInstructions: String(body.instructions || "").slice(0, 4000) || undefined });
+      else if (action === "abort") Object.assign(command, { type: "abort" });
+      else if (action === "retry") Object.assign(command, { type: "abort_retry" });
+      else throw new Error("Session action không được hỗ trợ");
+      if (command.type === "branch" && !command.entryId) throw new Error("entryId là bắt buộc");
+      if (command.type === "set_session_name" && !command.name) throw new Error("name là bắt buộc");
+      consoleBridge.send(body.contextId, command);
+      return json(res, 200, { ok: true, command: command.type });
+    } catch (error) { return json(res, 400, { ok: false, message: error.message }); }
+  }
+  if (req.url === "/api/console/stop" && req.method === "POST") {
+    try {
+      const body = await jsonBody(req);
+      return json(res, 200, { ok: true, context: await consoleBridge.stop(body.contextId) });
+    } catch (error) { return json(res, 400, { ok: false, message: error.message }); }
+  }
   if (req.url === "/dashboard-live.js" && req.method === "GET") {
-    const script = await readFile(LIVE_SCRIPT_FILE, "utf8");
+    const script = await readDashboardAsset("dashboard-live.js");
     res.writeHead(200, { "content-type": "application/javascript; charset=utf-8", "cache-control": "no-store" });
     return res.end(script);
   }
@@ -330,6 +446,12 @@ const server = http.createServer(async (req, res) => {
     }
   }
   res.writeHead(404); res.end("Not found");
+  } catch (error) {
+    if (!res.headersSent) json(res, 500, { ok: false, message: error.message });
+    else res.end();
+  }
 });
 
 server.listen(PORT, "127.0.0.1", () => { refresh(); setInterval(refresh, 60000); });
+process.on("SIGINT", async () => { await consoleBridge.close(); server.close(); process.exit(0); });
+process.on("SIGTERM", async () => { await consoleBridge.close(); server.close(); process.exit(0); });

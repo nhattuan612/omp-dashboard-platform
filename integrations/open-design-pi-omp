@@ -6,6 +6,11 @@ if [[ "$1" == "--list-models" ]]; then
   exit 0
 fi
 
+OMP_CA_BUNDLE="${OMP_CA_BUNDLE:-${HOME}/.omp/usage-dashboard/ca-bundle.pem}"
+if [[ -f "$OMP_CA_BUNDLE" ]]; then
+  export NODE_EXTRA_CA_CERTS="$OMP_CA_BUNDLE"
+fi
+
 if (( $+commands[omp] )); then
   exec omp "$@"
 fi

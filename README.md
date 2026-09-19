@@ -1,10 +1,11 @@
 # OMP Dashboard Platform
 
-Dashboard local để theo dõi quota Gemini của OMP, chọn account ưu tiên và xem nhật ký token.
+Dashboard local để theo dõi quota Gemini của OMP, chọn account ưu tiên, xem nhật ký token và mở OMP Web Console.
 
 ## Thành phần
 
 - `dashboard/`: server Node.js, giao diện quota và History token.
+- `dashboard/console.html`, `dashboard/console-live.js`, `dashboard/console-bridge.mjs`: OMP Web Console Slice 1, gọi OMP RPC trực tiếp và hiển thị raw capability/event.
 - `omp/agent/extensions/omp-account-preference.js`: extension OMP tự pin account được chọn khi mở session.
 - `integrations/open-design-pi-omp`: wrapper tùy chọn cho app gọi OMP; không chứa logic account.
 - `launchd/`: template tự khởi động dashboard trên macOS.
@@ -20,6 +21,8 @@ Platform không sửa mã nguồn lõi OMP và không chứa credential Google.
 5. Đăng nhập lại từng tài khoản Google bằng nút `Thêm tài khoản` trên dashboard.
 6. Chọn account ưu tiên, rồi mở `http://127.0.0.1:4177/`.
 
+Nếu máy dùng AdGuard hoặc proxy HTTPS có CA riêng, xuất CA công khai vào `~/.omp/usage-dashboard/ca-bundle.pem`. Dashboard và wrapper sẽ tự dùng file này cho OAuth; file `.pem` bị loại khỏi Git vì phụ thuộc từng máy.
+
 Muốn tự chạy khi đăng nhập macOS thì thay `__HOME__` và `__NODE__` trong template LaunchAgent rồi nạp file vào `~/Library/LaunchAgents/`.
 
 ## Dữ liệu không đưa lên GitHub
@@ -33,3 +36,13 @@ Token OAuth, database OMP, session log, account đang chọn, state cache và lo
 - `POST /api/login`: mở đăng nhập Google qua OMP.
 - `POST /api/select-account`: chọn account ưu tiên.
 - `GET /api/history?limit=50`: nhật ký token gần nhất.
+
+## OMP Web Console
+
+Mở `http://127.0.0.1:4177/console`, bấm `Khởi động OMP context`, rồi nhập prompt. Console hiện session/project list từ ACP, prompt/steer/follow-up, model, thinking, fast mode, queue, compaction, retry, bash, todos, subagents, login providers, extension dialogs, transcript/history, slash-command palette và `Advanced / Raw` RPC luôn hiển thị.
+
+Chạy test smoke không gọi model:
+
+```sh
+node tests/console-smoke.mjs
+```
