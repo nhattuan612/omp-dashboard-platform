@@ -1,10 +1,10 @@
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConsoleBridge } from "./console-bridge.mjs";
 
@@ -15,6 +15,8 @@ const STATE_FILE = `${ROOT}/state.json`;
 const SELECTED_ACCOUNT_FILE = `${ROOT}/selected-account.json`;
 const OMP_BIN = join(homedir(), ".bun/bin/omp");
 const OMP_SESSION_ROOT = join(homedir(), ".omp/agent/sessions");
+const OMP_ARCHIVE_ROOT = join(homedir(), ".omp/agent/archive/console-sessions");
+const OMP_TRASH_ROOT = join(homedir(), ".omp/agent/trash/console-sessions");
 const PORT = Number(process.env.OMP_DASHBOARD_PORT || 4177);
 const THRESHOLD = 0.9;
 let latest = { ok: false, error: "Đang tải dữ liệu…", updatedAt: null, accounts: [], accountsWithoutUsage: [], disabledCredentials: [], capacity: {}, preferredAccountEmail: null };
@@ -171,6 +173,26 @@ async function findSessionPath(sessionId) {
   throw new Error("Không tìm thấy session OMP");
 }
 
+async function moveSessionRecord(sessionId, destinationRoot) {
+  const source = await findSessionPath(sessionId);
+  const root = resolve(OMP_SESSION_ROOT);
+  const sourcePath = resolve(source);
+  const relativePath = relative(root, sourcePath);
+  if (!relativePath || relativePath.startsWith("..") || relativePath.includes("\0")) {
+    throw new Error("Đường dẫn session không hợp lệ");
+  }
+  const destination = join(destinationRoot, relativePath);
+  await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+  await rename(source, destination);
+  const sourceArtifacts = source.endsWith(".jsonl") ? source.slice(0, -6) : null;
+  const destinationArtifacts = destination.endsWith(".jsonl") ? destination.slice(0, -6) : null;
+  if (sourceArtifacts && destinationArtifacts) {
+    try { await rename(sourceArtifacts, destinationArtifacts); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+  }
+  return { source, destination };
+}
+
 async function readState() {
   try { return JSON.parse(await readFile(STATE_FILE, "utf8")); }
   catch { return { alerted: {} }; }
@@ -296,6 +318,69 @@ function startLogin() {
 
 const consoleBridge = new ConsoleBridge();
 const SOURCE_ROOT = fileURLToPath(new URL("./", import.meta.url));
+const OMP_GATEWAY_VERSION = "1";
+const gatewaySessions = new Map();
+const GATEWAY_COMMANDS = new Set([
+  "abort", "abort_bash", "abort_retry", "bash", "branch", "compact", "export_html", "get_available_commands",
+  "get_available_models", "get_login_providers", "get_messages", "get_messages_page", "get_session_stats", "get_state",
+  "get_subagent_messages", "get_subagents", "handoff", "login", "new_session", "set_auto_compaction", "set_auto_retry",
+  "set_fast_mode", "set_follow_up_mode", "set_interrupt_mode", "set_model", "set_session_name", "set_steering_mode",
+  "set_subagent_subscription", "set_thinking_level", "set_todos", "extension_ui_response",
+]);
+
+function gatewaySessionId(value) {
+  const id = typeof value === "string" && value.trim() ? value.trim() : randomUUID();
+  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(id)) throw new Error("sessionId không hợp lệ");
+  return id;
+}
+
+function gatewayRecord(sessionId) {
+  const record = gatewaySessions.get(sessionId);
+  if (!record) throw new Error("Gateway session không tồn tại");
+  return record;
+}
+
+function gatewayPayload(record) {
+  const context = consoleBridge.get(record.contextId).summary();
+  return {
+    ok: true,
+    contractVersion: OMP_GATEWAY_VERSION,
+    sessionId: record.sessionId,
+    context,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
+}
+
+async function createGatewaySession(body) {
+  const sessionId = gatewaySessionId(body.sessionId);
+  const existing = gatewaySessions.get(sessionId);
+  if (existing) return gatewayPayload(existing);
+  const context = await consoleBridge.start({ cwd: body.cwd });
+  const record = { sessionId, contextId: context.id, createdAt: Date.now(), updatedAt: Date.now() };
+  gatewaySessions.set(sessionId, record);
+  return gatewayPayload(record);
+}
+
+function gatewayCommand(body) {
+  const command = body?.command && typeof body.command === "object" && !Array.isArray(body.command)
+    ? { ...body.command }
+    : body;
+  if (!GATEWAY_COMMANDS.has(command?.type)) throw new Error(`Gateway command không được hỗ trợ: ${command?.type || "trống"}`);
+  return command;
+}
+
+function gatewayPrompt(body) {
+  const message = typeof body?.message === "string" ? body.message.trim() : "";
+  if (!message) throw new Error("message là bắt buộc");
+  if (message.length > 900000) throw new Error("message vượt quá giới hạn");
+  const behavior = ["prompt", "steer", "follow_up"].includes(body.behavior) ? body.behavior : "prompt";
+  const useEgoBrowser = body.useEgoBrowser === true;
+  const outboundMessage = useEgoBrowser && !message.startsWith("/skill:ego-browser")
+    ? `/skill:ego-browser ${message}`
+    : message;
+  return { type: behavior, message: outboundMessage, ...(Array.isArray(body.images) ? { images: body.images } : {}) };
+}
 
 async function readDashboardAsset(name) {
   try { return await readFile(join(SOURCE_ROOT, name), "utf8"); }
@@ -332,6 +417,62 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "content-type": "application/javascript; charset=utf-8", "cache-control": "no-store" });
     return res.end(script);
   }
+  if (req.url === "/api/omp/v1/capabilities" && req.method === "GET") {
+    return json(res, 200, {
+      ok: true,
+      contractVersion: OMP_GATEWAY_VERSION,
+      transport: { prompt: "http", events: "sse", hostOnly: true },
+      features: ["sessions", "streaming", "commands", "abort", "ego-browser", "slash-commands", "file-references"],
+      note: "Gateway chỉ nhận kết nối local từ host-side Harness connector; credential vẫn thuộc OMP.",
+    });
+  }
+  if (req.url === "/api/omp/v1/sessions" && req.method === "POST") {
+    try { return json(res, 201, await createGatewaySession(await jsonBody(req))); }
+    catch (error) { return json(res, 400, { ok: false, message: error.message }); }
+  }
+  if (req.url?.startsWith("/api/omp/v1/sessions/")) {
+    const parsed = new URL(req.url, "http://127.0.0.1");
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const sessionId = decodeURIComponent(parts[4] || "");
+    const action = parts[5] || "";
+    try {
+      const record = gatewayRecord(sessionId);
+      if (!action && req.method === "GET") return json(res, 200, gatewayPayload(record));
+      if (action === "events" && req.method === "GET") {
+        const clientId = consoleBridge.createClient();
+        res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", connection: "keep-alive" });
+        res.write(": connected\n\n");
+        consoleBridge.subscribe(record.contextId, clientId, res);
+        req.on("close", () => consoleBridge.removeClient(clientId));
+        return;
+      }
+      if (action === "prompt" && req.method === "POST") {
+        const command = gatewayPrompt(await jsonBody(req));
+        record.updatedAt = Date.now();
+        consoleBridge.send(record.contextId, { id: `gateway-${Date.now()}`, ...command });
+        return json(res, 202, { ok: true, sessionId, command: command.type, egoBrowser: command.message.startsWith("/skill:ego-browser") });
+      }
+      if (action === "command" && req.method === "POST") {
+        const command = gatewayCommand(await jsonBody(req));
+        record.updatedAt = Date.now();
+        consoleBridge.send(record.contextId, { id: command.id || `gateway-${Date.now()}`, ...command });
+        return json(res, 202, { ok: true, sessionId, command: command.type });
+      }
+      if (action === "abort" && req.method === "POST") {
+        record.updatedAt = Date.now();
+        consoleBridge.send(record.contextId, { id: `gateway-abort-${Date.now()}`, type: "abort" });
+        return json(res, 202, { ok: true, sessionId, command: "abort" });
+      }
+      if (!action && req.method === "DELETE") {
+        await consoleBridge.stop(record.contextId);
+        gatewaySessions.delete(sessionId);
+        return json(res, 200, { ok: true, sessionId, closed: true });
+      }
+      return json(res, 404, { ok: false, message: "Gateway route không tồn tại" });
+    } catch (error) {
+      return json(res, error.message === "Gateway session không tồn tại" ? 404 : 400, { ok: false, message: error.message });
+    }
+  }
   if (req.url === "/api/console/connect" && req.method === "POST") {
     return json(res, 200, { ok: true, clientId: consoleBridge.createClient() });
   }
@@ -342,6 +483,12 @@ const server = http.createServer(async (req, res) => {
     try {
       const query = new URL(req.url, "http://127.0.0.1").searchParams;
       return json(res, 200, { ok: true, ...(await consoleBridge.listSessions(query.get("cwd") || undefined)) });
+    } catch (error) { return json(res, 400, { ok: false, message: error.message }); }
+  }
+  if ((req.url === "/api/console/files" || req.url?.startsWith("/api/console/files?")) && req.method === "GET") {
+    try {
+      const query = new URL(req.url, "http://127.0.0.1").searchParams;
+      return json(res, 200, { ok: true, ...(await consoleBridge.listFiles(query.get("contextId"), query.get("mention") || "@")) });
     } catch (error) { return json(res, 400, { ok: false, message: error.message }); }
   }
   if (req.url === "/api/console/start" && req.method === "POST") {
@@ -373,6 +520,11 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await jsonBody(req);
       const action = typeof body.action === "string" ? body.action : "";
+      if (action === "archive" || action === "delete") {
+        const destinationRoot = action === "archive" ? OMP_ARCHIVE_ROOT : OMP_TRASH_ROOT;
+        const moved = await moveSessionRecord(body.sessionId, destinationRoot);
+        return json(res, 200, { ok: true, action, moved });
+      }
       const command = { id: `session-${Date.now()}` };
       if (action === "new") Object.assign(command, { type: "new_session" });
       else if (action === "switch") Object.assign(command, { type: "switch_session", sessionPath: await findSessionPath(body.sessionId) });
