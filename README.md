@@ -6,6 +6,7 @@ Dashboard local để theo dõi quota Gemini của OMP, chọn account ưu tiên
 
 - `dashboard/`: server Node.js, giao diện quota và History token.
 - `dashboard/console.html`, `dashboard/console-live.js`, `dashboard/console-bridge.mjs`: OMP Web Console Slice 1, gọi OMP RPC trực tiếp và hiển thị raw capability/event.
+- `integrations/deepseek-harness-omp/`: host-side client để DeepSeek Harness dùng OMP Gateway, giữ Google auth/quota/skill ở OMP.
 - `omp/agent/extensions/omp-account-preference.js`: extension OMP tự pin account được chọn khi mở session.
 - `integrations/open-design-pi-omp`: wrapper tùy chọn cho app gọi OMP; không chứa logic account.
 - `launchd/`: template tự khởi động dashboard trên macOS.
@@ -37,6 +38,19 @@ Token OAuth, database OMP, session log, account đang chọn, state cache và lo
 - `POST /api/select-account`: chọn account ưu tiên.
 - `GET /api/history?limit=50`: nhật ký token gần nhất.
 
+## OMP Gateway cho DeepSeek Harness
+
+Gateway version `1` dùng chung với Dashboard, chỉ bind loopback và không mở credential/token cho Harness:
+
+- `GET /api/omp/v1/capabilities`: contract và feature flags.
+- `POST /api/omp/v1/sessions`: tạo hoặc lấy OMP context theo `sessionId` của Harness.
+- `GET /api/omp/v1/sessions/:id/events`: SSE raw OMP frames.
+- `POST /api/omp/v1/sessions/:id/prompt`: gửi prompt; `useEgoBrowser: true` tự gọi `/skill:ego-browser`.
+- `POST /api/omp/v1/sessions/:id/command`: gọi command OMP đã allowlist.
+- `POST /api/omp/v1/sessions/:id/abort`, `DELETE /api/omp/v1/sessions/:id`.
+
+Harness nên dùng `integrations/deepseek-harness-omp/client.mjs` từ host/plugin backend, không gọi Gateway trực tiếp từ browser. Client chuẩn hóa stream thành `text-delta`, `tool-start`, `tool-end`, `extension-request`, `finish` và `error`; OMP vẫn là agent loop thực thi.
+
 ## OMP Web Console
 
 Mở `http://127.0.0.1:4177/console`, bấm `Khởi động OMP context`, rồi nhập prompt. Console hiện session/project list từ ACP, prompt/steer/follow-up, model, thinking, fast mode, queue, compaction, retry, bash, todos, subagents, login providers, extension dialogs, transcript/history, slash-command palette và `Advanced / Raw` RPC luôn hiển thị.
@@ -45,4 +59,6 @@ Chạy test smoke không gọi model:
 
 ```sh
 node tests/console-smoke.mjs
+node tests/omp-gateway-smoke.mjs
+node tests/omp-client-smoke.mjs
 ```
