@@ -1,0 +1,8 @@
+{
+  "name": "dsh-omp-client",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./client.mjs"
+  }
+}
