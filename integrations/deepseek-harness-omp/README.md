@@ -43,4 +43,4 @@ for await (const event of omp.streamPrompt("harness-session-1", "Mở trang loca
 
 ## Giới hạn có chủ ý
 
-Đây là adapter front-end/host cho OMP, không phải `LlmAdapter` native của Harness. OMP sở hữu agent loop nên không gửi lại toàn bộ lịch sử Harness vào OMP; nếu cần Harness tự sở hữu tool loop, phải làm adapter native riêng sau.
+Bundle này có cả client host-side và `LlmAdapter` native cho DSH Web. Adapter chỉ nhận prompt/stream từ Harness; OMP sở hữu agent loop, tool, skill và lịch sử thực thi. Harness vẫn giữ session UI và không nhận Google credential.

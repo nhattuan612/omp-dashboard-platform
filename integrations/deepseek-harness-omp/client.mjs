@@ -90,6 +90,11 @@ export function normalizeOmpEvent(event) {
   return { type: "raw", raw: event };
 }
 
+function isReadyEvent(event) {
+  return event?.event === "bridge_status" && event.data?.status === "ready"
+    || event?.event === "omp" && event.data?.type === "ready";
+}
+
 export class OmpGatewayClient {
   constructor({ baseUrl = DEFAULT_BASE_URL, fetchImpl = globalThis.fetch } = {}) {
     if (typeof fetchImpl !== "function") throw new Error("Node fetch không khả dụng");
@@ -147,9 +152,19 @@ export class OmpGatewayClient {
     try {
       const events = this.events(sessionId, { signal: controller.signal });
       const iterator = events[Symbol.asyncIterator]();
-      const first = iterator.next();
+      const buffered = [];
+      while (true) {
+        const item = await iterator.next();
+        if (item.done) throw new OmpGatewayError("OMP context đóng trước khi sẵn sàng");
+        buffered.push(item.value);
+        if (item.value.event === "bridge_error" || item.value.event === "bridge_status" && item.value.data?.status === "error") {
+          throw new OmpGatewayError(item.value.data?.message || item.value.data?.text || "OMP context lỗi");
+        }
+        if (isReadyEvent(item.value)) break;
+      }
       await this.prompt(sessionId, message, options);
-      let item = await first;
+      for (const event of buffered) yield normalizeOmpEvent(event);
+      let item = await iterator.next();
       while (!item.done) {
         const normalized = normalizeOmpEvent(item.value);
         yield normalized;

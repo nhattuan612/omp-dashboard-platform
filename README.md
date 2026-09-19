@@ -51,6 +51,19 @@ Gateway version `1` dùng chung với Dashboard, chỉ bind loopback và không 
 
 Harness nên dùng `integrations/deepseek-harness-omp/client.mjs` từ host/plugin backend, không gọi Gateway trực tiếp từ browser. Client chuẩn hóa stream thành `text-delta`, `tool-start`, `tool-end`, `extension-request`, `finish` và `error`; OMP vẫn là agent loop thực thi.
 
+### Bật route OMP trong DSH Web trên máy hiện tại
+
+Bundle `dsh-omp-client` đã có patch native `ctx.llm.registerAdapter`, route `omp-google-pro` và model `gemini-3.8-flash`. Cài lại sau mỗi lần đổi connector:
+
+```sh
+pnpm --dir integrations/deepseek-harness-omp pack --pack-destination ~/.omp/usage-dashboard
+dsh plugin --profile web remove dsh-omp-client
+dsh plugin --profile web add ~/.omp/usage-dashboard/dsh-omp-client-0.1.0.tgz
+dsh web --no-open
+```
+
+DSH Web dùng OMP route khi chọn `OMP · Gemini Pro`; tài khoản, quota, skill và Ego vẫn do OMP quản lý. Không đưa `.dsh/.credentials.yaml` hoặc token vào repository.
+
 ## OMP Web Console
 
 Mở `http://127.0.0.1:4177/console`, bấm `Khởi động OMP context`, rồi nhập prompt. Console hiện session/project list từ ACP, prompt/steer/follow-up, model, thinking, fast mode, queue, compaction, retry, bash, todos, subagents, login providers, extension dialogs, transcript/history, slash-command palette và `Advanced / Raw` RPC luôn hiển thị.
