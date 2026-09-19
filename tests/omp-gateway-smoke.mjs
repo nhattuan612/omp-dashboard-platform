@@ -41,6 +41,13 @@ try {
   assert.equal(capabilities.transport.events, "sse");
   assert.equal(capabilities.features.includes("ego-browser"), true);
 
+  const largeRequest = await request("/api/omp/v1/sessions", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "x".repeat(12000), cwd: root }),
+  });
+  assert.equal(largeRequest.status, 400);
+  assert.notEqual((await largeRequest.json()).message, "Request quá lớn");
+
   const created = await json("/api/omp/v1/sessions", {
     method: "POST",
     body: JSON.stringify({ sessionId: "harness-smoke", cwd: root }),

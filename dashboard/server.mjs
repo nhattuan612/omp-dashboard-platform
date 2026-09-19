@@ -18,6 +18,7 @@ const OMP_SESSION_ROOT = join(homedir(), ".omp/agent/sessions");
 const OMP_ARCHIVE_ROOT = join(homedir(), ".omp/agent/archive/console-sessions");
 const OMP_TRASH_ROOT = join(homedir(), ".omp/agent/trash/console-sessions");
 const PORT = Number(process.env.OMP_DASHBOARD_PORT || 4177);
+const MAX_JSON_BODY_BYTES = 1_048_576;
 const THRESHOLD = 0.9;
 let latest = { ok: false, error: "Đang tải dữ liệu…", updatedAt: null, accounts: [], accountsWithoutUsage: [], disabledCredentials: [], capacity: {}, preferredAccountEmail: null };
 let refreshing = null;
@@ -243,8 +244,8 @@ async function refresh() {
 async function readJsonBody(req) {
   let body = "";
   for await (const chunk of req) {
-    body += chunk;
-    if (body.length > 10000) throw new Error("Request quá lớn");
+    body += chunk.toString();
+    if (Buffer.byteLength(body) > MAX_JSON_BODY_BYTES) throw new Error("Request vượt quá 1 MiB");
   }
   return JSON.parse(body || "{}");
 }
