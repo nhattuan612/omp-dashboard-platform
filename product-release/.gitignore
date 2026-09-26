@@ -1,0 +1,16 @@
+# Runtime state and private machine data
+state.json
+selected-account.json
+protect-config.json
+auth-events.json
+account-colors.json
+chat-metadata.json
+*.log
+*.jsonl
+*.pem
+backups/
+logs/
+sessions/
+credentials/
+node_modules/
+
