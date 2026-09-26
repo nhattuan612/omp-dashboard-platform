@@ -18,7 +18,10 @@ const MAX_WORKSPACE_FILE_TEXT_CHARS = 200_000;
 const SAFE_WORKSPACE_FILE_EXTENSIONS = new Set([".c", ".cc", ".cpp", ".css", ".csv", ".go", ".h", ".html", ".java", ".js", ".json", ".jsx", ".md", ".py", ".rs", ".sh", ".sql", ".toml", ".ts", ".tsx", ".txt", ".xml", ".yaml", ".yml"]);
 const IDLE_CLOSE_MS = 15 * 60 * 1000;
 const SAFETY_MIN_REQUEST_GAP_MS = 1_000;
-const SAFETY_COOLDOWN_MS = [15 * 60 * 1000, 60 * 60 * 1000, 6 * 60 * 60 * 1000, 24 * 60 * 60 * 1000];
+const testSafetyCooldown = process.env.NODE_ENV === "test" ? Number(process.env.OMP_DASHBOARD_TEST_SAFETY_COOLDOWN_MS) : NaN;
+const SAFETY_COOLDOWN_MS = Number.isSafeInteger(testSafetyCooldown) && testSafetyCooldown > 0
+  ? [testSafetyCooldown]
+  : [15 * 60 * 1000, 60 * 60 * 1000, 6 * 60 * 60 * 1000, 24 * 60 * 60 * 1000];
 const SAFETY_WINDOW_MS = 10 * 60 * 1000;
 const SAFETY_STATE_FILE = process.env.OMP_SAFETY_STATE_FILE || join(homedir(), ".omp", "usage-dashboard", "safety-state.json");
 const MAX_RPC_REASSEMBLED_BYTES = 64 * 1024 * 1024;

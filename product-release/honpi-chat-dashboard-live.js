@@ -1206,7 +1206,7 @@
     status.className = 'chat-status-row';
     const statusText = document.createElement('div');
     statusText.className = 'chat-status-text';
-    statusText.textContent = message.totalDuration ? `Đã xử lý trong ${message.totalDuration}` : 'Phản hồi từ backend OMP';
+    statusText.textContent = message.totalDuration ? `Đã hoàn tất · ${message.totalDuration}` : 'Đã hoàn tất';
     const line = document.createElement('div');
     line.className = 'chat-status-line';
     status.append(statusText, line);
@@ -1690,28 +1690,77 @@
     const names = (attachments || []).map((item) => item.name || item.path || 'tệp').slice(0, 3);
     return names.length ? `${names.join(', ')}${attachments.length > names.length ? ` +${attachments.length - names.length}` : ''}` : 'Không có tệp';
   }
+  function queueStatusLabel(queue = {}) {
+    if (queue.phase === 'paused') return 'Hàng chờ tạm dừng sau lỗi/lượt bị dừng';
+    if (queue.phase === 'safety_cooldown') return `Safety Guard cooldown · còn ${Math.max(0, Number(queue.retryAfterSeconds) || 0)}s`;
+    if (queue.phase === 'safety_gap') return `Đang chờ Safety Guard · còn ${Math.max(0, Number(queue.retryAfterSeconds) || 0)}s`;
+    if (queue.phase === 'fifo' && Number(queue.queueAhead) > 0) return `Đang chờ lượt trước · còn ${Number(queue.queueAhead)} order phía trước`;
+    return 'Đang xử lý';
+  }
+  const serverQueueItems = (sessionId = state.activeId) => requestsForSession(sessionId).filter((request) => {
+    const queue = request.queueState || {};
+    return queue.phase === 'paused' || (queue.phase === 'fifo' && Number(queue.queueAhead) > 0);
+  });
+  async function discardServerQueuedRequest(request) {
+    if (!request || request.status === 'stopping') return;
+    request.status = 'stopping'; renderQueueTray();
+    try {
+      const response = await fetch(`${API}/chat/abort`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId: request.requestId, sessionId: request.sessionId }) });
+      if (response.status !== 202) throw new Error(`HTTP ${response.status}`);
+      request.controller.abort();
+      notify('Đã bỏ order khỏi hàng chờ.');
+    } catch (error) {
+      request.status = 'running';
+      notify(`Không bỏ được order: ${error.message}`, true);
+    }
+    renderQueueTray();
+  }
+  async function resumeServerQueue(sessionId) {
+    try {
+      const { payload } = await readJson(`${API}/sessions/${encodeURIComponent(sessionId)}/action`, { method: 'POST', body: JSON.stringify({ action: 'resume_queue' }) });
+      notify(`Đã tiếp tục hàng chờ (${payload?.queuedTurns ?? 0} order).`);
+    } catch (error) { notify(`Không thể tiếp tục hàng chờ: ${error.message}`, true); }
+    renderQueueTray();
+  }
   function renderQueueTray() {
     const tray = $('promptQueueTray'); const list = $('queueItemsList'); if (!tray || !list) return;
-    const visible = state.pendingPrompts.length > 0 || state.queuePaused;
+    const serverItems = serverQueueItems();
+    const localItems = state.pendingPrompts.filter((item) => item.sessionId === state.activeId || (!state.activeId && !item.sessionId));
+    const serverPaused = serverItems.some((request) => request.queueState?.phase === 'paused');
+    const visible = serverItems.length > 0 || localItems.length > 0 || state.queuePaused;
     tray.hidden = !visible; tray.style.display = visible ? '' : 'none'; list.replaceChildren();
     const banner = $('queueStatusBanner');
     if (banner) {
       const bannerText = document.createElement('span');
       bannerText.className = 'queue-status-banner-text';
-      bannerText.textContent = state.queuePaused ? 'Hàng chờ đang tạm dừng sau khi lượt trước dừng/lỗi' : 'Hàng chờ follow-up native OMP';
+      bannerText.textContent = serverPaused ? 'Hàng chờ tạm dừng sau lỗi/lượt bị dừng' : state.queuePaused ? 'Hàng chờ đang tạm dừng sau khi lượt trước dừng/lỗi' : 'Hàng chờ server FIFO của chat này';
       const bannerLeft = document.createElement('div');
       bannerLeft.className = 'queue-status-banner-left';
       bannerLeft.append(bannerText);
       const bannerCount = document.createElement('span');
       bannerCount.className = 'queue-count-tag';
-      bannerCount.textContent = `${state.pendingPrompts.length} order`;
+      bannerCount.textContent = `${serverItems.length + localItems.length} order`;
       const bannerRight = document.createElement('div');
       bannerRight.className = 'queue-status-banner-right';
       bannerRight.append(bannerCount);
+      if (serverPaused && state.activeId) {
+        const resume = document.createElement('button'); resume.type = 'button'; resume.className = 'btn-queue-steer'; resume.textContent = 'Tiếp tục hàng chờ'; resume.setAttribute('aria-label', 'Tiếp tục hàng chờ'); resume.addEventListener('click', () => void resumeServerQueue(state.activeId)); bannerRight.append(resume);
+      }
       banner.replaceChildren(bannerLeft, bannerRight);
     }
-    const count = $('queueCountBadge'); if (count) count.textContent = `${state.pendingPrompts.length} order đang chờ`;
-    state.pendingPrompts.forEach((item, index) => {
+    const count = $('queueCountBadge'); if (count) count.textContent = `${serverItems.length + localItems.length} order đang chờ`;
+    serverItems.forEach((request, index) => {
+      const queue = request.queueState || {};
+      const row = document.createElement('div'); row.className = 'queue-turn-row'; row.dataset.queueId = request.requestId; row.dataset.queueStatus = queue.phase || 'queued'; row.setAttribute('aria-label', `Order ${index + 1}: ${request.prompt}. ${queueStatusLabel(queue)}`);
+      const content = document.createElement('div'); content.className = 'queue-turn-content';
+      const prompt = document.createElement('div'); prompt.className = 'queue-turn-text'; prompt.textContent = request.prompt; prompt.title = request.prompt;
+      const meta = document.createElement('div'); meta.className = 'queue-turn-meta'; meta.textContent = queueStatusLabel(queue); meta.title = `${queueStatusLabel(queue)} · ${queue.queuedTurns || serverItems.length} order đang chờ`;
+      content.append(prompt, meta);
+      const actions = document.createElement('div'); actions.className = 'queue-turn-actions';
+      const discard = document.createElement('button'); discard.type = 'button'; discard.className = 'btn-queue-inline-cancel'; discard.textContent = 'Bỏ'; discard.setAttribute('aria-label', `Bỏ order ${index + 1}`); discard.addEventListener('click', () => void discardServerQueuedRequest(request));
+      actions.append(discard); row.append(content, actions); list.append(row);
+    });
+    localItems.forEach((item, index) => {
       const settings = item.settings || {};
       const attachments = item.attachments || [];
       const statusLabel = { queued: 'Đang chờ', paused: 'Tạm dừng', running: 'Đang gửi' }[item.status] || item.status || 'Đang chờ';
@@ -1733,9 +1782,10 @@
       content.append(prompt, meta); if (attachments.length) content.append(previews);
       const actions = document.createElement('div'); actions.className = 'queue-turn-actions';
       const firstForSession = state.pendingPrompts.find((candidate) => candidate.sessionId === item.sessionId);
-      const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'btn-queue-inline-save'; edit.textContent = 'Sửa'; edit.setAttribute('aria-label', `Sửa order ${index + 1}`); edit.addEventListener('click', () => editQueuedPrompt(item));
+      const order = serverItems.length + index + 1;
+      const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'btn-queue-inline-save'; edit.textContent = 'Sửa'; edit.setAttribute('aria-label', `Sửa order ${order}`); edit.addEventListener('click', () => editQueuedPrompt(item));
       const send = document.createElement('button'); send.type = 'button'; send.className = 'btn-queue-steer'; send.textContent = 'Gửi ngay'; send.disabled = Boolean(activeRequest()) || Boolean(item.sessionId && firstForSession?.id !== item.id); send.addEventListener('click', () => void sendQueuedPrompt(item));
-      const discard = document.createElement('button'); discard.type = 'button'; discard.className = 'btn-queue-icon-action btn-queue-trash'; discard.textContent = '×'; discard.title = 'Bỏ order'; discard.setAttribute('aria-label', `Bỏ order ${index + 1}`); discard.addEventListener('click', () => discardQueuedPrompt(item.id));
+      const discard = document.createElement('button'); discard.type = 'button'; discard.className = 'btn-queue-icon-action btn-queue-trash'; discard.textContent = '×'; discard.title = 'Bỏ order'; discard.setAttribute('aria-label', `Bỏ order ${order}`); discard.addEventListener('click', () => discardQueuedPrompt(item.id));
       actions.append(edit, send, discard); row.append(content, actions); list.append(row);
     });
   }
@@ -1956,7 +2006,7 @@
       const setBodyLoadingStatus = (block) => {
         if (text(block?.status) !== 'running') return;
         const kind = text(block?.kind);
-        if (kind === 'approval') return setStreamStatus('Đang chờ xác nhận', 'waiting');
+        if (kind === 'approval') return setStreamStatus('Đang chờ Síp xác nhận', 'waiting');
         if (kind === 'thinking') return setStreamStatus('Đang suy nghĩ', 'thinking');
         if (kind === 'tool') return setStreamStatus(`Đang dùng ${text(block.toolName || 'công cụ')}`, 'tool');
         if (kind === 'compaction') return setStreamStatus('Đang tối ưu ngữ cảnh', 'tool');
@@ -1975,7 +2025,7 @@
           normalEnd = true;
           completionPayload = payload;
           if (Array.isArray(payload.body)) payload.body.forEach(pushBodyBlock);
-          setStreamStatus(payload.totalDuration ? `Đã xử lý trong ${payload.totalDuration}` : 'Đã nhận xong phản hồi', 'done');
+          setStreamStatus(payload.totalDuration ? `Đã hoàn tất · ${payload.totalDuration}` : 'Đã hoàn tất', 'done');
         }
         if (event === 'body' && payload.block) {
           setBodyLoadingStatus(payload.block);
@@ -1983,9 +2033,14 @@
           if (isCurrentSession(guard) && $('chatScrollArea')) $('chatScrollArea').scrollTop = $('chatScrollArea').scrollHeight;
           return;
         }
-        if (event === 'waiting') { setStreamStatus(payload.retryAfterSeconds ? `Đang chờ Safety Guard ${payload.retryAfterSeconds}s` : 'Đang chờ Safety Guard', 'waiting'); return; }
+        if (event === 'waiting') {
+          request.queueState = { phase: payload.phase || 'fifo', queueAhead: Number(payload.queueAhead) || 0, queuedTurns: Number(payload.queuedTurns) || 0, retryAfterSeconds: Number(payload.retryAfterSeconds) || 0, reason: payload.reason || null };
+          setStreamStatus(queueStatusLabel(request.queueState), request.queueState.phase === 'paused' ? 'paused' : 'waiting');
+          renderQueueTray();
+          return;
+        }
         if (event === 'approval') {
-          setStreamStatus('Đang chờ xác nhận', 'waiting');
+          setStreamStatus('Đang chờ Síp xác nhận', 'waiting');
           const approval = approvalNode(payload, guard, request);
           request.dom.approvals.push(approval);
           visibleStream()?.append(approval);
@@ -2002,6 +2057,12 @@
           setStreamStatus(payload.agentInvoked === false ? 'Lệnh OMP đã hoàn tất' : 'Đang xếp lượt tiếp theo', payload.agentInvoked === false ? 'done' : 'finalizing');
           return;
         }
+        if (event === 'lifecycle' && ['turn_start', 'agent_start'].includes(payload.type)) {
+          request.queueState = null;
+          setStreamStatus('Đang xử lý', 'thinking');
+          renderQueueTray();
+          return;
+        }
         if (event === 'lifecycle' && payload.type === 'agent_end' && payload.isTerminal === false) {
           setStreamStatus('Đang hoàn tất tác vụ nền', 'finalizing');
           return;
@@ -2012,7 +2073,7 @@
           renderMessageAttachments(mediaNode, streamedAttachments);
         }
         const delta = payload.content || payload.delta || payload.chunk || '';
-        if (delta) { setStreamStatus('Đang viết phản hồi', 'writing'); streamedText += text(delta); renderSafeMarkdown(replyNode, streamedText); if (isCurrentSession(guard) && $('chatScrollArea')) $('chatScrollArea').scrollTop = $('chatScrollArea').scrollHeight; }
+        if (delta) { request.queueState = null; setStreamStatus('Đang viết phản hồi', 'writing'); renderQueueTray(); streamedText += text(delta); renderSafeMarkdown(replyNode, streamedText); if (isCurrentSession(guard) && $('chatScrollArea')) $('chatScrollArea').scrollTop = $('chatScrollArea').scrollHeight; }
       };
       while (true) {
         const part = await reader.read();
@@ -2091,7 +2152,7 @@
         if (normalEnd) state.sessionViews.delete(sessionId);
       }
       if (normalEnd && retryQueued && retryPromptText && retryContext && !activeRequest()) { retryQueued = false; setTimeout(() => void retryLastPrompt(), 0); }
-      if (options.fromQueue && !normalEnd) renderQueueTray();
+      renderQueueTray();
       setSendState();
     }
     return normalEnd;
