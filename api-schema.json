@@ -1,0 +1,1563 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Hòn π · Đặc Tả Kỹ Thuật API Backend (Chat & Quota Management)",
+    "version": "1.0.0",
+    "description": "Tài liệu đặc tả hợp đồng API (API Contract) chi tiết cho hệ sinh thái Hòn π: Bảng Điều Khiển Quản Lý Quota OMP (honpi-quota-dashboard.html) và Bảng Điều Khiển Trò Chuyện Trợ Lý AI (honpi-chat-dashboard.html). Đặc tả bao gồm toàn bộ các REST endpoints, tham số truy vấn, payload request/response, mô hình dữ liệu (Data Schemas), mã lỗi HTTP và luồng Server-Sent Events (SSE).",
+    "contact": {
+      "name": "Đội ngũ Kiến Trúc Hệ Thống Hòn π",
+      "url": "https://hon-pi.ai",
+      "email": "architecture@hon-pi.ai"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:4177",
+      "description": "Máy chủ Giả lập Cục bộ (Local Mock / JSON Server)"
+    },
+    {
+      "url": "https://api.hon-pi.internal/v1",
+      "description": "Máy chủ Phát triển Nội bộ (Development Server)"
+    },
+    {
+      "url": "https://api.hon-pi.ai/v1",
+      "description": "Máy chủ Sản xuất (Production Server)"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Quota Management",
+      "description": "Chỉ quản lý tài khoản OAuth Gemini, usage và lựa chọn thủ công; modelSource=omp vẫn truy cập catalog OMP đầy đủ."
+    },
+    {
+      "name": "Token Analytics",
+      "description": "Nhật ký lịch sử tiêu thụ token OMP theo các mốc thời gian (1g, 24g, 7n, 30n, all) và biểu đồ nhịp tải theo giờ"
+    },
+    {
+      "name": "Chat & AI Streaming",
+      "description": "Quản lý phiên hội thoại, lịch sử tin nhắn, gửi prompt và luồng phản hồi trực tiếp từ mô hình AI"
+    },
+    {
+      "name": "System & Telemetry",
+      "description": "Đồng bộ tức thì, cấu hình hệ thống và danh mục mô hình AI khả dụng"
+    }
+  ],
+  "paths": {
+    "/api/v1/quota/accounts": {
+      "get": {
+        "tags": ["Quota Management"],
+        "summary": "Lấy danh sách tài khoản Google Antigravity OAuth",
+        "description": "Chỉ trả tài khoản provider google-antigravity. Account vẫn hiển thị nếu OMP chỉ có usage Google hoặc thiếu một trong hai Gemini quota window; canUse chỉ true khi có cả Gemini 5 giờ và tuần cùng trạng thái generation cho phép. Provider OAuth khác không thuộc Quota.",
+        "operationId": "getQuotaAccounts",
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "query",
+            "required": false,
+            "description": "Nếu có, trả lựa chọn Google Antigravity của chat này; nếu không, trả lựa chọn mặc định cho chat mới.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Danh sách tài khoản OMP hợp lệ",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Account"
+                  }
+                },
+                "example": [
+                  {
+                    "id": "acc-2",
+                    "email": "gemini-prod-core@company.ai",
+                    "providerKey": "google-antigravity",
+                    "provider": "Google Antigravity · Cloud Code Assist OAuth",
+                    "isGoogleProtect": true,
+                    "usage5hPct": 42,
+                    "usageWeekPct": 38,
+                    "resetIn5h": "28p",
+                    "resetInWeek": "1n 04g",
+                    "tokenLoginTime": "13:05",
+                    "tokenLoginAgo": "1g 45p",
+                    "sessionDuration": "1g 45p",
+                    "isActive": true,
+                    "canUse": true,
+                    "availabilityStatus": "available"
+                  },
+                  {
+                    "id": "acc-4",
+                    "email": "google-usage-only@company.ai",
+                    "providerKey": "google-antigravity",
+                    "provider": "Google Antigravity · Cloud Code Assist OAuth",
+                    "isGoogleProtect": true,
+                    "usage5hPct": null,
+                    "usageWeekPct": null,
+                    "resetIn5h": "--",
+                    "resetInWeek": null,
+                    "tokenLoginTime": "14:15",
+                    "tokenLoginAgo": "35p",
+                    "sessionDuration": "0p",
+                    "isActive": false,
+                    "canUse": false,
+                    "availabilityStatus": "quota_unknown"
+                  }
+                ]
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v1/quota/models": {
+      "get": {
+        "tags": ["Quota Management"],
+        "summary": "Lấy toàn bộ model Google Antigravity theo account Quota được chọn",
+        "description": "Trả mọi model OMP có provider google-antigravity của account đã chọn, không lọc theo tên family (Gemini, Claude, GPT...). Chọn account thủ công; account chỉ dùng được khi có Gemini quota 5 giờ và tuần. Không fallback hoặc tự chuyển credential.",
+        "operationId": "getQuotaAllowedModels",
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "query",
+            "required": false,
+            "description": "Lựa chọn riêng của session; bỏ trống để dùng default cho chat mới.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Toàn bộ model catalog OMP của provider google-antigravity đang chọn và trạng thái account quota",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["account", "models"],
+                  "properties": {
+                    "account": {
+                      "type": "object",
+                      "required": ["id", "providerKey", "provider", "canUse", "availabilityStatus"],
+                      "properties": {
+                        "id": { "type": "string" },
+                        "providerKey": { "type": "string" },
+                        "provider": { "type": "string" },
+                        "canUse": { "type": "boolean" },
+                        "availabilityStatus": { "type": "string" },
+                        "availabilityLabel": { "type": "string" },
+                        "availabilityReason": { "type": "string" }
+                      }
+                    },
+                    "models": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/AIModel" }
+                    }
+                  }
+                },
+                "example": {
+                  "account": {
+                    "id": "quota-account-id",
+                    "providerKey": "google-antigravity",
+                    "provider": "Google Antigravity · Cloud Code Assist OAuth",
+                    "canUse": true,
+                    "availabilityStatus": "available",
+                    "availabilityLabel": "Có thể sử dụng",
+                    "availabilityReason": "Quota đang ở 10%"
+                  },
+                  "models": [
+                    {
+                      "id": "gemini-3.8-flash",
+                      "name": "Gemini 3.8 Flash",
+                      "provider": "google-antigravity",
+                      "isDefault": true
+                    },
+                    {
+                      "id": "claude-sonnet",
+                      "name": "Claude Sonnet",
+                      "provider": "google-antigravity"
+                    },
+                    {
+                      "id": "gpt",
+                      "name": "GPT",
+                      "provider": "google-antigravity"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Chưa chọn account Gemini (ACCOUNT_SELECTION_REQUIRED) hoặc lựa chọn session không còn khả dụng (ACCOUNT_UNAVAILABLE).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["error"],
+                  "properties": { "error": { "$ref": "#/components/schemas/ErrorDetail" } }
+                },
+                "example": { "error": { "code": "ACCOUNT_SELECTION_REQUIRED", "message": "Chọn thủ công một tài khoản Gemini trước khi dùng model Gemini", "field": "accountId" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/quota/overview": {
+      "get": {
+        "tags": ["Quota Management"],
+        "summary": "Lấy tổng quan quota Gemini",
+        "description": "Tổng quan Gemini quota của các tài khoản Google Antigravity OAuth; không cộng gộp ChatGPT/Claude hoặc provider OMP khác.",
+        "operationId": "getQuotaOverview",
+        "responses": {
+          "200": {
+            "description": "Dữ liệu tổng quan thành công",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Overview"
+                },
+                "example": {
+                  "totalAccounts": 2,
+                  "activeAccountId": "acc-2",
+                  "earliestReset": "28p (gemini-prod)",
+                  "statusCounts": {
+                    "ok": 2,
+                    "warn": 0,
+                    "danger": 0,
+                    "exhausted": 0
+                  },
+                  "windows": {
+                    "gemini5h": {
+                      "title": "Gemini 5g",
+                      "type": "TRƯỢT",
+                      "usedPct": 48.5,
+                      "remainingPct": 51.5,
+                      "peak": "100% (Hết)",
+                      "peakRemainingPct": 0,
+                      "resetIn": "28p",
+                      "status": "danger"
+                    },
+                    "geminiWeek": {
+                      "title": "Gemini Tuần",
+                      "type": "TUẦN",
+                      "usedPct": 76.0,
+                      "remainingPct": 24,
+                      "peak": "84%",
+                      "peakRemainingPct": 16,
+                      "resetIn": "1n 04g",
+                      "status": "warn"
+                    },
+                    "claude5h": {
+                      "title": "Claude/GPT 5g",
+                      "type": "TRƯỢT",
+                      "usedPct": null,
+                      "remainingPct": null,
+                      "peak": "--",
+                      "peakRemainingPct": null,
+                      "resetIn": "--",
+                      "status": "unknown"
+                    },
+                    "claudeWeek": {
+                      "title": "Claude/GPT Tuần",
+                      "type": "TUẦN",
+                      "usedPct": null,
+                      "remainingPct": null,
+                      "peak": "--",
+                      "peakRemainingPct": null,
+                      "resetIn": "--",
+                      "status": "unknown"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v1/quota/protect-status": {
+      "get": {
+        "tags": ["Quota Management"],
+        "summary": "Lấy trạng thái hệ thống Google Protect (Safety Guard)",
+        "description": "Báo cáo thời gian thực về cơ chế bảo vệ chống lỗi 429 cho các tài khoản Google Gemini, gồm số request đang chạy, hàng FIFO theo từng session, khoảng cách tối thiểu giữa lần dispatch, cooldown và số lỗi 429 trong 10 phút; không đặt trần đồng thời toàn cục.",
+        "operationId": "getProtectStatus",
+        "responses": {
+          "200": {
+            "description": "Trạng thái bảo vệ Google Protect",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoogleProtectStatus"
+                },
+                "example": {
+                  "status": "● Đang bảo vệ 429",
+                  "appliedAccountsCount": 2,
+                  "appliedAccountIds": ["acc-2", "acc-4"],
+                  "appliedAccounts": [
+                    "gemini-prod-core@company.ai",
+                    "gemini-flash-runner@enterprise.vn"
+                  ],
+                  "activeRequests": 0,
+                  "maxConcurrent": null,
+                  "cooldownSec": 0,
+                  "errors429Count": 0,
+                  "nextRequestAllowed": true,
+                  "checkIntervalSec": 30
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v1/quota/history": {
+      "get": {
+        "tags": ["Token Analytics"],
+        "summary": "Lấy nhật ký tiêu thụ Token OMP theo khoảng thời gian",
+        "description": "Lịch sử chỉ tính usage khớp tài khoản OAuth Gemini, provider/model Gemini và credential pin đúng thứ tự thời gian. Account không nhận diện được, usage OpenAI/Anthropic và model ngoài Gemini bị loại, kể cả scope=all. Hỗ trợ: 1h, 24h, 7d, 30d, all.",
+        "operationId": "getQuotaHistory",
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "description": "Khoảng thời gian cần lọc dữ liệu",
+            "schema": {
+              "type": "string",
+              "enum": ["1h", "24h", "7d", "30d", "all"],
+              "default": "24h"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dữ liệu nhật ký token thành công",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenHistory"
+                },
+                "example": {
+                  "scope": "24h",
+                  "totalRequests": 146,
+                  "totalTokens": 418200,
+                  "totalTokensFormatted": "418.2k",
+                  "inputTokensFormatted": "312.8k",
+                  "outputTokensFormatted": "105.4k",
+                  "hourlyTrend": [
+                    { "hour": "00:00", "input": 12400, "output": 2100, "total": 14500, "isPeak": false },
+                    { "hour": "02:00", "input": 8200, "output": 1500, "total": 9700, "isPeak": false },
+                    { "hour": "04:00", "input": 4100, "output": 800, "total": 4900, "isPeak": false },
+                    { "hour": "06:00", "input": 15600, "output": 3200, "total": 18800, "isPeak": false },
+                    { "hour": "08:00", "input": 28400, "output": 5900, "total": 34300, "isPeak": false },
+                    { "hour": "10:00", "input": 36100, "output": 7400, "total": 43500, "isPeak": false },
+                    { "hour": "12:00", "input": 31200, "output": 6200, "total": 37400, "isPeak": false },
+                    { "hour": "14:00", "input": 48200, "output": 9800, "total": 58000, "isPeak": true },
+                    { "hour": "16:00", "input": 42100, "output": 8600, "total": 50700, "isPeak": false },
+                    { "hour": "18:00", "input": 38400, "output": 7900, "total": 46300, "isPeak": false },
+                    { "hour": "20:00", "input": 29800, "output": 5800, "total": 35600, "isPeak": false },
+                    { "hour": "22:00", "input": 18400, "output": 3600, "total": 22000, "isPeak": false }
+                  ],
+                  "items": [
+                    {
+                      "id": "call-1",
+                      "timestamp": "14:28:10",
+                      "timeAgo": "5p",
+                      "email": "gemini-prod-core@company.ai",
+                      "accountId": "acc-2",
+                      "model": "gemini-3.8-flash",
+                      "inputTokens": "18,420",
+                      "outputTokens": "2,840",
+                      "totalTokens": "21,260",
+                      "latency": "420ms"
+                    },
+                    {
+                      "id": "call-2",
+                      "timestamp": "13:58:44",
+                      "timeAgo": "35p",
+                      "email": "gemini-flash-runner@enterprise.vn",
+                      "accountId": "acc-4",
+                      "model": "gemini-2.5-pro",
+                      "inputTokens": "42,800",
+                      "outputTokens": "6,400",
+                      "totalTokens": "49,200",
+                      "latency": "1,120ms"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v1/quota/switch": {
+      "post": {
+        "tags": ["Quota Management"],
+        "summary": "Chọn account Gemini mặc định hoặc ghim vào một chat",
+        "description": "Chọn thủ công một account Gemini OAuth. Không có sessionId thì chỉ đặt default cục bộ cho chat mới; có sessionId thì ghim credential cụ thể vào OMP chat đó. Không ghi cấu hình tài khoản terminal-global; không auto-rotate hoặc fallback.",
+        "operationId": "switchActiveAccount",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SwitchAccountRequest"
+              },
+              "example": {
+                "accountId": "acc-2",
+                "sessionId": "session-1"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Chuyển đổi tài khoản thành công",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SwitchAccountResponse"
+                },
+                "example": {
+                  "success": true,
+                  "activeAccountId": "acc-2",
+                  "activeEmail": "gemini-prod-core@company.ai",
+                  "scope": "session",
+                  "sessionId": "session-1",
+                  "activatedAt": "2026-09-25T14:35:00Z",
+                  "sessionDuration": "0p",
+                  "message": "Đã ghim account Gemini vào session đã chọn."
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "ACCOUNT_UNAVAILABLE khi quota account không thể sử dụng; CONFLICT khi session đang bận. Lỗi OMP strict session pin trả HTTP 500 với mã GEMINI_PIN_* an toàn; không trả chi tiết upstream thô."
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v1/quota/sync": {
+      "post": {
+        "tags": ["Quota Management"],
+        "summary": "Đồng bộ dữ liệu quota Gemini",
+        "description": "Đồng bộ usage/quota OMP mới nhất nhưng chỉ trả số lượng và trạng thái của tài khoản Google Antigravity trong Quota; không tự đổi account.",
+        "operationId": "triggerQuotaSync",
+        "responses": {
+          "200": {
+            "description": "Đồng bộ hóa thành công",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncResponse"
+                },
+                "example": {
+                  "success": true,
+                  "syncedAt": "2026-09-21T14:35:10Z",
+                  "accountsCount": 2,
+                  "latencyMs": 145,
+                  "message": "Đã đồng bộ quota Gemini cho 2 tài khoản."
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v1/quota/quick-check": {
+      "get": {
+        "tags": ["Quota Management"],
+        "summary": "Lấy tóm tắt nhanh cho Header Popups",
+        "description": "Endpoint rút gọn phục vụ hiển thị nhanh trên thanh Header của Chat UI và Quota Dashboard.",
+        "operationId": "getQuickCheckQuota",
+        "responses": {
+          "200": {
+            "description": "Dữ liệu kiểm tra nhanh thành công",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["activeAccount", "earliestReset", "windows"],
+                  "properties": {
+                    "activeAccount": {
+                      "type": "object",
+                      "properties": {
+                        "id": { "type": "string" },
+                        "email": { "type": "string" },
+                        "provider": { "type": "string" },
+                        "sessionDuration": { "type": "string" },
+                        "tokenLoginAgo": { "type": "string" }
+                      }
+                    },
+                    "earliestReset": { "type": "string" },
+                    "windows": {
+                      "$ref": "#/components/schemas/OverviewWindows"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/workspaces": {
+      "get": {
+        "tags": ["Chat & AI Streaming"],
+        "summary": "Liệt kê thư mục workspace",
+        "description": "Duyệt các thư mục thật bên trong workspace được phép; không liệt kê file hoặc đường dẫn ngoài workspace.",
+        "operationId": "listWorkspaceDirectories",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "description": "Thư mục workspace đang duyệt; bỏ trống để lấy roots.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Roots và thư mục con khả dụng",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WorkspaceDirectoryListing" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "403": { "description": "Đường dẫn nằm ngoài workspace được phép." }
+        }
+      }
+    },
+    "/api/v1/folders": {
+      "get": {
+        "tags": ["Chat & AI Streaming"],
+        "summary": "Lấy danh sách project folder",
+        "description": "Trả folder đã lưu cùng CWD workspace và số chat được gán.",
+        "operationId": "getChatFolders",
+        "responses": {
+          "200": {
+            "description": "Danh sách project folder",
+            "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/ChatFolder" } } } }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Chat & AI Streaming"],
+        "summary": "Tạo project folder gắn với thư mục workspace",
+        "description": "Yêu cầu chọn thư mục thật bên trong workspace được phép trước khi tạo folder.",
+        "operationId": "createChatFolder",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreateChatFolderRequest" } } }
+        },
+        "responses": {
+          "201": {
+            "description": "Project folder đã được tạo",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ChatFolder" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "403": { "description": "CWD nằm ngoài workspace được phép." }
+        }
+      }
+    },
+    "/api/v1/folders/{id}": {
+      "patch": {
+        "tags": ["Chat & AI Streaming"],
+        "summary": "Đổi thư mục workspace của project folder",
+        "description": "Chỉ thay CWD cho session mới; không đổi CWD của chat hiện có.",
+        "operationId": "updateChatFolderWorkspace",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object", "required": ["cwd"], "properties": { "cwd": { "type": "string", "description": "Đường dẫn tuyệt đối tới thư mục thật trong workspace." } } } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Folder đã cập nhật",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ChatFolder" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "403": { "description": "CWD nằm ngoài workspace được phép." }
+        }
+      }
+    },
+    "/api/v1/omp/prewarm": {
+      "post": {
+        "tags": ["Chat & AI Streaming"],
+        "summary": "Khởi động trước OMP ACP worker",
+        "description": "Khởi động worker theo workspace, approval mode và tools mà không tạo session OMP; worker được dùng lại khi chat mới có cùng policy.",
+        "operationId": "prewarmOmpWorker",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "cwd": { "type": "string", "description": "Workspace tuyệt đối được phép; mặc định workspace General của dashboard." },
+                  "approvalMode": { "type": "string", "enum": ["always-ask", "write", "yolo"] },
+                  "browserMode": { "type": "string" },
+                  "tools": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Worker đã sẵn sàng; chưa tạo session ACP.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ok", "worker"],
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "worker": {
+                      "type": "object",
+                      "required": ["status", "pid"],
+                      "properties": {
+                        "status": { "type": "string" },
+                        "pid": { "type": "integer" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "403": { "description": "Workspace nằm ngoài danh sách được phép." },
+          "502": { "description": "OMP ACP worker không thể khởi động." }
+        }
+      }
+    },
+    "/api/v1/sessions": {
+      "get": {
+        "tags": ["Chat & AI Streaming"],
+        "summary": "Lấy danh sách chat và project folder",
+        "description": "Trả danh sách chat cùng CWD workspace và folderId/folderName nếu đã gán. Workspace và phân loại folder là hai dữ liệu riêng; chat thiếu folderId vẫn không thuộc project.",
+        "operationId": "getChatSessions",
+        "responses": {
+          "200": {
+            "description": "Danh sách phiên trò chuyện thành công",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ChatSession"
+                  }
+                },
+                "example": [
+                  {
+                    "id": "s-1",
+                    "title": "Cài đặt Hòn π CLI cho Open Design",
+                    "folderId": "folder-project",
+                    "folderName": "Open Design",
+                    "isPinned": true,
+                    "updatedAgo": "1p",
+                    "createdAt": "2026-09-21T10:00:00Z",
+                    "updatedAt": "2026-09-21T14:34:00Z"
+                  },
+                  {
+                    "id": "s-2",
+                    "title": "Tối ưu hóa bảng Quota OMP & API Engine",
+                    "isPinned": true,
+                    "updatedAgo": "5p",
+                    "createdAt": "2026-09-21T09:30:00Z",
+                    "updatedAt": "2026-09-21T14:30:00Z"
+                  },
+                  {
+                    "id": "s-3",
+                    "title": "Kiểm tra độ phản hồi Responsive Dashboard",
+                    "isPinned": false,
+                    "updatedAgo": "1g",
+                    "createdAt": "2026-09-21T08:15:00Z",
+                    "updatedAt": "2026-09-21T13:35:00Z"
+                  },
+                  {
+                    "id": "s-4",
+                    "title": "Tích hợp Google Protect 429 Safety Guard",
+                    "isPinned": false,
+                    "updatedAgo": "2n",
+                    "createdAt": "2026-09-19T14:00:00Z",
+                    "updatedAt": "2026-09-19T16:00:00Z"
+                  }
+                ]
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "post": {
+        "tags": ["Chat & AI Streaming"],
+        "summary": "Tạo một phiên trò chuyện mới",
+        "description": "Tạo chat rỗng. folderId dùng CWD workspace của project; nếu không có folderId, dùng CWD được chỉ định hoặc OMP_DASHBOARD_GENERAL_WORKSPACE (mặc định ~/Documents/OMP General Chat). Chat generic vẫn không được gán project folder.",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSessionRequest"
+              },
+              "example": {
+                "title": "Chat trong project",
+                "folderId": "folder-project"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Phiên trò chuyện đã được tạo thành công",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatSession"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{id}/messages": {
+      "get": {
+        "tags": ["Chat & AI Streaming"],
+        "summary": "Lấy toàn bộ tin nhắn của một phiên trò chuyện",
+        "description": "Trả về chuỗi tin nhắn theo thứ tự thời gian của phiên chỉ định bao gồm lượt nói của người dùng và trợ lý AI Hòn π.",
+        "operationId": "getSessionMessages",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "ID duy nhất của phiên trò chuyện",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Danh sách tin nhắn của phiên",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ChatMessage"
+                  }
+                },
+                "example": [
+                  {
+                    "id": "msg-1",
+                    "sessionId": "s-1",
+                    "role": "user",
+                    "content": "Chào Hòn π, hãy tóm tắt các tính năng chính của hệ sinh thái Quota OMP.",
+                    "timeAgo": "2p",
+                    "createdAt": "2026-09-21T14:32:00Z"
+                  },
+                  {
+                    "id": "msg-2",
+                    "sessionId": "s-1",
+                    "role": "assistant",
+                    "content": "Dưới đây là tóm tắt các tính năng cốt lõi đã sẵn sàng cho backend:\n1. Kiến trúc Độc Lập 2 Tệp\n2. Bảng Màu Kỷ Luật Deep Tech\n3. Vị Trí #01 Ưu Tiên cho tài khoản đang dùng\n4. Google Protect chống lỗi 429.",
+                    "model": "neural-flash-3.8",
+                    "duration": "4p 11s",
+                    "createdAt": "2026-09-21T14:32:05Z"
+                  }
+                ]
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/api/v1/chat/send": {
+      "post": {
+        "tags": ["Chat & AI Streaming"],
+        "summary": "Gửi câu lệnh prompt tới trợ lý AI Hòn π",
+        "description": "Gửi prompt; mỗi OMP context giữ FIFO tối đa 32 lượt chờ. Vượt giới hạn queue hoặc rate limit trả 429 RATE_LIMITED.",
+        "operationId": "sendChatMessage",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatSendRequest"
+              },
+              "example": {
+                "sessionId": "s-1",
+                "prompt": "Hãy kiểm tra tình trạng hạn mức tài khoản OMP số #01",
+                "model": "gemini-3.8-flash",
+                "modelSource": "quota"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Phản hồi thành công từ trợ lý AI",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatSendResponse"
+                },
+                "example": {
+                  "sessionId": "s-1",
+                  "messageId": "msg-3",
+                  "reply": "Tài khoản OMP #01 hiện tại là: gemini-prod-core@company.ai (Gemini Advanced). Mức dùng 5g: 92% (Nguy hiểm >90%), reset sau 28p. Hệ thống Google Protect đang được kích hoạt.",
+                  "model": "neural-flash-3.8",
+                  "totalTokens": 384,
+                  "duration": "2.4s",
+                  "createdAt": "2026-09-21T14:35:02Z"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "409": {
+            "description": "Model/provider ngoài account quota đang hoạt động, account không khả dụng hoặc request/session conflict."
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimitExceeded"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/v1/chat/stream": {
+      "get": {
+        "tags": ["Chat & AI Streaming"],
+        "summary": "Luồng Server-Sent Events (SSE) phản hồi trực tiếp",
+        "description": "Mở kết nối luồng HTTP EventStream để nhận từng token văn bản (streaming chunk) từ mô hình AI theo thời gian thực.",
+        "operationId": "streamChatResponse",
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "prompt",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "model",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string", "default": "gemini-3.8-flash" }
+          },
+          {
+            "name": "modelSource",
+            "in": "query",
+            "required": false,
+            "description": "quota (mặc định) chỉ cho phép mọi model provider google-antigravity của account được chọn; account phải có Gemini quota 5 giờ và tuần. omp dùng toàn bộ catalog OMP.",
+            "schema": { "type": "string", "enum": ["quota", "omp"], "default": "quota" }
+          },
+          {
+            "name": "modelProvider",
+            "in": "query",
+            "required": false,
+            "description": "Provider cụ thể khi OMP catalog có nhiều model trùng ID.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Luồng Server-Sent Events liên tục",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "example": "event: message\ndata: {\"chunk\": \"Tài khoản \", \"done\": false}\n\nevent: message\ndata: {\"chunk\": \"OMP #01\", \"done\": false}\n\nevent: message\ndata: {\"chunk\": \"\", \"done\": true}\n\n"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Chat & AI Streaming"],
+        "summary": "Gửi prompt và nhận phản hồi SSE",
+        "description": "Dashboard gửi body JSON; modelSource quota chỉ dùng model của provider google-antigravity thuộc account có đủ Gemini quota 5 giờ và tuần, còn omp cho phép mọi model khả dụng trong catalog OMP.",
+        "operationId": "streamChatResponsePost",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ChatSendRequest" },
+              "example": {
+                "sessionId": "s-1",
+                "prompt": "Tóm tắt nội dung này",
+                "model": "claude-sonnet",
+                "modelProvider": "anthropic",
+                "modelSource": "omp"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Luồng Server-Sent Events liên tục",
+            "content": { "text/event-stream": { "schema": { "type": "string" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "409": { "description": "Quota source bị từ chối do model/provider hoặc account không khả dụng." }
+        }
+      }
+    },
+    "/api/v1/models": {
+      "get": {
+        "tags": ["System & Telemetry"],
+        "summary": "Lấy danh sách các mô hình AI khả dụng",
+        "description": "Catalog model OMP toàn cục, gồm ChatGPT/OpenAI và provider khác. Chat Quota chỉ truy cập toàn bộ catalog model provider google-antigravity của account được chọn, khi có Gemini quota 5 giờ và tuần.",
+        "operationId": "getAvailableModels",
+        "responses": {
+          "200": {
+            "description": "Danh sách mô hình thành công",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AIModel"
+                  }
+                },
+                "example": [
+                  {
+                    "id": "gemini-3.8-flash",
+                    "name": "Gemini 3.8 Flash",
+                    "provider": "google-antigravity",
+                    "isDefault": true
+                  },
+                  {
+                    "id": "claude-3-5-sonnet",
+                    "name": "Claude 3.5 Sonnet",
+                    "provider": "Anthropic",
+                    "contextWindow": 200000,
+                    "isDefault": false,
+                    "description": "Mô hình suy luận sâu, phù hợp cho kiến trúc hệ thống phức tạp."
+                  },
+                  {
+                    "id": "gemini-2.5-pro",
+                    "name": "Gemini 2.5 Pro",
+                    "provider": "Google DeepMind",
+                    "contextWindow": 2097152,
+                    "isDefault": false,
+                    "description": "Mô hình đa phương thức với cửa sổ ngữ cảnh khổng lồ 2M tokens."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Account": {
+        "type": "object",
+        "required": [
+          "id",
+          "email",
+          "provider",
+          "isGoogleProtect",
+          "usage5hPct",
+          "resetIn5h",
+          "tokenLoginTime",
+          "tokenLoginAgo",
+          "sessionDuration"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "ID duy nhất của tài khoản OAuth Gemini trong Quota",
+            "example": "acc-2"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "Địa chỉ email định danh tài khoản",
+            "example": "gemini-prod-core@company.ai"
+          },
+          "provider": {
+            "type": "string",
+            "description": "Nhà cung cấp OAuth trong OMP; Quota chỉ nhận Google Antigravity",
+            "example": "Google Antigravity · Cloud Code Assist OAuth"
+          },
+          "providerKey": { "type": "string", "enum": ["google-antigravity"], "description": "Provider OAuth do dashboard đăng nhập bằng Google Antigravity." },
+          "canUse": { "type": "boolean", "description": "True chỉ khi có cả Gemini quota 5 giờ và quota tuần, đồng thời không bị chặn." },
+          "availabilityStatus": { "type": "string", "description": "Trạng thái quota/generation; quota_unknown khi thiếu một trong hai Gemini window." },
+          "isGoogleProtect": {
+            "type": "boolean",
+            "description": "Cờ đánh dấu tài khoản có áp dụng cơ chế Google Protect (chống lỗi 429) hay không. Nếu true, UI sẽ tự động hiển thị biểu tượng khiên 🛡️",
+            "example": true
+          },
+          "usage5hPct": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100,
+            "nullable": true,
+            "description": "Phần trăm Gemini quota 5 giờ đã dùng; null nếu OMP không có window này.",
+            "example": 92
+          },
+          "usageWeekPct": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100,
+            "nullable": true,
+            "description": "Phần trăm Gemini quota tuần đã dùng; null nếu OMP không có window này.",
+            "example": 84
+          },
+          "resetIn5h": {
+            "type": "string",
+            "description": "Thời gian đếm ngược đặt lại hạn mức 5 giờ (dùng ký hiệu ngắn gọn: p, g, n)",
+            "example": "28p"
+          },
+          "resetInWeek": {
+            "type": "string",
+            "nullable": true,
+            "description": "Thời gian đếm ngược đặt lại hạn mức tuần (dùng ký hiệu ngắn gọn: p, g, n)",
+            "example": "1n 04g"
+          },
+          "tokenLoginTime": {
+            "type": "string",
+            "description": "Thời điểm đăng nhập token ghi nhận (định dạng HH:mm)",
+            "example": "13:05"
+          },
+          "tokenLoginAgo": {
+            "type": "string",
+            "description": "Khoảng thời gian tương đối kể từ lúc đăng nhập token (cách đây...)",
+            "example": "1g 45p"
+          },
+          "sessionDuration": {
+            "type": "string",
+            "description": "Thời lượng phiên làm việc hiện tại của tài khoản đang dùng",
+            "example": "1g 45p"
+          },
+          "used5hCount": {
+            "type": ["integer", "null"],
+            "description": "Số lượt gọi nếu OMP cung cấp metric; null khi không có data.",
+            "example": null
+          },
+          "isActive": {
+            "type": "boolean",
+            "description": "Account được chọn trong scope yêu cầu; false khi chưa chọn hoặc khi account thuộc scope khác.",
+            "example": false
+          }
+        }
+      },
+      "Overview": {
+        "type": "object",
+        "required": ["totalAccounts", "activeAccountId", "earliestReset", "windows"],
+        "properties": {
+          "totalAccounts": {
+            "type": "integer",
+            "description": "Tổng số tài khoản OAuth Gemini có quota",
+            "example": 2
+          },
+          "activeAccountId": {
+            "type": "string",
+            "description": "ID account Gemini được chọn làm default cục bộ cho chat mới",
+            "example": "acc-2"
+          },
+          "earliestReset": {
+            "type": "string",
+            "description": "Cảnh báo mốc đặt lại hạn mức sớm nhất",
+            "example": "28p (gemini-prod)"
+          },
+          "statusCounts": {
+            "type": "object",
+            "properties": {
+              "ok": { "type": "integer" },
+              "warn": { "type": "integer" },
+              "danger": { "type": "integer" },
+              "exhausted": { "type": "integer" }
+            }
+          },
+          "windows": {
+            "$ref": "#/components/schemas/OverviewWindows"
+          }
+        }
+      },
+      "OverviewWindows": {
+        "type": "object",
+        "required": ["gemini5h", "geminiWeek", "claude5h", "claudeWeek"],
+        "properties": {
+          "gemini5h": { "$ref": "#/components/schemas/QuotaWindow" },
+          "geminiWeek": { "$ref": "#/components/schemas/QuotaWindow" },
+          "claude5h": { "$ref": "#/components/schemas/QuotaWindow" },
+          "claudeWeek": { "$ref": "#/components/schemas/QuotaWindow" }
+        }
+      },
+      "QuotaWindow": {
+        "type": "object",
+        "required": ["title", "type", "usedPct", "remainingPct", "peak", "peakRemainingPct", "resetIn", "status"],
+        "properties": {
+          "title": { "type": "string", "example": "Gemini 5g" },
+          "type": { "type": "string", "enum": ["TRƯỢT", "TUẦN"], "example": "TRƯỢT" },
+          "usedPct": { "type": ["number", "null"], "example": 48.5, "description": "null khi chưa có dữ liệu cho cửa sổ quota" },
+          "remainingPct": { "type": ["number", "null"], "example": 51.5 },
+          "peak": { "type": "string", "example": "100% (Hết)" },
+          "peakRemainingPct": { "type": ["number", "null"], "example": 0 },
+          "resetIn": { "type": "string", "example": "28p" },
+          "status": { "type": "string", "enum": ["ok", "warn", "danger", "unknown"], "example": "danger" }
+        }
+      },
+      "GoogleProtectStatus": {
+        "type": "object",
+        "required": [
+          "status",
+          "appliedAccountsCount",
+          "activeRequests",
+          "maxConcurrent",
+          "cooldownSec",
+          "errors429Count",
+          "nextRequestAllowed"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Chuỗi nhãn trạng thái hiển thị",
+            "example": "● Đang bảo vệ 429"
+          },
+          "appliedAccountsCount": {
+            "type": "integer",
+            "description": "Số lượng tài khoản được bảo vệ bởi Google Protect",
+            "example": 2
+          },
+          "appliedAccountIds": {
+            "type": "array",
+            "items": { "type": "string" },
+            "example": ["acc-2", "acc-4"]
+          },
+          "appliedAccounts": {
+            "type": "array",
+            "items": { "type": "string" },
+            "example": ["gemini-prod-core@company.ai", "gemini-flash-runner@enterprise.vn"]
+          },
+          "activeRequests": {
+            "type": "integer",
+            "description": "Số lượng request đang thực thi; mỗi session vẫn giữ FIFO riêng.",
+            "example": 0
+          },
+          "maxConcurrent": {
+            "type": ["integer", "null"],
+            "description": "Trần đồng thời toàn cục; null nghĩa là không đặt trần.",
+            "example": null
+          },
+          "cooldownSec": {
+            "type": "integer",
+            "description": "Thời gian cooldown còn lại (giây) sau khi gặp mã lỗi 429",
+            "example": 0
+          },
+          "errors429Count": {
+            "type": "integer",
+            "description": "Tổng số lỗi 429 ghi nhận trong 10 phút gần nhất",
+            "example": 0
+          },
+          "nextRequestAllowed": {
+            "type": "boolean",
+            "description": "Quyền thực thi lệnh gọi tiếp theo",
+            "example": true
+          },
+          "checkIntervalSec": {
+            "type": "integer",
+            "description": "Chu kỳ tự động kiểm tra đo đạc (giây)",
+            "example": 30
+          }
+        }
+      },
+      "TokenHistory": {
+        "type": "object",
+        "required": [
+          "scope",
+          "totalRequests",
+          "totalTokensFormatted",
+          "inputTokensFormatted",
+          "outputTokensFormatted",
+          "items"
+        ],
+        "properties": {
+          "scope": {
+            "type": "string",
+            "enum": ["1h", "24h", "7d", "30d", "all"],
+            "example": "24h"
+          },
+          "totalRequests": {
+            "type": "integer",
+            "example": 146
+          },
+          "totalTokens": {
+            "type": "integer",
+            "example": 418200
+          },
+          "totalTokensFormatted": {
+            "type": "string",
+            "example": "418.2k"
+          },
+          "inputTokensFormatted": {
+            "type": "string",
+            "example": "312.8k"
+          },
+          "outputTokensFormatted": {
+            "type": "string",
+            "example": "105.4k"
+          },
+          "hourlyTrend": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HourlyTrendItem"
+            }
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TokenHistoryItem"
+            }
+          }
+        }
+      },
+      "HourlyTrendItem": {
+        "type": "object",
+        "required": ["hour", "input", "output", "total", "isPeak"],
+        "properties": {
+          "hour": { "type": "string", "example": "14:00" },
+          "input": { "type": "integer", "example": 48200 },
+          "output": { "type": "integer", "example": 9800 },
+          "total": { "type": "integer", "example": 58000 },
+          "isPeak": { "type": "boolean", "example": true }
+        }
+      },
+      "TokenHistoryItem": {
+        "type": "object",
+        "required": [
+          "id",
+          "timestamp",
+          "timeAgo",
+          "email",
+          "accountId",
+          "model",
+          "inputTokens",
+          "outputTokens",
+          "totalTokens",
+          "latency"
+        ],
+        "properties": {
+          "id": { "type": "string", "example": "call-1" },
+          "timestamp": { "type": "string", "example": "14:28:10" },
+          "timeAgo": { "type": "string", "example": "5p" },
+          "email": { "type": "string", "format": "email", "example": "gemini-prod-core@company.ai" },
+          "accountId": { "type": "string", "example": "acc-2" },
+          "model": { "type": "string", "example": "neural-flash-3.8" },
+          "inputTokens": { "type": "string", "example": "18,420" },
+          "outputTokens": { "type": "string", "example": "2,840" },
+          "totalTokens": { "type": "string", "example": "21,260" },
+          "latency": { "type": "string", "example": "420ms" }
+        }
+      },
+      "SwitchAccountRequest": {
+        "type": "object",
+        "required": ["accountId"],
+        "properties": {
+          "accountId": {
+            "type": "string",
+            "description": "ID của tài khoản OAuth Gemini cần chọn thủ công",
+            "example": "acc-2"
+          },
+          "sessionId": {
+            "type": "string",
+            "description": "Khi có, chỉ ghim account vào chat này; bỏ trống để đặt default cục bộ cho chat mới.",
+            "example": "session-1"
+          }
+        }
+      },
+      "SwitchAccountResponse": {
+        "type": "object",
+        "required": ["success", "activeAccountId", "scope", "sessionId", "message"],
+        "properties": {
+          "success": { "type": "boolean", "example": true },
+          "activeAccountId": { "type": "string", "example": "acc-2" },
+          "activeEmail": { "type": "string", "example": "gemini-prod-core@company.ai" },
+          "scope": { "type": "string", "enum": ["default", "session"], "example": "session" },
+          "sessionId": { "type": "string", "nullable": true, "example": "session-1" },
+          "activatedAt": { "type": "string", "format": "date-time" },
+          "sessionDuration": { "type": "string", "example": "0p" },
+          "message": { "type": "string", "example": "Đã ghim account Gemini vào session đã chọn." }
+        }
+      },
+      "SyncResponse": {
+        "type": "object",
+        "required": ["success", "syncedAt", "accountsCount", "message"],
+        "properties": {
+          "success": { "type": "boolean", "example": true },
+          "syncedAt": { "type": "string", "format": "date-time", "example": "2026-09-21T14:35:10Z" },
+          "accountsCount": { "type": "integer", "example": 2, "description": "Số tài khoản OAuth Gemini có quota." },
+          "latencyMs": { "type": "integer", "example": 145 },
+          "message": { "type": "string", "example": "Đã đồng bộ quota Gemini cho 2 tài khoản." }
+        }
+      },
+      "WorkspaceDirectory": {
+        "type": "object",
+        "required": ["path", "name"],
+        "properties": {
+          "path": { "type": "string" },
+          "name": { "type": "string" }
+        }
+      },
+      "WorkspaceDirectoryListing": {
+        "type": "object",
+        "required": ["roots", "currentPath", "parentPath", "directories"],
+        "properties": {
+          "roots": { "type": "array", "items": { "$ref": "#/components/schemas/WorkspaceDirectory" } },
+          "currentPath": { "type": "string", "nullable": true },
+          "parentPath": { "type": "string", "nullable": true },
+          "directories": { "type": "array", "items": { "$ref": "#/components/schemas/WorkspaceDirectory" } }
+        }
+      },
+      "ChatFolder": {
+        "type": "object",
+        "required": ["id", "name"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "cwd": { "type": "string", "description": "CWD workspace thật của project folder." },
+          "sessionCount": { "type": "integer", "description": "Số chat được gán folder; chỉ có trong GET /api/v1/folders." }
+        }
+      },
+      "CreateChatFolderRequest": {
+        "type": "object",
+        "required": ["name", "cwd"],
+        "properties": {
+          "name": { "type": "string", "maxLength": 80 },
+          "cwd": { "type": "string", "description": "Đường dẫn tuyệt đối tới thư mục thật bên trong workspace được phép." }
+        }
+      },
+      "ChatSession": {
+        "type": "object",
+        "required": ["id", "title", "isPinned", "updatedAgo"],
+        "properties": {
+          "id": { "type": "string", "example": "session-1" },
+          "title": { "type": "string", "example": "Cài đặt workspace" },
+          "isPinned": { "type": "boolean", "example": false },
+          "cwd": { "type": "string", "description": "CWD workspace thật của chat; độc lập với folderId." },
+          "updatedAgo": { "type": "string", "example": "1p" },
+          "folderId": { "type": "string", "description": "Project folder đã gán; thiếu trường nghĩa là chat không thuộc folder." },
+          "folderName": { "type": "string", "description": "Tên project folder để hiển thị trong history." },
+          "createdAt": { "type": "string", "format": "date-time" },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "CreateSessionRequest": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string", "example": "Thiết kế kiến trúc API Backend" },
+          "cwd": { "type": "string", "description": "CWD tuyệt đối được phép cho chat không thuộc folder; nếu thiếu, dùng OMP_DASHBOARD_GENERAL_WORKSPACE (mặc định ~/Documents/OMP General Chat). Nếu có folderId, CWD của project được ưu tiên." },
+          "folderId": { "type": "string", "description": "Folder project đã chọn; nếu có thì CWD của folder được dùng làm CWD chat." }
+        }
+      },
+      "ChatMessage": {
+        "type": "object",
+        "required": ["id", "sessionId", "role", "content"],
+        "properties": {
+          "id": { "type": "string", "example": "msg-1" },
+          "sessionId": { "type": "string", "example": "s-1" },
+          "role": { "type": "string", "enum": ["user", "assistant", "system"], "example": "user" },
+          "content": { "type": "string", "example": "Chào Hòn π, hãy tóm tắt các tính năng chính." },
+          "timeAgo": { "type": "string", "example": "2p" },
+          "model": { "type": "string", "example": "neural-flash-3.8" },
+          "duration": { "type": "string", "example": "4p 11s" },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ChatSendRequest": {
+        "type": "object",
+        "required": ["prompt"],
+        "properties": {
+          "sessionId": { "type": "string", "nullable": true, "example": "s-1" },
+          "prompt": { "type": "string", "example": "Hãy kiểm tra tình trạng hạn mức tài khoản OMP số #01" },
+          "model": { "type": "string", "default": "gemini-3.8-flash", "example": "gemini-3.8-flash" },
+          "modelProvider": { "type": "string", "description": "Provider model trong OMP; dùng để phân biệt các model trùng ID.", "example": "anthropic" },
+          "requestId": { "type": "string", "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]{1,128}$" },
+          "thinking": { "type": "string", "enum": ["max", "high", "medium", "low", "none"] },
+          "browserMode": { "type": "string", "enum": ["ego-browser", "none"], "default": "ego-browser" },
+          "approvalMode": { "type": "string", "enum": ["always-ask", "write", "yolo"] },
+          "attachments": { "type": "array", "maxItems": 4, "items": { "type": "object" } },
+          "modelSource": { "type": "string", "enum": ["quota", "omp"], "default": "quota", "description": "quota cho phép toàn bộ model OMP provider google-antigravity của account được chọn, gồm mọi family; omp dùng catalog đầy đủ, còn model Antigravity vẫn ghim credential đã chọn." }
+        }
+      },
+      "ChatSendResponse": {
+        "type": "object",
+        "required": ["sessionId", "messageId", "reply", "model"],
+        "properties": {
+          "sessionId": { "type": "string", "example": "s-1" },
+          "messageId": { "type": "string", "example": "msg-3" },
+          "reply": { "type": "string", "example": "Tài khoản OMP #01 hiện tại là: gemini-prod-core@company.ai..." },
+          "model": { "type": "string", "example": "neural-flash-3.8" },
+          "totalTokens": { "type": "integer", "example": 384 },
+          "duration": { "type": "string", "example": "2.4s" },
+          "aborted": { "type": "boolean", "description": "Có mặt khi lượt bị hủy trước khi kết thúc." },
+          "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "AIModel": {
+        "type": "object",
+        "required": ["id", "name", "provider", "contextWindow"],
+        "properties": {
+          "id": { "type": "string", "example": "neural-flash-3.8" },
+          "name": { "type": "string", "example": "Hòn π Neural Flash 3.8" },
+          "provider": { "type": "string", "example": "Hòn π AI Core" },
+          "contextWindow": { "type": "integer", "example": 1048576 },
+          "isDefault": { "type": "boolean", "example": true },
+          "description": { "type": "string" }
+        }
+      },
+      "ErrorDetail": {
+        "type": "object",
+        "required": ["code", "message"],
+        "properties": {
+          "code": { "type": "string", "example": "ACCOUNT_NOT_FOUND" },
+          "message": { "type": "string", "example": "Không tìm thấy tài khoản với ID chỉ định." },
+          "field": { "type": "string", "example": "accountId" }
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Yêu cầu không hợp lệ (Bad Request)",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": ["error"],
+              "properties": {
+                "error": { "$ref": "#/components/schemas/ErrorDetail" }
+              }
+            },
+            "example": {
+              "error": {
+                "code": "BAD_REQUEST",
+                "message": "Dữ liệu payload không đúng định dạng.",
+                "field": "accountId"
+              }
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "Không tìm thấy tài nguyên (Not Found)",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": ["error"],
+              "properties": {
+                "error": { "$ref": "#/components/schemas/ErrorDetail" }
+              }
+            },
+            "example": {
+              "error": {
+                "code": "NOT_FOUND",
+                "message": "Không tìm thấy tài nguyên theo yêu cầu."
+              }
+            }
+          }
+        }
+      },
+      "RateLimitExceeded": {
+        "description": "Rate limit HTTP, queue chat đầy hoặc provider quota cooldown (429).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": ["error"],
+              "properties": {
+                "error": { "$ref": "#/components/schemas/ErrorDetail" }
+              }
+            },
+            "example": {
+              "error": {
+                "code": "RATE_LIMITED",
+                "message": "Đã vượt giới hạn gọi hoặc hàng đợi chat đã đầy; vui lòng thử lại sau."
+              }
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "Lỗi máy chủ nội bộ (Internal Server Error)",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": ["error"],
+              "properties": {
+                "error": { "$ref": "#/components/schemas/ErrorDetail" }
+              }
+            },
+            "example": {
+              "error": {
+                "code": "INTERNAL_SERVER_ERROR",
+                "message": "Đã xảy ra lỗi không xác định từ máy chủ dịch vụ."
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

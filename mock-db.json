@@ -1,0 +1,395 @@
+{
+  "accounts": [
+    {
+      "id": "acc-2",
+      "email": "gemini-prod-core@company.ai",
+      "provider": "Gemini Advanced",
+      "isGoogleProtect": true,
+      "usage5hPct": 92,
+      "usageWeekPct": 84,
+      "resetIn5h": "28p",
+      "resetInWeek": "1n 04g",
+      "tokenLoginTime": "13:05",
+      "tokenLoginAgo": "1g 45p",
+      "sessionDuration": "1g 45p",
+      "used5hCount": 92,
+      "isActive": true
+    },
+    {
+      "id": "acc-4",
+      "email": "gemini-flash-runner@enterprise.vn",
+      "provider": "Google Gemini",
+      "isGoogleProtect": true,
+      "usage5hPct": 100,
+      "usageWeekPct": 76,
+      "resetIn5h": "42p",
+      "resetInWeek": "2n 16g",
+      "tokenLoginTime": "14:15",
+      "tokenLoginAgo": "35p",
+      "sessionDuration": "0p",
+      "used5hCount": 100,
+      "isActive": false
+    },
+    {
+      "id": "acc-1",
+      "email": "workspace-dev-alpha@example.com",
+      "provider": "Claude / GPT Shared",
+      "isGoogleProtect": false,
+      "usage5hPct": 78,
+      "usageWeekPct": 62,
+      "resetIn5h": "1g 14p",
+      "resetInWeek": "3n 08g",
+      "tokenLoginTime": "11:30",
+      "tokenLoginAgo": "3g 20p",
+      "sessionDuration": "0p",
+      "used5hCount": 78,
+      "isActive": false
+    },
+    {
+      "id": "acc-3",
+      "email": "research-anthropic-team@corp.io",
+      "provider": "Claude / GPT Shared",
+      "isGoogleProtect": false,
+      "usage5hPct": 14,
+      "usageWeekPct": 38,
+      "resetIn5h": "3g 45p",
+      "resetInWeek": "2n 16g",
+      "tokenLoginTime": "08:50",
+      "tokenLoginAgo": "6g",
+      "sessionDuration": "0p",
+      "used5hCount": 14,
+      "isActive": false
+    },
+    {
+      "id": "acc-5",
+      "email": "ops-multi-backup@devops.net",
+      "provider": "Claude / GPT Shared",
+      "isGoogleProtect": false,
+      "usage5hPct": 5,
+      "usageWeekPct": null,
+      "resetIn5h": "4g 10p",
+      "resetInWeek": "5n",
+      "tokenLoginTime": "16:20",
+      "tokenLoginAgo": "1n",
+      "sessionDuration": "0p",
+      "used5hCount": 5,
+      "isActive": false
+    }
+  ],
+  "overview": {
+    "totalAccounts": 5,
+    "activeAccountId": "acc-2",
+    "earliestReset": "28p (gemini-prod)",
+    "statusCounts": {
+      "ok": 2,
+      "warn": 1,
+      "danger": 1,
+      "exhausted": 1
+    },
+    "windows": {
+      "gemini5h": {
+        "title": "Gemini 5g",
+        "type": "TRƯỢT",
+        "usedPct": 48.5,
+        "peak": "100% (Hết)",
+        "resetIn": "28p",
+        "status": "danger"
+      },
+      "geminiWeek": {
+        "title": "Gemini Tuần",
+        "type": "TUẦN",
+        "usedPct": 76.0,
+        "peak": "84%",
+        "resetIn": "1n 04g",
+        "status": "warn"
+      },
+      "claude5h": {
+        "title": "Claude/GPT 5g",
+        "type": "TRƯỢT",
+        "usedPct": 32.3,
+        "peak": "78% (Shared)",
+        "resetIn": "1g 14p",
+        "status": "warn"
+      },
+      "claudeWeek": {
+        "title": "Claude/GPT Tuần",
+        "type": "TUẦN",
+        "usedPct": 38.5,
+        "peak": "1 acc thiếu metric",
+        "resetIn": "2n 16g",
+        "status": "ok"
+      }
+    }
+  },
+  "protect": {
+    "status": "● Đang bảo vệ 429",
+    "appliedAccountsCount": 2,
+    "appliedAccountIds": [
+      "acc-2",
+      "acc-4"
+    ],
+    "appliedAccounts": [
+      "gemini-prod-core@company.ai",
+      "gemini-flash-runner@enterprise.vn"
+    ],
+    "activeRequests": 0,
+    "maxConcurrent": 1,
+    "cooldownSec": 0,
+    "errors429Count": 0,
+    "nextRequestAllowed": true,
+    "checkIntervalSec": 30
+  },
+  "history": {
+    "24h": {
+      "scope": "24h",
+      "totalRequests": 146,
+      "totalTokens": 418200,
+      "totalTokensFormatted": "418.2k",
+      "inputTokensFormatted": "312.8k",
+      "outputTokensFormatted": "105.4k",
+      "hourlyTrend": [
+        { "hour": "00:00", "input": 12400, "output": 2100, "total": 14500, "isPeak": false },
+        { "hour": "02:00", "input": 8200, "output": 1500, "total": 9700, "isPeak": false },
+        { "hour": "04:00", "input": 4100, "output": 800, "total": 4900, "isPeak": false },
+        { "hour": "06:00", "input": 15600, "output": 3200, "total": 18800, "isPeak": false },
+        { "hour": "08:00", "input": 28400, "output": 5900, "total": 34300, "isPeak": false },
+        { "hour": "10:00", "input": 36100, "output": 7400, "total": 43500, "isPeak": false },
+        { "hour": "12:00", "input": 31200, "output": 6200, "total": 37400, "isPeak": false },
+        { "hour": "14:00", "input": 48200, "output": 9800, "total": 58000, "isPeak": true },
+        { "hour": "16:00", "input": 42100, "output": 8600, "total": 50700, "isPeak": false },
+        { "hour": "18:00", "input": 38400, "output": 7900, "total": 46300, "isPeak": false },
+        { "hour": "20:00", "input": 29800, "output": 5800, "total": 35600, "isPeak": false },
+        { "hour": "22:00", "input": 18400, "output": 3600, "total": 22000, "isPeak": false }
+      ],
+      "items": [
+        {
+          "id": "call-1",
+          "timestamp": "14:28:10",
+          "timeAgo": "5p",
+          "email": "gemini-prod-core@company.ai",
+          "accountId": "acc-2",
+          "model": "neural-flash-3.8",
+          "inputTokens": "18,420",
+          "outputTokens": "2,840",
+          "totalTokens": "21,260",
+          "latency": "420ms"
+        },
+        {
+          "id": "call-2",
+          "timestamp": "14:15:02",
+          "timeAgo": "18p",
+          "email": "workspace-dev-alpha@example.com",
+          "accountId": "acc-1",
+          "model": "claude-3-5-sonnet",
+          "inputTokens": "24,100",
+          "outputTokens": "4,120",
+          "totalTokens": "28,220",
+          "latency": "680ms"
+        },
+        {
+          "id": "call-3",
+          "timestamp": "13:58:44",
+          "timeAgo": "35p",
+          "email": "gemini-flash-runner@enterprise.vn",
+          "accountId": "acc-4",
+          "model": "gemini-2.5-pro",
+          "inputTokens": "42,800",
+          "outputTokens": "6,400",
+          "totalTokens": "49,200",
+          "latency": "1,120ms"
+        },
+        {
+          "id": "call-4",
+          "timestamp": "13:42:15",
+          "timeAgo": "50p",
+          "email": "research-anthropic-team@corp.io",
+          "accountId": "acc-3",
+          "model": "claude-3-5-haiku",
+          "inputTokens": "8,420",
+          "outputTokens": "1,890",
+          "totalTokens": "10,310",
+          "latency": "290ms"
+        },
+        {
+          "id": "call-5",
+          "timestamp": "12:50:00",
+          "timeAgo": "1g",
+          "email": "ops-multi-backup@devops.net",
+          "accountId": "acc-5",
+          "model": "gpt-4o-mini",
+          "inputTokens": "14,200",
+          "outputTokens": "3,100",
+          "totalTokens": "17,300",
+          "latency": "380ms"
+        }
+      ]
+    },
+    "1h": {
+      "scope": "1h",
+      "totalRequests": 12,
+      "totalTokens": 28400,
+      "totalTokensFormatted": "28.4k",
+      "inputTokensFormatted": "22.6k",
+      "outputTokensFormatted": "5.8k",
+      "hourlyTrend": [
+        { "hour": "14:00", "input": 48200, "output": 9800, "total": 58000, "isPeak": true }
+      ],
+      "items": [
+        {
+          "id": "call-1",
+          "timestamp": "14:28:10",
+          "timeAgo": "5p",
+          "email": "gemini-prod-core@company.ai",
+          "accountId": "acc-2",
+          "model": "neural-flash-3.8",
+          "inputTokens": "18,420",
+          "outputTokens": "2,840",
+          "totalTokens": "21,260",
+          "latency": "420ms"
+        },
+        {
+          "id": "call-2",
+          "timestamp": "14:15:02",
+          "timeAgo": "18p",
+          "email": "workspace-dev-alpha@example.com",
+          "accountId": "acc-1",
+          "model": "claude-3-5-sonnet",
+          "inputTokens": "24,100",
+          "outputTokens": "4,120",
+          "totalTokens": "28,220",
+          "latency": "680ms"
+        }
+      ]
+    },
+    "7d": {
+      "scope": "7d",
+      "totalRequests": 1048,
+      "totalTokens": 2840000,
+      "totalTokensFormatted": "2.84M",
+      "inputTokensFormatted": "2.12M",
+      "outputTokensFormatted": "720k",
+      "hourlyTrend": [
+        { "hour": "Thứ 2", "input": 320000, "output": 98000, "total": 418000, "isPeak": false },
+        { "hour": "Thứ 3", "input": 480000, "output": 120000, "total": 600000, "isPeak": true },
+        { "hour": "Thứ 4", "input": 420000, "output": 110000, "total": 530000, "isPeak": false },
+        { "hour": "Thứ 5", "input": 390000, "output": 95000, "total": 485000, "isPeak": false },
+        { "hour": "Thứ 6", "input": 410000, "output": 105000, "total": 515000, "isPeak": false },
+        { "hour": "Thứ 7", "input": 150000, "output": 42000, "total": 192000, "isPeak": false },
+        { "hour": "Chủ nhật", "input": 80000, "output": 20000, "total": 100000, "isPeak": false }
+      ],
+      "items": [
+        {
+          "id": "call-1",
+          "timestamp": "14:28:10",
+          "timeAgo": "5p",
+          "email": "gemini-prod-core@company.ai",
+          "accountId": "acc-2",
+          "model": "neural-flash-3.8",
+          "inputTokens": "18,420",
+          "outputTokens": "2,840",
+          "totalTokens": "21,260",
+          "latency": "420ms"
+        }
+      ]
+    },
+    "30d": {
+      "scope": "30d",
+      "totalRequests": 3120,
+      "totalTokens": 8920000,
+      "totalTokensFormatted": "8.92M",
+      "inputTokensFormatted": "6.85M",
+      "outputTokensFormatted": "2.07M",
+      "hourlyTrend": [],
+      "items": []
+    },
+    "all": {
+      "scope": "all",
+      "totalRequests": 24200,
+      "totalTokens": 68100000,
+      "totalTokensFormatted": "68.1M",
+      "inputTokensFormatted": "52.4M",
+      "outputTokensFormatted": "15.7M",
+      "hourlyTrend": [],
+      "items": []
+    }
+  },
+  "sessions": [
+    {
+      "id": "s-1",
+      "title": "Cài đặt Hòn π CLI cho Open Design",
+      "isPinned": true,
+      "updatedAgo": "1p",
+      "createdAt": "2026-09-21T10:00:00Z",
+      "updatedAt": "2026-09-21T14:34:00Z"
+    },
+    {
+      "id": "s-2",
+      "title": "Tối ưu hóa bảng Quota OMP & API Engine",
+      "isPinned": true,
+      "updatedAgo": "5p",
+      "createdAt": "2026-09-21T09:30:00Z",
+      "updatedAt": "2026-09-21T14:30:00Z"
+    },
+    {
+      "id": "s-3",
+      "title": "Kiểm tra độ phản hồi Responsive Dashboard",
+      "isPinned": false,
+      "updatedAgo": "1g",
+      "createdAt": "2026-09-21T08:15:00Z",
+      "updatedAt": "2026-09-21T13:35:00Z"
+    },
+    {
+      "id": "s-4",
+      "title": "Tích hợp Google Protect 429 Safety Guard",
+      "isPinned": false,
+      "updatedAgo": "2n",
+      "createdAt": "2026-09-19T14:00:00Z",
+      "updatedAt": "2026-09-19T16:00:00Z"
+    }
+  ],
+  "messages": [
+    {
+      "id": "msg-1",
+      "sessionId": "s-1",
+      "role": "user",
+      "content": "Chào Hòn π, hãy tóm tắt các tính năng chính của hệ sinh thái Quota OMP vừa được chuẩn hóa.",
+      "timeAgo": "2p",
+      "createdAt": "2026-09-21T14:32:00Z"
+    },
+    {
+      "id": "msg-2",
+      "sessionId": "s-1",
+      "role": "assistant",
+      "content": "Dưới đây là tóm tắt các tính năng cốt lõi đã sẵn sàng cho backend:\n\n1. Kiến trúc Độc Lập 2 Tệp: honpi-quota-dashboard.html và honpi-chat-dashboard.html đồng bộ dữ liệu qua REST/WebSocket.\n2. Bảng Màu Kỷ Luật: Tối giản màu sắc, tập trung vào Dark Theme Charcoal-Navy canvas với độ tương phản chuẩn AAA.\n3. Vị Trí #01 Ưu Tiên: Tài khoản active luôn được ghim ở góc trên bên trái với huy hiệu #01.\n4. Google Protect: Hiển thị khiên 🛡️ cho các tài khoản Gemini kèm bộ đo 429 cooldown.",
+      "model": "neural-flash-3.8",
+      "duration": "4p 11s",
+      "createdAt": "2026-09-21T14:32:05Z"
+    }
+  ],
+  "models": [
+    {
+      "id": "neural-flash-3.8",
+      "name": "Hòn π Neural Flash 3.8",
+      "provider": "Hòn π AI Core",
+      "contextWindow": 1048576,
+      "isDefault": true,
+      "description": "Mô hình siêu tốc độ, tối ưu hóa cho tác vụ phân tích thời gian thực và lập trình."
+    },
+    {
+      "id": "claude-3-5-sonnet",
+      "name": "Claude 3.5 Sonnet",
+      "provider": "Anthropic",
+      "contextWindow": 200000,
+      "isDefault": false,
+      "description": "Mô hình suy luận sâu, phù hợp cho kiến trúc hệ thống phức tạp."
+    },
+    {
+      "id": "gemini-2.5-pro",
+      "name": "Gemini 2.5 Pro",
+      "provider": "Google DeepMind",
+      "contextWindow": 2097152,
+      "isDefault": false,
+      "description": "Mô hình đa phương thức với cửa sổ ngữ cảnh khổng lồ 2M tokens."
+    }
+  ]
+}
