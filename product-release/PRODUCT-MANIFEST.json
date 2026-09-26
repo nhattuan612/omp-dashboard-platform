@@ -1,0 +1,32 @@
+{
+  "name": "hon-pi-omp-dashboard-product",
+  "version": "2026.09.26",
+  "entrypoints": {
+    "chat": "/chat",
+    "quota": "/quota",
+    "health": "/healthz"
+  },
+  "files": [
+    "server.mjs",
+    "console-bridge.mjs",
+    "acp-worker.mjs",
+    "acp-session-context.mjs",
+    "gemini-account-pin-extension.mjs",
+    "honpi-chat-dashboard-SKE.html",
+    "honpi-quota-dashboard-SKE.html",
+    "honpi-chat-dashboard-live.js",
+    "honpi-chat-dashboard-legacy.js",
+    "install-local-dashboard.sh"
+  ],
+  "requirements": [
+    "Node.js",
+    "OMP installed at ~/.bun/bin/omp",
+    "macOS for LaunchAgent auto-start"
+  ],
+  "excluded": [
+    "OAuth credentials and tokens",
+    "OMP databases and sessions",
+    "runtime state, logs and backups",
+    "local research documents and tests"
+  ]
+}
