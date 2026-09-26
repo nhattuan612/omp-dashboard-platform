@@ -477,9 +477,19 @@ async function fakeOmp(args) {
         emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "working" } });
         emit({ type: "message_end", message: { role: "assistant", content: "working" } });
         emit({ type: "agent_end", message: { role: "assistant", content: "working", model: "smoke-model" } });
+      } else if (frame.type === "prompt" && String(frame.message || "").includes("QUEUE_PAUSE_ERROR")) {
+        emit({ type: "turn_start" });
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        emit({ type: "agent_end", isTerminal: true, message: { role: "assistant", stopReason: "error", errorMessage: "fake queue error" } });
+      } else if (frame.type === "prompt" && String(frame.message || "").includes("QUEUE_SAFETY_COOLDOWN")) {
+        emit({ type: "turn_start" });
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        emit({ type: "agent_end", isTerminal: true, message: { role: "assistant", stopReason: "error", errorStatus: 429, errorMessage: "fake 429" } });
+      } else if (frame.type === "prompt" && String(frame.message || "").includes("QUEUE_PAUSE_TIMEOUT")) {
+        emit({ type: "turn_start" });
       } else if (frame.type === "prompt" && String(frame.message || "").includes("CONCURRENT_")) {
         const message = String(frame.message);
-        const delayMs = message.includes("SLOW") ? 6000 : message.includes("FIFO_ONE") ? 120 : 20;
+        const delayMs = message.includes("SLOW") ? Number(process.env.OMP_DASHBOARD_TEST_SLOW_TURN_MS || 6000) : message.includes("FIFO_ONE") ? 1200 : 20;
         emit({ type: "turn_start" });
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         const content = `concurrent:${message}`;
@@ -560,6 +570,9 @@ async function runContract() {
         NODE_ENV: "test",
         OMP_DASHBOARD_TEST_CHAT_PROTOCOL: "rpc",
         OMP_DASHBOARD_TEST_APPROVAL_TIMEOUT_MS: String(TEST_APPROVAL_TIMEOUT_MS),
+        OMP_DASHBOARD_TEST_CHAT_TURN_TIMEOUT_MS: "4000",
+        OMP_DASHBOARD_TEST_SAFETY_COOLDOWN_MS: "1000",
+        OMP_DASHBOARD_TEST_SLOW_TURN_MS: "1500",
         HOME: home,
         OMP_BIN: fakeBin,
         OMP_DASHBOARD_PORT: String(port),
@@ -797,13 +810,20 @@ async function runContract() {
       await reader.waitFor((event) => event.event === "end", "smoke stream completion");
     }
     async function openStream(sessionId, prompt, label, attachments = [], model = "smoke-model", modelSource = "quota") {
+      const requestId = `${label}-${randomUUID()}`;
       const response = await fetch(`${baseUrl}/api/v1/chat/stream`, {
         method: "POST",
         headers: { cookie, "content-type": "application/json", accept: "text/event-stream" },
-        body: JSON.stringify({ sessionId, requestId: `${label}-${randomUUID()}`, prompt, model, modelSource, tools: ["read"], attachments, browserMode: "none" }),
+        body: JSON.stringify({ sessionId, requestId, prompt, model, modelSource, tools: ["read"], attachments, browserMode: "none" }),
       });
       if (response.status !== 200) throw new Error(`${label} stream failed (${response.status}): ${await response.text()}`);
-      return { response, reader: createSseReader(response) };
+      return { response, requestId, reader: createSseReader(response) };
+    }
+    async function assertStreamError(reader, code, label) {
+      let received = "";
+      try { await reader.waitFor(() => false, label, 7000); }
+      catch (error) { received = String(error.message || error); }
+      assert.match(received, new RegExp(code), `${label}: ${received}`);
     }
     const chunkedFolderName = "Chunked UTF-8 🧪 request";
     const chunkedFolder = await apiWithSplitUtf8("/api/v1/folders", { name: chunkedFolderName, cwd: workspaceRoot }, "🧪");
@@ -1344,31 +1364,116 @@ async function runContract() {
     await concurrentFirst.reader.waitFor((event) => event.event === "end", "concurrent session A end");
 
     const fifoSession = await createFixture("Per-session FIFO");
-    const fifoOne = openStream(fifoSession.id, "CONCURRENT_FIFO_ONE", `fifo-one-${randomUUID()}`);
-    const fifoTwo = openStream(fifoSession.id, "CONCURRENT_FIFO_TWO", `fifo-two-${randomUUID()}`);
-    const [fifoFirst, fifoSecond] = await Promise.all([fifoOne, fifoTwo]);
-    await Promise.all([
-      fifoFirst.reader.waitFor((event) => event.event === "start", "FIFO first start"),
-      fifoSecond.reader.waitFor((event) => event.event === "start", "FIFO second start"),
-    ]);
+    const fifoBlocker = await openStream(fifoSession.id, "QUEUE_FIFO_BLOCKER", "fifo-blocker");
+    await fifoBlocker.reader.waitFor((event) => event.event === "lifecycle" && event.data.type === "turn_start", "FIFO blocker turn start");
+    const fifoFirst = await openStream(fifoSession.id, "CONCURRENT_FIFO_ONE", `fifo-one-${randomUUID()}`);
+    await fifoFirst.reader.waitFor((event) => event.event === "start", "FIFO first start");
+    const fifoFirstWaiting = await fifoFirst.reader.waitFor((event) => event.event === "waiting" && event.data.phase === "fifo" && event.data.queueAhead === 1, "FIFO first queue snapshot");
+    const fifoSecond = await openStream(fifoSession.id, "CONCURRENT_FIFO_TWO", `fifo-two-${randomUUID()}`);
+    await fifoSecond.reader.waitFor((event) => event.event === "start", "FIFO second start");
+    const fifoSecondWaiting = await fifoSecond.reader.waitFor((event) => event.event === "waiting" && event.data.phase === "fifo" && event.data.queueAhead === 2, "FIFO second queue snapshot");
+    const fifoThird = await openStream(fifoSession.id, "CONCURRENT_FIFO_THREE", `fifo-three-${randomUUID()}`);
+    await fifoThird.reader.waitFor((event) => event.event === "start", "FIFO third start");
+    const fifoThirdWaiting = await fifoThird.reader.waitFor((event) => event.event === "waiting" && event.data.phase === "fifo" && event.data.queueAhead === 3, "FIFO third queue snapshot");
+    assert.equal(fifoFirstWaiting.data.queueAhead, 1, "first queued order must see the active turn ahead");
+    assert.equal(fifoSecondWaiting.data.queueAhead, 2, "second order must retain FIFO position");
+    assert.equal(fifoThirdWaiting.data.queueAhead, 3, "third order must retain FIFO position");
+    assert.equal(fifoThirdWaiting.data.queuedTurns, 3, "queue snapshot must include all pending orders");
+    const stopFifoBlocker = await api("POST", "/api/v1/chat/abort", { requestId: fifoBlocker.requestId, sessionId: fifoSession.id });
+    assert.equal(stopFifoBlocker.status, 202);
+    await fifoBlocker.reader.waitFor((event) => event.event === "end" && event.data.aborted === true, "FIFO blocker completion");
+    const resumeFifo = await action(fifoSession.id, { action: "resume_queue" });
+    assert.equal(resumeFifo.status, 200);
+    assert.equal(resumeFifo.payload.queuedTurns, 3);
+    const fifoSafetyGap = await fifoFirst.reader.waitFor((event) => event.event === "waiting" && event.data.phase === "safety_gap", "Safety Guard gap snapshot");
+    assert.ok(fifoSafetyGap.data.retryAfterSeconds > 0, "Safety Guard gap must include a retry countdown");
     const fifoFrames = [];
     const fifoFirstFrame = await waitForFakeFrame(home, (item) => item.frame.type === "prompt" && String(item.frame.message || "").includes("CONCURRENT_FIFO_ONE"));
     fifoFrames.push(fifoFirstFrame);
     const fifoSecondFrame = await waitForFakeFrame(home, (item) => item.frame.type === "prompt" && String(item.frame.message || "").includes("CONCURRENT_FIFO_TWO"));
     fifoFrames.push(fifoSecondFrame);
+    const fifoThirdFrame = await waitForFakeFrame(home, (item) => item.frame.type === "prompt" && String(item.frame.message || "").includes("CONCURRENT_FIFO_THREE"));
+    fifoFrames.push(fifoThirdFrame);
     assert.equal(fifoFirstFrame.contextId, fifoSecondFrame.contextId, "same session must keep one OMP context");
-    assert.ok(fifoFrames[0].frame.message.endsWith("FIFO_ONE") && fifoFrames[1].frame.message.endsWith("FIFO_TWO"), "same-session prompts must dispatch FIFO");
-    const [fifoFirstDelta, fifoSecondDelta] = await Promise.all([
+    assert.ok(fifoFrames[0].frame.message.endsWith("FIFO_ONE") && fifoFrames[1].frame.message.endsWith("FIFO_TWO") && fifoFrames[2].frame.message.endsWith("FIFO_THREE"), "same-session prompts must dispatch FIFO");
+    const [fifoFirstDelta, fifoSecondDelta, fifoThirdDelta] = await Promise.all([
       fifoFirst.reader.waitFor((event) => event.event === "delta", "FIFO first delta"),
       fifoSecond.reader.waitFor((event) => event.event === "delta", "FIFO second delta"),
+      fifoThird.reader.waitFor((event) => event.event === "delta", "FIFO third delta"),
     ]);
     assert.equal(String(fifoFirstDelta.data.content).endsWith("CONCURRENT_FIFO_ONE"), true, "FIFO first reader must receive only first prompt result");
     assert.equal(String(fifoSecondDelta.data.content).endsWith("CONCURRENT_FIFO_TWO"), true, "FIFO second reader must receive only second prompt result");
+    assert.equal(String(fifoThirdDelta.data.content).endsWith("CONCURRENT_FIFO_THREE"), true, "FIFO third reader must receive only third prompt result");
     await Promise.all([
       fifoFirst.reader.waitFor((event) => event.event === "end", "FIFO first end"),
       fifoSecond.reader.waitFor((event) => event.event === "end", "FIFO second end"),
+      fifoThird.reader.waitFor((event) => event.event === "end", "FIFO third end"),
     ]);
     passes.push("orders are accepted immediately, sessions dispatch concurrently, and each session remains FIFO");
+
+    const cancelSession = await createFixture("Queue cancel and resume");
+    const cancelBlocker = await openStream(cancelSession.id, "QUEUE_CANCEL_BLOCKER", "queue-cancel-blocker");
+    await cancelBlocker.reader.waitFor((event) => event.event === "lifecycle" && event.data.type === "turn_start", "queue cancel blocker turn start");
+    const cancelled = await openStream(cancelSession.id, "CONCURRENT_QUEUE_CANCELLED", "queue-cancelled");
+    const survivor = await openStream(cancelSession.id, "CONCURRENT_QUEUE_SURVIVOR", "queue-survivor");
+    await Promise.all([
+      cancelled.reader.waitFor((event) => event.event === "start", "cancelled queue start"),
+      survivor.reader.waitFor((event) => event.event === "start", "survivor queue start"),
+    ]);
+    await Promise.all([
+      cancelled.reader.waitFor((event) => event.event === "waiting" && event.data.phase === "fifo" && event.data.queueAhead === 1, "cancelled queue position"),
+      survivor.reader.waitFor((event) => event.event === "waiting" && event.data.phase === "fifo" && event.data.queueAhead === 2, "survivor queue position"),
+    ]);
+    const cancelQueued = await api("POST", "/api/v1/chat/abort", { requestId: cancelled.requestId, sessionId: cancelSession.id });
+    assert.equal(cancelQueued.status, 202);
+    await cancelled.reader.waitFor((event) => event.event === "end", "cancelled queue end");
+    const survivorAfterCancel = await survivor.reader.waitFor((event) => event.event === "waiting" && event.data.phase === "fifo" && event.data.queueAhead === 1, "survivor order remains FIFO after cancellation");
+    assert.equal(survivorAfterCancel.data.queuedTurns, 1, "cancelling one queued order must retain the other order");
+    const abortBlocker = await api("POST", "/api/v1/chat/abort", { requestId: cancelBlocker.requestId, sessionId: cancelSession.id });
+    assert.equal(abortBlocker.status, 202);
+    await cancelBlocker.reader.waitFor((event) => event.event === "end" && event.data.aborted === true, "active abort completion");
+    const survivorPaused = await survivor.reader.waitFor((event) => event.event === "waiting" && event.data.phase === "paused", "queue pauses after active abort");
+    assert.equal(survivorPaused.data.reason, "previous_turn_aborted");
+    const pausedState = await api("GET", `/api/v1/sessions/${encodeURIComponent(cancelSession.id)}/state`);
+    assert.equal(pausedState.payload.queuePaused, true);
+    const resumedQueue = await action(cancelSession.id, { action: "resume_queue" });
+    assert.equal(resumedQueue.status, 200);
+    assert.equal(resumedQueue.payload.queuedTurns, 1);
+    await waitForFakeFrame(home, (item) => item.frame.type === "prompt" && String(item.frame.message || "").includes("CONCURRENT_QUEUE_SURVIVOR"));
+    assert.equal((await readFakeFrames(home)).some((item) => item.frame.type === "prompt" && String(item.frame.message || "").includes("CONCURRENT_QUEUE_CANCELLED")), false, "cancelled order must never dispatch");
+    await survivor.reader.waitFor((event) => event.event === "end", "survivor completion after resume");
+    passes.push("queued cancellation preserves FIFO and an explicit resume restarts only the paused session queue");
+
+    const errorSession = await createFixture("Queue pauses after upstream error");
+    const errorTurn = await openStream(errorSession.id, "QUEUE_PAUSE_ERROR", "queue-error");
+    const errorFollower = await openStream(errorSession.id, "CONCURRENT_QUEUE_AFTER_ERROR", "queue-after-error");
+    await errorFollower.reader.waitFor((event) => event.event === "waiting" && event.data.phase === "fifo", "error follower FIFO snapshot");
+    await assertStreamError(errorTurn.reader, "UPSTREAM_ERROR", "upstream queue error");
+    const errorPaused = await errorFollower.reader.waitFor((event) => event.event === "waiting" && event.data.phase === "paused", "queue pauses after upstream error");
+    assert.equal(errorPaused.data.reason, "previous_turn_failed");
+    passes.push("an upstream error pauses, rather than drains, its session queue");
+
+    const timeoutSession = await createFixture("Queue pauses after timeout");
+    const timeoutTurn = await openStream(timeoutSession.id, "QUEUE_PAUSE_TIMEOUT", "queue-timeout");
+    const timeoutFollower = await openStream(timeoutSession.id, "CONCURRENT_QUEUE_AFTER_TIMEOUT", "queue-after-timeout");
+    await timeoutFollower.reader.waitFor((event) => event.event === "waiting" && event.data.phase === "fifo", "timeout follower FIFO snapshot");
+    await assertStreamError(timeoutTurn.reader, "UPSTREAM_TIMEOUT", "timeout queue error");
+    const timeoutPaused = await timeoutFollower.reader.waitFor((event) => event.event === "waiting" && event.data.phase === "paused", "queue pauses after timeout");
+    assert.equal(timeoutPaused.data.reason, "previous_turn_failed");
+    passes.push("a timeout pauses its session queue without retrying or dropping the next order");
+
+    const cooldownSession = await createFixture("Safety cooldown queue status");
+    const cooldownTurn = await openStream(cooldownSession.id, "QUEUE_SAFETY_COOLDOWN", "queue-cooldown");
+    const cooldownFollower = await openStream(cooldownSession.id, "CONCURRENT_QUEUE_AFTER_COOLDOWN", "queue-after-cooldown");
+    await cooldownFollower.reader.waitFor((event) => event.event === "waiting" && event.data.phase === "fifo", "cooldown follower FIFO snapshot");
+    await assertStreamError(cooldownTurn.reader, "RATE_LIMITED", "safety cooldown error");
+    await cooldownFollower.reader.waitFor((event) => event.event === "waiting" && event.data.phase === "paused", "queue pauses after cooldown error");
+    const resumedCooldown = await action(cooldownSession.id, { action: "resume_queue" });
+    assert.equal(resumedCooldown.status, 200);
+    const cooldownWaiting = await cooldownFollower.reader.waitFor((event) => event.event === "waiting" && event.data.phase === "safety_cooldown", "Safety Guard cooldown snapshot");
+    assert.ok(cooldownWaiting.data.retryAfterSeconds > 0);
+    await cooldownFollower.reader.waitFor((event) => event.event === "end", "cooldown follower completion", 7000);
+    passes.push("SSE distinguishes FIFO, Safety Guard cooldown, paused, and resumed queue states");
 
     const queuedAbortSession = await createFixture("Queued non-stream abort");
     const blockingStreamRequestId = `blocking-stream-${randomUUID()}`;
@@ -2155,8 +2260,8 @@ async function runContract() {
 }
 
 async function main() {
-  if (process.argv[2] === FAKE_OMP_FLAG) {
-    await fakeOmp(process.argv.slice(3));
+  if (process.argv[2] === FAKE_OMP_FLAG || process.env.OMP_DASHBOARD_FAKE_OMP === "1") {
+    await fakeOmp(process.argv[2] === FAKE_OMP_FLAG ? process.argv.slice(3) : process.argv.slice(2));
     return;
   }
   await runContract();
