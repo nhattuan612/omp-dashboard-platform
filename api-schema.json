@@ -879,7 +879,7 @@
       "get": {
         "tags": ["Chat & AI Streaming"],
         "summary": "Luồng Server-Sent Events (SSE) phản hồi trực tiếp",
-        "description": "Mở kết nối luồng HTTP EventStream để nhận từng token văn bản (streaming chunk) từ mô hình AI theo thời gian thực.",
+        "description": "Mở kết nối luồng HTTP EventStream để nhận từng token văn bản. Mỗi session giữ FIFO 1 lượt active và tối đa 32 lượt chờ; các session khác chạy song song. Event waiting additive gồm phase=fifo|safety_gap|safety_cooldown|paused, queueAhead, queuedTurns, retryAfterSeconds và reason.",
         "operationId": "streamChatResponse",
         "parameters": [
           {
@@ -922,7 +922,7 @@
               "text/event-stream": {
                 "schema": {
                   "type": "string",
-                  "example": "event: message\ndata: {\"chunk\": \"Tài khoản \", \"done\": false}\n\nevent: message\ndata: {\"chunk\": \"OMP #01\", \"done\": false}\n\nevent: message\ndata: {\"chunk\": \"\", \"done\": true}\n\n"
+                  "example": "event: waiting\ndata: {\"phase\":\"fifo\",\"queueAhead\":1,\"queuedTurns\":2,\"retryAfterSeconds\":0,\"reason\":\"fifo\"}\n\nevent: message\ndata: {\"chunk\": \"Tài khoản \", \"done\": false}\n\n"
                 }
               }
             }
@@ -956,6 +956,42 @@
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "409": { "description": "Quota source bị từ chối do model/provider hoặc account không khả dụng." }
+        }
+      }
+    },
+    "/api/v1/sessions/{id}/action": {
+      "post": {
+        "tags": ["Chat & AI Streaming"],
+        "summary": "Thực hiện action trên session chat",
+        "description": "Action resume_queue chỉ tiếp tục hàng FIFO đang paused của session hiện tại; không retry, không đổi model/account và không đổi thứ tự order.",
+        "operationId": "sessionAction",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["action"],
+                "properties": { "action": { "type": "string", "enum": ["resume_queue"] } }
+              },
+              "example": { "action": "resume_queue" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Hàng chờ đã tiếp tục",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ResumeQueueResponse" },
+                "example": { "success": true, "action": "resume_queue", "sessionId": "s-1", "status": "ready", "queuedTurns": 2, "paused": false, "pauseReason": null }
+              }
+            }
+          },
+          "409": { "description": "Không có hàng chờ đang paused trong tab chat hiện tại." }
         }
       }
     },
@@ -1452,6 +1488,19 @@
           "duration": { "type": "string", "example": "2.4s" },
           "aborted": { "type": "boolean", "description": "Có mặt khi lượt bị hủy trước khi kết thúc." },
           "createdAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "ResumeQueueResponse": {
+        "type": "object",
+        "required": ["success", "action", "sessionId", "status", "queuedTurns", "paused"],
+        "properties": {
+          "success": { "type": "boolean", "example": true },
+          "action": { "type": "string", "enum": ["resume_queue"] },
+          "sessionId": { "type": "string", "example": "s-1" },
+          "status": { "type": "string", "enum": ["ready"] },
+          "queuedTurns": { "type": "integer", "minimum": 0, "maximum": 32 },
+          "paused": { "type": "boolean", "example": false },
+          "pauseReason": { "type": ["string", "null"] }
         }
       },
       "AIModel": {

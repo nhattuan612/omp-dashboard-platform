@@ -46,7 +46,8 @@ const MAX_CHAT_MEDIA_MESSAGES = 200;
 const MAX_CHAT_BODY_BLOCKS = 256;
 const MAX_CHAT_BODY_TEXT_CHARS = 80_000;
 const MAX_CHAT_BODY_VALUE_DEPTH = 4;
-const CHAT_TURN_TIMEOUT_MS = 120_000;
+const testChatTurnTimeout = process.env.NODE_ENV === "test" ? Number(process.env.OMP_DASHBOARD_TEST_CHAT_TURN_TIMEOUT_MS) : NaN;
+const CHAT_TURN_TIMEOUT_MS = Number.isSafeInteger(testChatTurnTimeout) && testChatTurnTimeout > 0 ? testChatTurnTimeout : 120_000;
 const EGO_BROWSER_TURN_TIMEOUT_MS = 300_000;
 const LOCAL_PROMPT_RESULT_GRACE_MS = 1_000;
 const chatTurnTimeoutMs = (browserMode) => browserMode === "ego-browser" ? EGO_BROWSER_TURN_TIMEOUT_MS : CHAT_TURN_TIMEOUT_MS;
@@ -1088,10 +1089,67 @@ let chatDispatchGate = Promise.resolve();
 function chatTurnQueue(contextId) {
   let queue = chatTurnQueues.get(contextId);
   if (!queue) {
-    queue = { active: null, pending: [], pumping: false };
+    queue = { active: null, pending: [], pumping: false, paused: false, pauseReason: null };
     chatTurnQueues.set(contextId, queue);
   }
   return queue;
+}
+
+function pendingChatTurns(queue) {
+  return (queue?.pending || []).filter((entry) => !entry.cancelled);
+}
+
+function queueWaitingMessage({ phase, queueAhead, retryAfterSeconds }) {
+  if (phase === "paused") return "Hàng chờ tạm dừng sau lỗi hoặc lượt bị dừng.";
+  if (phase === "safety_cooldown") return `Safety Guard cooldown · còn ${retryAfterSeconds || 0}s`;
+  if (phase === "safety_gap") return `Đang chờ Safety Guard · còn ${retryAfterSeconds || 0}s`;
+  return queueAhead > 0 ? `Đang chờ lượt trước · còn ${queueAhead} order phía trước` : "Đang xử lý";
+}
+
+function chatTurnQueueSnapshot(queue) {
+  const pending = pendingChatTurns(queue);
+  return {
+    paused: Boolean(queue?.paused),
+    pauseReason: queue?.pauseReason || null,
+    queuedTurns: pending.length,
+  };
+}
+
+function notifyChatTurnQueue(queue) {
+  const pending = pendingChatTurns(queue);
+  const queuedTurns = pending.length;
+  pending.forEach((entry, index) => {
+    const phase = queue.paused ? "paused" : "fifo";
+    const queueAhead = (queue.active ? 1 : 0) + index;
+    const snapshot = {
+      phase,
+      queueAhead,
+      queuedTurns,
+      retryAfterSeconds: 0,
+      reason: queue.paused ? queue.pauseReason || "previous_turn_failed" : "fifo",
+    };
+    entry.onQueueState?.({ ...snapshot, message: queueWaitingMessage(snapshot) });
+  });
+}
+
+function pauseChatTurnQueue(contextId, reason) {
+  const queue = chatTurnQueues.get(contextId);
+  if (!queue || !pendingChatTurns(queue).length) return chatTurnQueueSnapshot(queue);
+  queue.paused = true;
+  queue.pauseReason = reason || "previous_turn_failed";
+  notifyChatTurnQueue(queue);
+  return chatTurnQueueSnapshot(queue);
+}
+
+function resumeChatTurnQueue(contextId) {
+  const queue = chatTurnQueues.get(contextId);
+  if (!queue) return { paused: false, pauseReason: null, queuedTurns: 0 };
+  queue.paused = false;
+  queue.pauseReason = null;
+  notifyChatTurnQueue(queue);
+  const snapshot = chatTurnQueueSnapshot(queue);
+  pumpChatTurnQueue(contextId);
+  return snapshot;
 }
 
 function releaseChatTurnQueue(contextId, queue) {
@@ -1101,11 +1159,11 @@ function releaseChatTurnQueue(contextId, queue) {
 
 function pumpChatTurnQueue(contextId) {
   const queue = chatTurnQueues.get(contextId);
-  if (!queue || queue.pumping || queue.active) return;
+  if (!queue || queue.pumping || queue.active || queue.paused) return;
   queue.pumping = true;
   const run = async () => {
     try {
-      while (!queue.active && queue.pending.length) {
+      while (!queue.paused && !queue.active && queue.pending.length) {
         const entry = queue.pending.shift();
         if (!entry || entry.cancelled) {
           entry?.resolve?.();
@@ -1113,6 +1171,7 @@ function pumpChatTurnQueue(contextId) {
         }
         queue.active = entry;
         entry.started = true;
+        notifyChatTurnQueue(queue);
         try {
           await entry.run();
           entry.resolve?.();
@@ -1120,12 +1179,13 @@ function pumpChatTurnQueue(contextId) {
           entry.reject?.(error);
         } finally {
           if (queue.active === entry) queue.active = null;
+          notifyChatTurnQueue(queue);
         }
       }
     } finally {
       queue.pumping = false;
       releaseChatTurnQueue(contextId, queue);
-      if (chatTurnQueues.get(contextId) === queue && !queue.active && queue.pending.length) queueMicrotask(() => pumpChatTurnQueue(contextId));
+      if (chatTurnQueues.get(contextId) === queue && !queue.paused && !queue.active && queue.pending.length) queueMicrotask(() => pumpChatTurnQueue(contextId));
     }
   };
   void run();
@@ -1149,6 +1209,7 @@ function enqueueChatTurn(contextId, entry) {
     const index = queue.pending.indexOf(entry);
     if (index >= 0) queue.pending.splice(index, 1);
     entry.resolve?.();
+    notifyChatTurnQueue(queue);
     releaseChatTurnQueue(contextId, queue);
     if (!queue.active) pumpChatTurnQueue(contextId);
   };
@@ -1157,6 +1218,7 @@ function enqueueChatTurn(contextId, entry) {
     return entry.promise;
   }
   queue.pending.push(entry);
+  notifyChatTurnQueue(queue);
   pumpChatTurnQueue(contextId);
   return entry.promise;
 }
@@ -1415,6 +1477,7 @@ function gatewayRecord(sessionId) {
 
 async function recycleGatewaySession(record) {
   if (!record || gatewaySessions.get(record.sessionId) !== record) return;
+  if (pendingChatTurns(chatTurnQueues.get(record.contextId)).length) return;
   gatewaySessions.delete(record.sessionId);
   failQueuedChatTurns(record.contextId, Object.assign(new Error("OMP context đã được khởi động lại; order đang chờ cần gửi lại."), { code: "UPSTREAM_ERROR" }));
   await rememberGatewaySession(record).catch(() => {});
@@ -2538,6 +2601,8 @@ async function chatSessionNativeState(sessionId) {
     protocolVersion: Number.isFinite(protocolVersion) ? protocolVersion : 1,
     activeTurn: Boolean(summary.safety?.activeTurn),
     queuedTurns: Math.max(0, Number(activeRequest?.pendingTurns) || 0) + (queue?.pending.length || 0),
+    queuePaused: Boolean(queue?.paused),
+    queuePauseReason: queue?.pauseReason || null,
     model: native.model || null,
     thinkingLevel: native.thinkingLevel || null,
     messageCount: messageCounts.length ? Math.max(...messageCounts) : 0,
@@ -2615,6 +2680,7 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
       timeout = null;
       if (unsubscribe) unsubscribe();
       activeChatRequests.delete(requestId);
+      if (queueEntry?.started && (fn === reject || value?.aborted)) pauseChatTurnQueue(record.contextId, value?.aborted ? "previous_turn_aborted" : "previous_turn_failed");
       if (queueEntry?.started) queueEntry.release?.();
       else queueEntry?.cancel?.();
       if (promptDispatched && ["UPSTREAM_TIMEOUT", "UPSTREAM_ERROR"].includes(value?.code)) void recycleGatewaySession(record);
@@ -2654,6 +2720,9 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
   });
   queueEntry = {
     requestId,
+    onQueueState(snapshot) {
+      active.queueState = snapshot;
+    },
     onQueueFailure(error) {
       if (!finished) failTurn(error);
     },
@@ -3104,7 +3173,7 @@ async function sessionAction(sessionId, req, providedBody = null) {
   const body = providedBody || await jsonBody(req);
   if (!body || Array.isArray(body) || typeof body !== "object") throw Object.assign(new Error("Payload phải là object JSON."), { code: "BAD_REQUEST" });
   const action = String(body.action || "").trim().toLowerCase();
-  if (!["rename", "pin", "unpin", "unread", "read", "mark_unread", "mark_read", "archive", "delete", "fork", "reconnect", "steer", "follow_up", "share", "tools", "assign_folder", "unassign_folder"].includes(action)) throw Object.assign(new Error("action không được hỗ trợ"), { code: "BAD_REQUEST", field: "action" });
+  if (!["rename", "pin", "unpin", "unread", "read", "mark_unread", "mark_read", "archive", "delete", "fork", "reconnect", "resume_queue", "steer", "follow_up", "share", "tools", "assign_folder", "unassign_folder"].includes(action)) throw Object.assign(new Error("action không được hỗ trợ"), { code: "BAD_REQUEST", field: "action" });
   const id = gatewaySessionId(sessionId);
   const metadata = await readChatMetadata();
   const current = metadata.sessions[id] || {};
@@ -3157,6 +3226,12 @@ async function sessionAction(sessionId, req, providedBody = null) {
     const nextRecord = await ensureChatSession(id, { cwd, approvalMode: savedApprovalMode, ...(Array.isArray(savedTools) ? { tools: savedTools } : {}) });
     const stored = await updateChatMetadata(id, { reconnectedAt: new Date().toISOString() }, { touchUpdatedAt: false });
     return { success: true, action, sessionId: id, status: "ready", metadata: stored, context: consoleBridge.publicSummary(nextRecord.contextId) };
+  } else if (action === "resume_queue") {
+    if (!record) throw Object.assign(new Error("Hàng chờ không còn hoạt động trong tab chat này."), { code: "CONFLICT" });
+    const queue = chatTurnQueues.get(record.contextId);
+    if (!queue?.paused) throw Object.assign(new Error("Hàng chờ không ở trạng thái tạm dừng."), { code: "CONFLICT" });
+    const snapshot = resumeChatTurnQueue(record.contextId);
+    return { success: true, action, sessionId: id, status: "ready", queuedTurns: snapshot.queuedTurns, paused: snapshot.paused, pauseReason: snapshot.pauseReason };
   } else if (action === "steer") {
     const message = chatPrompt(body.message);
     if (!record) throw Object.assign(new Error("Không có lượt đang chạy để hướng dẫn"), { code: "CONFLICT" });
@@ -3327,7 +3402,7 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
   activeChatRequests.set(requestId, streamRequest);
   appendChatMessage(sessionId, { id: `msg-${startedAt}`, role: "user", content: prompt, attachments, createdAt: new Date(startedAt).toISOString() });
   sendEvent("start", { requestId, sessionId, model: selectedModel.id });
-  sendEvent("waiting", { requestId, sessionId, retryAfterSeconds: 0, message: "Đã nhận order; đang chờ OMP dispatch…" });
+  sendEvent("waiting", { requestId, sessionId, phase: "fifo", queueAhead: 0, queuedTurns: 0, retryAfterSeconds: 0, reason: "dispatch", message: "Đang xử lý" });
   let reply = "";
   let assistantMessage = null;
   let assistantAttachments = [];
@@ -3350,8 +3425,13 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
     timeout = null;
     ended = true;
     const errorPayload = event === "error" ? publicStreamErrorPayload(payload) : payload;
+    if (event === "error" && errorPayload?.code === "UPSTREAM_TIMEOUT") {
+      streamRequest.abortRequested = true;
+      try { consoleBridge.send(record.contextId, { id: `abort-${requestId}`, type: "abort" }); } catch { /* context may already be closed */ }
+    }
     sendEvent(event, { requestId, ...errorPayload });
     activeChatRequests.delete(requestId);
+    if (queueEntry?.started && (event === "error" || errorPayload?.aborted)) pauseChatTurnQueue(record.contextId, errorPayload?.aborted ? "previous_turn_aborted" : "previous_turn_failed");
     observeChatRequest(requestId, sessionId, startedAt, event === "end" ? "completed" : event, event === "error" ? errorPayload : null, { ...timings, ...(timeToFirstDeltaMs == null ? {} : { timeToFirstDeltaMs }) });
     unsubscribe();
     if (!res.writableEnded) res.end();
@@ -3393,7 +3473,9 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
       const seconds = Math.max(1, Math.ceil(waitMs / 1000));
       if (seconds !== lastNotice) {
         lastNotice = seconds;
-        sendEvent("waiting", { requestId, sessionId, retryAfterSeconds: seconds, message: safety.blocked ? "Đang chờ Safety Guard hết cooldown…" : "Đang chờ OMP dispatch…" });
+        const phase = safety.blocked ? "safety_cooldown" : "safety_gap";
+        const snapshot = { phase, queueAhead: 0, queuedTurns: pendingChatTurns(chatTurnQueues.get(record.contextId)).length, retryAfterSeconds: seconds, reason: safety.blocked ? "safety_guard_cooldown" : "safety_guard_gap" };
+        sendEvent("waiting", { requestId, sessionId, ...snapshot, message: queueWaitingMessage(snapshot) });
       }
       await new Promise((resolve) => setTimeout(resolve, Math.min(1000, Math.max(250, waitMs))));
     }
@@ -3489,6 +3571,10 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
   });
   queueEntry = {
     requestId,
+    onQueueState(snapshot) {
+      streamRequest.queueState = snapshot;
+      if (!ended) sendEvent("waiting", { requestId, sessionId, ...snapshot });
+    },
     onQueueFailure(error) {
       if (!ended) finish("error", { code: error.code || "UPSTREAM_ERROR", message: error.message });
     },
@@ -4599,7 +4685,7 @@ const server = http.createServer(async (req, res) => {
         transport: { prompt: "http", stream: "sse", hostOnly: true },
         imageGenerationModels,
         features: ["sessions", "streaming", "commands", "abort", "slash-commands", "file-references", "media-attachments", "image-generation", "approval-roundtrip", "browser-control", "memory"],
-        sessionActions: { abort: "supported", followUp: "supported", fork: "supported", reconnect: "supported", steer: "unavailable" },
+        sessionActions: { abort: "supported", followUp: "supported", fork: "supported", reconnect: "supported", resumeQueue: "supported", steer: "unavailable" },
         featureStatus: { "session-actions": "supported", "file-reference": "supported", "media-attachments": "supported", "image-generation": imageGenerationModels.length ? "supported" : "unavailable", "stream-recovery": "partial", approval: "supported", "agent-hub": "unavailable", memory: "supported", share: "partial", "browser-control": "supported", media: "partial", "screen-capture": "unavailable" },
         browserControl: {
           status: "supported",
