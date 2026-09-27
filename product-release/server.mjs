@@ -1613,13 +1613,20 @@ async function updateChatMetadata(sessionId, patch, options = {}) {
 
 async function listChatFolders() {
   const metadata = await readChatMetadata();
-  const counts = new Map();
-  Object.values(metadata.sessions).forEach((session) => {
-    if (typeof session?.folderId === "string" && session.folderId) counts.set(session.folderId, (counts.get(session.folderId) || 0) + 1);
+  const sessionsByFolder = new Map();
+  Object.entries(metadata.sessions).forEach(([id, session]) => {
+    const folderId = typeof session?.folderId === "string" ? session.folderId : "";
+    if (!folderId || session?.deleted || session?.archived || !Object.hasOwn(metadata.folders, folderId)) return;
+    const sessions = sessionsByFolder.get(folderId) || [];
+    sessions.push(chatSessionView({ id, ...session }));
+    sessionsByFolder.set(folderId, sessions);
   });
   return Object.values(metadata.folders)
     .filter((folder) => folder && typeof folder.id === "string" && typeof folder.name === "string")
-    .map((folder) => ({ ...chatFolderView(folder), sessionCount: counts.get(folder.id) || 0 }));
+    .map((folder) => {
+      const sessions = (sessionsByFolder.get(folder.id) || []).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+      return { ...chatFolderView(folder), sessionCount: sessions.length, sessions };
+    });
 }
 
 async function createChatFolder(name, cwd) {

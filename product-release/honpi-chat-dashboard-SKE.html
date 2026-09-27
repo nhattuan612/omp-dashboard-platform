@@ -4049,6 +4049,51 @@
     .modal-backdrop.open { opacity: 1; pointer-events: auto; }
     .modal-box { width: 90%; max-width: 440px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 24px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.32); transform: scale(0.95); transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1); color: var(--fg); }
     .modal-backdrop.open .modal-box { transform: scale(1); }
+    .project-folder-modal { z-index: 1300; padding: 16px; }
+    .project-folder-modal-box { width: min(620px, calc(100vw - 32px)); max-width: 620px; max-height: min(760px, calc(100vh - 32px)); padding: 0; overflow: auto; scrollbar-color: var(--border) transparent; scrollbar-width: thin; }
+    .project-folder-modal-box::-webkit-scrollbar { width: 8px; }
+    .project-folder-modal-box::-webkit-scrollbar-thumb { background: var(--border); border-radius: var(--radius-pill); }
+    .project-folder-modal-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 22px 24px 18px; border-bottom: 1px solid var(--border); }
+    .project-folder-modal-heading { min-width: 0; }
+    .project-folder-modal-eyebrow, .workspace-picker-kicker { display: block; color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: .09em; line-height: 1.3; }
+    .project-folder-modal-heading h2 { margin: 5px 0 0; color: var(--fg); font-size: clamp(19px, 2.4vw, 22px); font-weight: 680; letter-spacing: -.025em; line-height: 1.2; }
+    .project-folder-modal-heading p { max-width: 470px; margin: 7px 0 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .project-folder-modal-body { display: grid; gap: 10px; padding: 20px 24px; }
+    .project-folder-field-label { color: var(--fg); font-size: 12px; font-weight: 650; line-height: 1.4; }
+    .project-folder-name-input { width: 100%; min-width: 0; box-sizing: border-box; min-height: 42px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-subtle); color: var(--fg); font: inherit; font-size: 14px; transition: border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease, background var(--motion-fast) ease; }
+    .project-folder-name-input::placeholder { color: var(--meta); }
+    .project-folder-name-input:focus { outline: none; border-color: var(--accent); background: var(--surface); box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent), transparent 82%); }
+    .project-folder-name-input:disabled { opacity: .7; cursor: not-allowed; }
+    .workspace-picker { display: grid; gap: 10px; min-width: 0; margin-top: 10px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-md); background: color-mix(in oklab, var(--surface-subtle), var(--bg) 22%); }
+    .workspace-picker-heading, .workspace-selection-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
+    .workspace-picker-heading h3 { margin: 3px 0 0; color: var(--fg); font-size: 14px; font-weight: 650; line-height: 1.35; }
+    .workspace-picker .btn { min-height: 34px; flex: 0 0 auto; }
+    .workspace-current { display: grid; gap: 3px; min-width: 0; padding: 10px 11px; border: 1px solid color-mix(in oklab, var(--border), transparent 18%); border-radius: var(--radius-sm); background: var(--surface); }
+    .workspace-current-label, .workspace-selection-label { color: var(--meta); font-size: 10.5px; font-weight: 650; letter-spacing: .03em; line-height: 1.3; text-transform: uppercase; }
+    .workspace-current-path, .workspace-selection-path { min-width: 0; overflow: hidden; color: var(--fg); font-family: var(--font-mono); font-size: 11.5px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+    .workspace-roots { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 7px; }
+    .workspace-root-chip, .workspace-directory-row { width: 100%; min-width: 0; border: 1px solid var(--border); color: var(--fg); cursor: pointer; text-align: left; transition: border-color var(--motion-fast) ease, background var(--motion-fast) ease, transform var(--motion-fast) ease; }
+    .workspace-root-chip { display: grid; gap: 2px; padding: 9px 10px; border-radius: var(--radius-sm); background: var(--surface); }
+    .workspace-root-chip:hover, .workspace-directory-row:hover { border-color: color-mix(in oklab, var(--accent), var(--border) 54%); background: var(--surface-hover); }
+    .workspace-root-chip:active, .workspace-directory-row:active { transform: translateY(1px); }
+    .workspace-root-chip:focus-visible, .workspace-directory-row:focus-visible, .workspace-picker .btn:focus-visible, .project-folder-modal-actions .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .workspace-root-name, .workspace-directory-name { overflow: hidden; color: var(--fg); font-size: 12px; font-weight: 600; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+    .workspace-root-path { overflow: hidden; color: var(--meta); font-family: var(--font-mono); font-size: 10px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+    .workspace-directories { display: grid; gap: 5px; max-height: 218px; min-height: 52px; overflow: auto; padding-right: 3px; scrollbar-color: var(--border) transparent; scrollbar-width: thin; }
+    .workspace-directories::-webkit-scrollbar { width: 7px; }
+    .workspace-directories::-webkit-scrollbar-thumb { background: var(--border); border-radius: var(--radius-pill); }
+    .workspace-directory-row { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: var(--radius-sm); background: transparent; }
+    .workspace-directory-row .folder-icon { width: 16px; height: 16px; color: var(--accent); opacity: .9; }
+    .workspace-directory-copy { display: grid; gap: 1px; min-width: 0; flex: 1; }
+    .workspace-directory-detail { color: var(--meta); font-size: 10.5px; line-height: 1.35; }
+    .workspace-directory-chevron { color: var(--meta); font-size: 20px; font-weight: 300; line-height: 1; }
+    .workspace-picker-empty { display: grid; place-items: center; min-height: 52px; padding: 10px; border: 1px dashed var(--border); border-radius: var(--radius-sm); color: var(--muted); font-size: 12px; text-align: center; }
+    .workspace-selection { display: grid; gap: 3px; min-width: 0; flex: 1; padding: 9px 10px; border: 1px solid color-mix(in oklab, var(--accent), var(--border) 62%); border-radius: var(--radius-sm); background: color-mix(in oklab, var(--accent), transparent 93%); }
+    .workspace-selection.is-empty { border-color: var(--border); background: transparent; }
+    .workspace-selection.is-empty .workspace-selection-path { color: var(--muted); }
+    .project-folder-form-error { margin: 2px 0 0; color: var(--danger); font-size: 12px; line-height: 1.45; }
+    .project-folder-modal-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 16px 24px 20px; border-top: 1px solid var(--border); }
+    .project-folder-modal-actions .btn { min-width: 108px; min-height: 38px; }
     @media (max-width: 680px) {
       .modal-kpi-grid {
         grid-template-columns: repeat(2, 1fr) !important;
@@ -4058,11 +4103,20 @@
         grid-template-columns: 1fr !important;
         gap: 6px !important;
       }
+      .project-folder-modal { padding: 10px; }
+      .project-folder-modal-box { width: min(100%, calc(100vw - 20px)); max-height: calc(100vh - 20px); }
+      .project-folder-modal-header { padding: 18px 18px 16px; gap: 12px; }
+      .project-folder-modal-body { padding: 16px 18px; }
+      .project-folder-modal-actions { padding: 14px 18px 18px; }
+      .workspace-picker { padding: 13px; }
     }
     @media (max-width: 380px) {
       .modal-kpi-grid {
         grid-template-columns: 1fr !important;
       }
+      .workspace-picker-heading, .workspace-selection-row { align-items: stretch; flex-direction: column; }
+      .workspace-picker-heading .btn, .workspace-selection-row .btn, .project-folder-modal-actions .btn { width: 100%; }
+      .project-folder-modal-actions { flex-direction: column-reverse; }
     }
     /* ─── Active Account Switcher & Telemetry in Quota Modal ─── */
     .active-account-strip {
@@ -7636,29 +7690,38 @@
     <span id="toastMsg">Thao tác đã được thực hiện thành công</span>
   </div>
 
-  <div class="modal-backdrop" id="projectFolderModal" role="dialog" aria-modal="true" aria-labelledby="projectFolderModalTitle" aria-hidden="true" inert style="z-index: 1300;">
-    <div class="modal-box" style="width: min(560px, calc(100vw - 32px)); max-height: 90vh; overflow: auto;">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;">
-        <div>
-          <div id="projectFolderModalTitle" style="font-size:16px;font-weight:700;">Tạo dự án</div>
-          <div style="font-size:12px;color:var(--muted);margin-top:4px;">Chọn thư mục thật trong workspace được phép. Chat mới sẽ chạy tại thư mục này.</div>
+  <div class="modal-backdrop project-folder-modal" id="projectFolderModal" role="dialog" aria-modal="true" aria-labelledby="projectFolderModalTitle" aria-hidden="true" inert>
+    <div class="modal-box project-folder-modal-box">
+      <div class="project-folder-modal-header">
+        <div class="project-folder-modal-heading">
+          <span class="project-folder-modal-eyebrow">PROJECT WORKSPACE</span>
+          <h2 id="projectFolderModalTitle">Tạo dự án</h2>
+          <p id="projectFolderModalDescription">Đặt tên rồi chọn thư mục nơi chat của dự án sẽ chạy.</p>
         </div>
         <button type="button" class="diff-review-close-btn" id="projectFolderCancelBtn" aria-label="Đóng">✕</button>
       </div>
-      <label for="projectFolderNameInput" style="display:block;font-size:12px;font-weight:600;margin:10px 0 6px;">Tên dự án</label>
-      <input id="projectFolderNameInput" type="text" maxlength="120" autocomplete="off" placeholder="Tên dự án" style="width:100%;box-sizing:border-box;padding:9px 11px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--fg);">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin:16px 0 8px;">
-        <strong style="font-size:12px;">Thư mục workspace</strong>
+      <div class="project-folder-modal-body">
+        <label for="projectFolderNameInput" class="project-folder-field-label">Tên dự án</label>
+        <input class="project-folder-name-input" id="projectFolderNameInput" type="text" maxlength="120" autocomplete="off" placeholder="Ví dụ: Website khách hàng">
+        <section class="workspace-picker" aria-labelledby="projectWorkspaceHeading">
+          <div class="workspace-picker-heading">
+            <div>
+              <span class="workspace-picker-kicker">VỊ TRÍ LƯU DỰ ÁN</span>
+              <h3 id="projectWorkspaceHeading">Thư mục workspace</h3>
+            </div>
         <button type="button" class="btn btn-secondary btn-sm" id="projectWorkspaceParentBtn" hidden>Thư mục cha</button>
+          </div>
+          <div id="projectWorkspaceCurrent" class="workspace-current">Đang tải workspace…</div>
+          <div id="projectWorkspaceRoots" class="workspace-roots" aria-label="Workspace gợi ý"></div>
+          <div id="projectWorkspaceDirs" class="workspace-directories" aria-label="Thư mục con"></div>
+          <div class="workspace-selection-row">
+            <div id="projectWorkspaceSelection" class="workspace-selection" aria-live="polite">Chưa chọn thư mục</div>
+            <button type="button" class="btn btn-secondary btn-sm" id="projectWorkspaceUseBtn" disabled>Chọn thư mục này</button>
+          </div>
+        </section>
+        <p class="project-folder-form-error" id="projectFolderFormError" role="alert" hidden></p>
       </div>
-      <div id="projectWorkspaceCurrent" style="font:11px var(--font-mono);overflow-wrap:anywhere;color:var(--muted);margin-bottom:8px;">Đang tải workspace…</div>
-      <div id="projectWorkspaceRoots" style="display:grid;gap:6px;margin-bottom:8px;"></div>
-      <div id="projectWorkspaceDirs" style="display:grid;gap:6px;max-height:210px;overflow:auto;padding:2px;"></div>
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px;">
-        <div id="projectWorkspaceSelection" style="font:11px var(--font-mono);overflow-wrap:anywhere;color:var(--muted);">Chưa chọn thư mục</div>
-        <button type="button" class="btn btn-secondary btn-sm" id="projectWorkspaceUseBtn" disabled>Dùng thư mục này</button>
-      </div>
-      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px;">
+      <div class="project-folder-modal-actions">
         <button type="button" class="btn btn-secondary" id="projectFolderCancelActionBtn">Hủy</button>
         <button type="button" class="btn btn-primary" id="projectFolderSaveBtn">Tạo dự án</button>
       </div>
