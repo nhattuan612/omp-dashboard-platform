@@ -1405,7 +1405,7 @@ async function selectedOmpTools(value) {
   return requested;
 }
 const OMP_BROWSER_MODES = [
-  { id: "ego-browser", label: "Ego Browser · Skill", status: "supported", default: true, note: "Gửi order trong ô chat; OMP nạp /skill:ego-browser và tự điều khiển browser bằng runtime của skill." },
+  { id: "ego-browser", label: "Ego Browser · Skill", status: "supported", default: false, note: "Chỉ bật khi Síp chọn; OMP nạp /skill:ego-browser cho các order cần web." },
   { id: "omp-browser-relay", label: "OMP Browser Relay", status: "unavailable", default: false, note: "Browser relay chưa được hỗ trợ." },
   { id: "chrome-electron", label: "Chrome/Electron hiện có", status: "unavailable", default: false, note: "Chrome/Electron automation chưa được hỗ trợ." },
 ];
@@ -1825,7 +1825,7 @@ function chatThinking(value) {
 }
 
 function browserMode(value) {
-  const mode = typeof value === "string" && value.trim() ? value.trim() : "ego-browser";
+  const mode = typeof value === "string" && value.trim() ? value.trim() : "none";
   if (!OMP_BROWSER_MODE_IDS.has(mode)) throw Object.assign(new Error("browserMode không hợp lệ"), { code: "BAD_REQUEST", field: "browserMode" });
   const definition = OMP_BROWSER_MODES.find((item) => item.id === mode);
   if (definition?.status === "unavailable") throw Object.assign(new Error(`Browser mode chưa khả dụng: ${mode}`), { code: "CONFLICT", field: "browserMode" });

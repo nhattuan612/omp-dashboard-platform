@@ -3042,6 +3042,7 @@
     .plus-item-desc { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.25; }
     .plus-menu-empty { padding: 24px 16px; text-align: center; color: var(--muted); font-size: 12px; display: none; }
     .ego-browser-toggle { 
+      appearance: none;
       display: inline-flex; 
       align-items: center; 
       gap: 6px; 
@@ -3072,6 +3073,7 @@
       background: color-mix(in oklab, var(--surface-raised, var(--surface)), var(--fg) 10%); 
       border-color: color-mix(in oklab, var(--border), var(--fg) 20%);
     }
+    .ego-browser-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     .ego-browser-toggle.active { 
       background: color-mix(in oklab, oklch(0.75 0.14 200), transparent 90%); 
       border-color: color-mix(in oklab, oklch(0.75 0.14 200), transparent 50%); 
@@ -5828,10 +5830,10 @@
 
 
                 <!-- Ego Browser Checkbox Toggle (from image-9) -->
-                <div class="ego-browser-toggle active" id="egoBrowserToggle" title="Bật/tắt duyệt web tự động bằng Ego Browser (từ ảnh 9)">
+                <button type="button" class="ego-browser-toggle" id="egoBrowserToggle" aria-pressed="false" title="Bật Ego Browser khi order cần web">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
-                  <span>Ego Browser</span>
-                </div>
+                  <span>Ego Browser · Tắt</span>
+                </button>
 
                 <!-- Full Access Approval Wrapper & Badge (from image-9, 10 & 71) -->
                 <div class="full-access-wrapper" id="fullAccessWrapper">
