@@ -113,6 +113,7 @@ function createSseReader(response) {
   }
 
   return {
+    next,
     async waitFor(predicate, label, timeoutMs = 5000) {
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
@@ -600,6 +601,13 @@ async function runContract() {
     assert.equal(page.status, 200, "isolated /chat route must load");
     const cookie = (page.headers.get("set-cookie") || "").split(";")[0];
     assert.match(cookie, /^omp_dashboard_session=/, "isolated dashboard must issue its own session cookie");
+    const passes = [];
+
+    const chatClient = await readFile(join(PROJECT_ROOT, "honpi-chat-dashboard-live.js"), "utf8");
+    assert.match(chatClient, /const isServerQueuedTurn = \(queue\) => queue\?\.phase === 'paused' \|\| \(queue\?\.phase === 'fifo' && Number\(queue\.queueAhead\) > 0\);/);
+    assert.match(chatClient, /if \(isServerQueuedTurn\(request\.queueState\) && !\['waiting', 'end', 'done', 'error'\]\.includes\(event\)\) return;/);
+    assert.match(chatClient, /if \(isServerQueuedTurn\(request\.queueState\)\) \{\s*renderQueueTray\(\);\s*return;\s*\}\s*mountChatTurn\(\);/);
+    passes.push("queued frontend turns remain in the tray until their backend turn dispatches");
 
     async function api(method, path, body) {
       const response = await fetch(`${baseUrl}${path}`, {
@@ -635,7 +643,6 @@ async function runContract() {
       try { payload = JSON.parse(text); } catch { payload = text; }
       return { status: response.statusCode, payload };
     }
-    const passes = [];
     const capabilities = await api("GET", "/api/v1/omp/capabilities");
     assert.equal(capabilities.status, 200, `capabilities request failed: ${JSON.stringify(capabilities.payload)}\n${stderr}\n${stdout}`);
     assert.deepEqual(capabilities.payload.imageGenerationModels, ["smoke-image-model"], "fixture runtime should advertise the image-generation model");
@@ -1367,14 +1374,17 @@ async function runContract() {
     const fifoBlocker = await openStream(fifoSession.id, "QUEUE_FIFO_BLOCKER", "fifo-blocker");
     await fifoBlocker.reader.waitFor((event) => event.event === "lifecycle" && event.data.type === "turn_start", "FIFO blocker turn start");
     const fifoFirst = await openStream(fifoSession.id, "CONCURRENT_FIFO_ONE", `fifo-one-${randomUUID()}`);
-    await fifoFirst.reader.waitFor((event) => event.event === "start", "FIFO first start");
-    const fifoFirstWaiting = await fifoFirst.reader.waitFor((event) => event.event === "waiting" && event.data.phase === "fifo" && event.data.queueAhead === 1, "FIFO first queue snapshot");
+    assert.equal((await fifoFirst.reader.next(5000)).event, "start", "FIFO first stream starts before its queue snapshot");
+    const fifoFirstWaiting = await fifoFirst.reader.next(5000);
     const fifoSecond = await openStream(fifoSession.id, "CONCURRENT_FIFO_TWO", `fifo-two-${randomUUID()}`);
-    await fifoSecond.reader.waitFor((event) => event.event === "start", "FIFO second start");
-    const fifoSecondWaiting = await fifoSecond.reader.waitFor((event) => event.event === "waiting" && event.data.phase === "fifo" && event.data.queueAhead === 2, "FIFO second queue snapshot");
+    assert.equal((await fifoSecond.reader.next(5000)).event, "start", "FIFO second stream starts before its queue snapshot");
+    const fifoSecondWaiting = await fifoSecond.reader.next(5000);
     const fifoThird = await openStream(fifoSession.id, "CONCURRENT_FIFO_THREE", `fifo-three-${randomUUID()}`);
-    await fifoThird.reader.waitFor((event) => event.event === "start", "FIFO third start");
-    const fifoThirdWaiting = await fifoThird.reader.waitFor((event) => event.event === "waiting" && event.data.phase === "fifo" && event.data.queueAhead === 3, "FIFO third queue snapshot");
+    assert.equal((await fifoThird.reader.next(5000)).event, "start", "FIFO third stream starts before its queue snapshot");
+    const fifoThirdWaiting = await fifoThird.reader.next(5000);
+    assert.equal(fifoFirstWaiting.event, "waiting", "FIFO first receives one authoritative queue snapshot");
+    assert.equal(fifoSecondWaiting.event, "waiting", "FIFO second receives one authoritative queue snapshot");
+    assert.equal(fifoThirdWaiting.event, "waiting", "FIFO third receives one authoritative queue snapshot");
     assert.equal(fifoFirstWaiting.data.queueAhead, 1, "first queued order must see the active turn ahead");
     assert.equal(fifoSecondWaiting.data.queueAhead, 2, "second order must retain FIFO position");
     assert.equal(fifoThirdWaiting.data.queueAhead, 3, "third order must retain FIFO position");
@@ -1510,7 +1520,7 @@ async function runContract() {
       if (queuedMessageFound) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
-    assert.equal(queuedMessageFound, true, "queued request must be registered before abort");
+    assert.equal(queuedMessageFound, false, "queued request must stay out of the conversation before dispatch");
     const queuedAbort = await api("POST", "/api/v1/chat/abort", { requestId: queuedRequestId, sessionId: queuedAbortSession.id });
     assert.equal(queuedAbort.status, 202);
     const queuedSendResult = await Promise.race([

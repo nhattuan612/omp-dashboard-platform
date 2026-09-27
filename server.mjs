@@ -1171,6 +1171,8 @@ function pumpChatTurnQueue(contextId) {
         }
         queue.active = entry;
         entry.started = true;
+        const activeSnapshot = { phase: "fifo", queueAhead: 0, queuedTurns: pendingChatTurns(queue).length, retryAfterSeconds: 0, reason: "dispatch" };
+        entry.onQueueState?.({ ...activeSnapshot, message: queueWaitingMessage(activeSnapshot) });
         notifyChatTurnQueue(queue);
         try {
           await entry.run();
@@ -2660,7 +2662,12 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
   record.updatedAt = startedAt;
   const active = { requestId, sessionId, contextId: record.contextId, startedAt, dispatched: false, promptDispatched: false };
   activeChatRequests.set(requestId, active);
-  appendChatMessage(sessionId, { id: `msg-${startedAt}`, role: "user", content: prompt, attachments, createdAt: new Date(startedAt).toISOString() });
+  let userMessagePersisted = false;
+  const persistUserMessage = () => {
+    if (userMessagePersisted) return;
+    userMessagePersisted = true;
+    appendChatMessage(sessionId, { id: `msg-${startedAt}`, role: "user", content: prompt, attachments, createdAt: new Date(startedAt).toISOString() });
+  };
   let reply = "";
   let assistantMessage = null;
   let assistantAttachments = [];
@@ -2727,6 +2734,7 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
       if (!finished) failTurn(error);
     },
     async run() {
+      persistUserMessage();
       try {
         while (!finished) {
           const safety = consoleBridge.safety();
@@ -3400,9 +3408,13 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
   record.updatedAt = startedAt;
   const streamRequest = { requestId, sessionId, contextId: record.contextId, startedAt, stream: true, pendingTurns: 0, dispatched: false };
   activeChatRequests.set(requestId, streamRequest);
-  appendChatMessage(sessionId, { id: `msg-${startedAt}`, role: "user", content: prompt, attachments, createdAt: new Date(startedAt).toISOString() });
+  let userMessagePersisted = false;
+  const persistUserMessage = () => {
+    if (userMessagePersisted) return;
+    userMessagePersisted = true;
+    appendChatMessage(sessionId, { id: `msg-${startedAt}`, role: "user", content: prompt, attachments, createdAt: new Date(startedAt).toISOString() });
+  };
   sendEvent("start", { requestId, sessionId, model: selectedModel.id });
-  sendEvent("waiting", { requestId, sessionId, phase: "fifo", queueAhead: 0, queuedTurns: 0, retryAfterSeconds: 0, reason: "dispatch", message: "Đang xử lý" });
   let reply = "";
   let assistantMessage = null;
   let assistantAttachments = [];
@@ -3579,6 +3591,7 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
       if (!ended) finish("error", { code: error.code || "UPSTREAM_ERROR", message: error.message });
     },
     async run() {
+      persistUserMessage();
       try {
         while (!ended) {
           await waitForRequestSlot();
