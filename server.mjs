@@ -35,7 +35,6 @@ const OMP_LOG_ROOT = join(homedir(), ".omp/logs");
 const OMP_ARCHIVE_ROOT = join(homedir(), ".omp/agent/archive/console-sessions");
 const OMP_TRASH_ROOT = join(homedir(), ".omp/agent/trash/console-sessions");
 const OMP_AGENT_BLOB_ROOT = join(homedir(), ".omp/agent/blobs");
-const OMP_IMAGEGEN_SKILL = join(homedir(), ".omp/agent/skills/imagegen/SKILL.md");
 const GENERAL_CHAT_CWD = process.env.OMP_DASHBOARD_GENERAL_WORKSPACE || join(homedir(), "Documents", "OMP General Chat");
 const DEFAULT_CHAT_CWD = process.env.OMP_DASHBOARD_WORKSPACE || process.cwd();
 const PORT = Number(process.env.OMP_DASHBOARD_PORT || 4177);
@@ -1766,27 +1765,26 @@ function longRunningChatTurn(prompt, browserMode) {
   return browserMode === "ego-browser" || looksLikeImageGenerationPrompt(prompt) || isFullCodeAuditPrompt(prompt);
 }
 
+function isImageGenerationModel(value) {
+  return /(?:^|[-_])(?:image|imagen)(?:$|[-_])/i.test(String(value || ""));
+}
+
 function imageGenerationCapability(models) {
   const nativeModels = models.filter((model) => model.imageGeneration).map((model) => model.id);
   if (nativeModels.length) return { status: "supported", models: nativeModels, source: "model" };
-  if (existsSync(OMP_IMAGEGEN_SKILL)) return { status: "supported", models: [], source: "skill", invocation: "$imagegen" };
-  return { status: "unavailable", models: [], reason: "OMP chưa có model hoặc skill tạo ảnh có thể trả ảnh về chat." };
+  return { status: "unavailable", models: [], reason: "OMP chưa có model tạo ảnh native có thể trả ảnh về chat." };
 }
 
-function assertImageGenerationAvailable(prompt, model, models) {
-  if (!looksLikeImageGenerationPrompt(prompt) || model.imageGeneration || existsSync(OMP_IMAGEGEN_SKILL)) return;
-  const candidate = models.find((item) => item.imageGeneration);
-  const message = candidate
-    ? `Model "${model.id}" không tạo ảnh đầu ra. Hãy chọn "${candidate.name || candidate.id}".`
-    : "OMP runtime chưa có model hoặc skill tạo ảnh có thể trả ảnh về chat.";
-  throw Object.assign(new Error(message), { code: "IMAGE_GENERATION_MODEL_REQUIRED", field: "model" });
+function imageGenerationModelForPrompt(prompt, model, models) {
+  if (!looksLikeImageGenerationPrompt(prompt) || model.imageGeneration) return model;
+  const candidate = models.find((item) => item.imageGeneration && item.provider === model.provider);
+  if (candidate) return candidate;
+  throw Object.assign(new Error(`Model "${model.id}" không tạo ảnh đầu ra và provider hiện tại chưa có model tạo ảnh native.`), { code: "IMAGE_GENERATION_MODEL_REQUIRED", field: "model" });
 }
 
 function imageOutputInstruction(prompt) {
   if (!looksLikeImageGenerationPrompt(prompt)) return "";
-  return existsSync(OMP_IMAGEGEN_SKILL)
-    ? "\n\n[Dashboard media contract: use $imagegen to create or edit the requested image. Return the generated image as an attachment. Do not say the image is complete unless an image attachment is returned.]"
-    : "\n\n[Dashboard media contract: return the generated image as an attachment. Do not say the image is complete unless an image attachment is returned.]";
+  return "\n\n[Dashboard media contract: use the selected native image model. Return the generated image as an attachment. Do not say the image is complete unless an image attachment is returned.]";
 }
 
 function normalizeModels(data) {
@@ -1802,7 +1800,7 @@ function normalizeModels(data) {
       provider: item.provider || "OMP",
       contextWindow: Number(item.contextWindow || item.contextLength || 0),
       isDefault: Boolean(item.isDefault || item.default) || (item.provider === "google-antigravity" && id === "gemini-3.8-flash"),
-      imageGeneration: explicitImageGeneration === true || (Array.isArray(output) && output.includes("image")),
+      imageGeneration: explicitImageGeneration === true || (Array.isArray(output) && output.includes("image")) || (explicitImageGeneration == null && isImageGenerationModel(`${id} ${name}`)),
       ...(item.description ? { description: item.description } : {}),
     };
   }).filter((item) => item.id);
@@ -3464,12 +3462,12 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
   const selectedApprovalMode = approvalMode(value("approvalMode"));
   const modelValidationStartedAt = Date.now();
   const { model, models } = await validateChatModel(requestedModel, modelProvider);
-  assertImageGenerationAvailable(prompt, model, models);
+  const imageModel = imageGenerationModelForPrompt(prompt, model, models);
   const modelValidationMs = Date.now() - modelValidationStartedAt;
   const quotaCheckStartedAt = Date.now();
   const selectedModel = modelSource === "quota"
-    ? await assertQuotaModelAllowed(model.id, models, modelProvider, sessionId)
-    : await assertGoogleQuotaModelAllowed(model, models, modelProvider, sessionId);
+    ? await assertQuotaModelAllowed(imageModel.id, models, imageModel.provider, sessionId)
+    : await assertGoogleQuotaModelAllowed(imageModel, models, imageModel.provider, sessionId);
   const quotaCheckMs = Date.now() - quotaCheckStartedAt;
   const attachments = normalizeChatAttachments(input?.attachments, { rejectInvalid: true });
   if (activeChatRequests.has(requestId)) throw Object.assign(new Error("requestId đang được xử lý"), { code: "CONFLICT" });
@@ -3497,7 +3495,7 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
   };
   const activityTimeoutMs = chatTurnTimeoutMs(prompt, selectedBrowserMode);
   const longRunning = activityTimeoutMs > CHAT_TURN_TIMEOUT_MS;
-  sendEvent("start", { requestId, sessionId, model: selectedModel.id, activityTimeoutSeconds: Math.ceil(activityTimeoutMs / 1000), longRunning });
+  sendEvent("start", { requestId, sessionId, model: selectedModel.id, imageModelAutoSelected: selectedModel.id !== model.id || selectedModel.provider !== model.provider, activityTimeoutSeconds: Math.ceil(activityTimeoutMs / 1000), longRunning });
   const expectsGeneratedImage = looksLikeImageGenerationPrompt(prompt);
   let reply = "";
   let assistantMessage = null;
@@ -4705,10 +4703,10 @@ const server = http.createServer(async (req, res) => {
       const requestId = chatRequestId(body.requestId);
       if (activeChatRequests.has(requestId)) throw Object.assign(new Error("requestId đang được xử lý"), { code: "CONFLICT" });
       const { model, models } = await validateChatModel(chatModel(body.model), modelProvider);
-      assertImageGenerationAvailable(prompt, model, models);
+      const imageModel = imageGenerationModelForPrompt(prompt, model, models);
       const selectedModel = modelSource === "quota"
-        ? await assertQuotaModelAllowed(model.id, models, modelProvider, sessionId)
-        : await assertGoogleQuotaModelAllowed(model, models, modelProvider, sessionId);
+        ? await assertQuotaModelAllowed(imageModel.id, models, imageModel.provider, sessionId)
+        : await assertGoogleQuotaModelAllowed(imageModel, models, imageModel.provider, sessionId);
       const record = await ensureChatSession(sessionId, { ...body, approvalMode: selectedApprovalMode, browserMode: selectedBrowserMode });
       record.selectedChatModel = selectedModel;
       if (isQuotaGoogleChatModel(selectedModel)) {

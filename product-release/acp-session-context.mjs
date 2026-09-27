@@ -485,6 +485,8 @@ export class AcpSessionContext {
           model: modelId(this.currentModel) || null,
           provider: modelProvider(this.currentModel),
           stopReason: result?.stopReason === "error" ? "error" : "end_turn",
+          ...(result?.errorMessage ? { errorMessage: String(result.errorMessage) } : {}),
+          ...(Number.isFinite(Number(result?.errorStatus)) ? { errorStatus: Number(result.errorStatus) } : {}),
           ...(usage ? { usage } : {}),
         };
         this.#emit("omp", { type: "message_end", message });
