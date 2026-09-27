@@ -48,7 +48,7 @@ for await (const line of lines) {
   } else if (frame.method === "session/prompt") {
     const text = (frame.params.prompt || []).map((part) => part.text || "").join("");
     if (text === "ERROR_429") {
-      reply(frame.id, { stopReason: "error", errorStatus: 429, errorMessage: "image quota exhausted" });
+      reply(frame.id, { stopReason: "error", error: { status: 429, message: "image quota exhausted" } });
       continue;
     }
     send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: frame.params.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: frame.params.sessionId + ":" + text } } } });

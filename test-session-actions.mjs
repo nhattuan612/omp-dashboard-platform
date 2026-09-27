@@ -542,6 +542,9 @@ async function fakeOmp(args) {
       } else if (frame.type === "prompt" && String(frame.message || "").includes("SSE_ERROR_REDACTION_CONTRACT")) {
         emit({ type: "turn_start" });
         emit({ type: "agent_end", isTerminal: true, message: { role: "assistant", stopReason: "error", errorMessage: "CHAT_FRAME_ERROR_SENTINEL" } });
+      } else if (frame.type === "prompt" && String(frame.message || "").includes("ACCOUNT_VERIFICATION_CONTRACT")) {
+        emit({ type: "turn_start" });
+        emit({ type: "agent_end", isTerminal: true, message: { role: "assistant", stopReason: "error", errorStatus: 403, errorMessage: "Account verification required for test@example.com" } });
       } else if (frame.type === "prompt") {
         emit({ type: "turn_start" });
         emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "working" } });
@@ -878,6 +881,7 @@ async function runContract() {
       try { await reader.waitFor(() => false, label, 7000); }
       catch (error) { received = String(error.message || error); }
       assert.match(received, new RegExp(code), `${label}: ${received}`);
+      return received;
     }
     const chunkedFolderName = "Chunked UTF-8 🧪 request";
     const chunkedFolder = await apiWithSplitUtf8("/api/v1/folders", { name: chunkedFolderName, cwd: workspaceRoot }, "🧪");
@@ -1314,6 +1318,10 @@ async function runContract() {
     );
     assert.match(chatErrorEventText, /UPSTREAM_ERROR/);
     assert.match(chatErrorEventText, /Yêu cầu không thành công/);
+    const verificationFailure = await openStream(splitUtf8Session.id, "ACCOUNT_VERIFICATION_CONTRACT", `account-verification-${randomUUID()}`, [], "smoke-external-model", "omp");
+    const verificationText = await assertStreamError(verificationFailure.reader, "ACCOUNT_VERIFICATION_REQUIRED", "account verification error");
+    assert.match(verificationText, /cần xác minh lại/);
+    assert.equal(verificationText.includes("test@example.com"), false, "account verification SSE must not expose provider details");
     passes.push("status and chat SSE redact raw OMP/provider diagnostics");
 
     const invalidModelSource = await api("POST", "/api/v1/chat/send", {

@@ -44,6 +44,16 @@ function jsonError(error) {
   return { code: error?.code || "UPSTREAM_ERROR", message: String(error?.message || "OMP ACP request failed").slice(0, 300) };
 }
 
+function promptResultError(result) {
+  const error = result?.error && typeof result.error === "object" ? result.error : {};
+  const message = result?.errorMessage ?? error.message ?? "";
+  const status = Number(result?.errorStatus ?? error.status ?? error.statusCode);
+  return {
+    ...(message ? { message: String(message) } : {}),
+    ...(Number.isFinite(status) ? { status } : {}),
+  };
+}
+
 export class AcpSessionContext {
   constructor({
     cwd,
@@ -479,14 +489,15 @@ export class AcpSessionContext {
       this.messageCount += this.promptAgentInvoked ? 2 : 1;
       if (this.promptAgentInvoked) {
         const usage = this.#normalizeUsage(result?.usage || this.lastUsage);
+        const promptError = promptResultError(result);
         const message = {
           role: "assistant",
           content: this.assistantContent,
           model: modelId(this.currentModel) || null,
           provider: modelProvider(this.currentModel),
           stopReason: result?.stopReason === "error" ? "error" : "end_turn",
-          ...(result?.errorMessage ? { errorMessage: String(result.errorMessage) } : {}),
-          ...(Number.isFinite(Number(result?.errorStatus)) ? { errorStatus: Number(result.errorStatus) } : {}),
+          ...(promptError.message ? { errorMessage: promptError.message } : {}),
+          ...(promptError.status != null ? { errorStatus: promptError.status } : {}),
           ...(usage ? { usage } : {}),
         };
         this.#emit("omp", { type: "message_end", message });

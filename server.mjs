@@ -2126,9 +2126,10 @@ function chatFrameFailure(frame) {
   const stopReason = message.stopReason || frame?.stopReason;
   if (stopReason !== "error" && !errorMessage && !Number.isFinite(errorStatus)) return null;
   const rateLimited = errorStatus === 429 || /429|resource[_ ]exhausted|quota|rate limit/i.test(errorMessage);
+  const verificationRequired = errorStatus === 403 || /account verification required/i.test(errorMessage);
   return {
-    code: rateLimited ? "RATE_LIMITED" : "UPSTREAM_ERROR",
-    message: rateLimited ? "Model đang hết quota hoặc bị giới hạn tạm thời; hãy chọn model khác hoặc thử lại sau." : "Yêu cầu không thành công.",
+    code: verificationRequired ? "ACCOUNT_VERIFICATION_REQUIRED" : rateLimited ? "RATE_LIMITED" : "UPSTREAM_ERROR",
+    message: verificationRequired ? "Tài khoản Google đang chọn cần xác minh lại trước khi tạo ảnh." : rateLimited ? "Model đang hết quota hoặc bị giới hạn tạm thời; hãy chọn model khác hoặc thử lại sau." : "Yêu cầu không thành công.",
   };
 }
 
