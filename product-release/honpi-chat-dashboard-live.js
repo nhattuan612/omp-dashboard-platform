@@ -84,6 +84,7 @@
   }
   const $ = (id) => document.getElementById(id);
   const text = (value) => String(value ?? '');
+  const workspacePathLabel = (value) => text(value).replace(/^\/Users\/[^/]+(?=\/|$)/, '~');
   const looksLikeImageGenerationPrompt = (value) => {
     const prompt = text(value).trim();
     if (!prompt) return false;
@@ -401,22 +402,30 @@
     pinnedList.replaceChildren(); tree.replaceChildren(); unassigned.replaceChildren();
     const pinned = sessions.filter((item) => item.isPinned);
     const folderGroups = new Map();
-    const addFolderGroup = (id, name) => {
+    const addFolderGroup = (id, name, sessionCount = 0) => {
       const key = id ? `id:${id}` : `name:${name}`;
-      if (!folderGroups.has(key)) folderGroups.set(key, { id: id || '', name, items: [] });
+      if (!folderGroups.has(key)) folderGroups.set(key, { id: id || '', name, sessionCount: 0, items: [] });
+      folderGroups.get(key).sessionCount = Math.max(folderGroups.get(key).sessionCount, Number(sessionCount) || 0);
       return folderGroups.get(key);
     };
+    const addFolderItem = (group, item) => {
+      const index = group.items.findIndex((candidate) => candidate.id === item.id);
+      if (index < 0) group.items.push(item);
+      else group.items[index] = { ...group.items[index], ...item };
+    };
     (state.folders || []).forEach((folder) => {
-      if (folder?.id && folder?.name) addFolderGroup(folder.id, folder.name);
+      if (!folder?.id || !folder?.name) return;
+      const group = addFolderGroup(folder.id, folder.name, folder.sessionCount);
+      (Array.isArray(folder.sessions) ? folder.sessions : []).forEach((item) => addFolderItem(group, item));
     });
     sessions.filter((item) => item.folderName).forEach((item) => {
-      addFolderGroup(item.folderId, item.folderName).items.push(item);
+      addFolderItem(addFolderGroup(item.folderId, item.folderName), item);
     });
     const visibleFolders = [...folderGroups.values()].filter((folder) => !query || folder.items.length || folder.name.toLowerCase().includes(query));
     const loose = sessions.filter((item) => !item.isPinned && !item.folderName);
     pinned.forEach((item) => pinnedList.append(makeSessionRow(item)));
     if (!pinned.length) pinnedList.append(emptyNode('Chưa có phiên ghim'));
-    visibleFolders.forEach(({ id, name, items }) => {
+    visibleFolders.forEach(({ id, name, items, sessionCount }) => {
       const folder = document.createElement('div'); folder.className = 'project-folder'; folder.dataset.folder = name; if (id) folder.dataset.folderId = id;
       applyFolderMode(folder, name);
       const header = document.createElement('div'); header.className = 'folder-header-row'; header.title = 'Nhấp để mở rộng / thu gọn · Kích phải để tùy chọn'; header.setAttribute('aria-haspopup', 'menu');
@@ -424,7 +433,7 @@
       const chevron = svgIcon('chevron');
       const icon = svgIcon('folder');
       const label = document.createElement('span'); label.className = 'folder-name'; label.textContent = name;
-      const count = document.createElement('span'); count.className = 'folder-count-badge'; count.textContent = String(items.length);
+      const count = document.createElement('span'); count.className = 'folder-count-badge'; count.textContent = String(Math.max(items.length, sessionCount || 0));
       left.append(chevron, icon, label, count);
       const actions = document.createElement('div'); actions.className = 'folder-header-actions';
       const projectRecord = (state.folders || []).find((item) => item?.id === id);
@@ -451,10 +460,10 @@
       const list = document.createElement('div'); list.className = 'folder-sessions-container project-folder-sessions'; list.dataset.folder = name; if (id) list.dataset.folderId = id;
       const isExpanded = state.folderExpanded.has(name);
       (isExpanded ? items : items.slice(0, 5)).forEach((item) => list.append(makeSessionRow(item)));
-      if (!items.length) list.append(emptyNode('Chưa có phiên trong folder'));
-      if (!isExpanded && (items.length > 5 || state.nextCursor)) {
-        const more = document.createElement('button'); more.type = 'button'; more.className = 'folder-load-more-btn'; more.textContent = `Tải thêm (${Math.max(items.length - 5, 0)}+)`; more.setAttribute('aria-label', `Tải thêm cuộc trò chuyện trong ${name}`);
-        more.addEventListener('click', async (event) => { event.preventDefault(); event.stopPropagation(); state.folderExpanded.add(name); if (state.nextCursor) await loadAllSessions(); else renderSessions(); }); list.append(more);
+      if (!items.length) list.append(emptyNode(sessionCount ? 'Đang tải cuộc trò chuyện trong folder…' : 'Chưa có phiên trong folder'));
+      if (!isExpanded && items.length > 5) {
+        const more = document.createElement('button'); more.type = 'button'; more.className = 'folder-load-more-btn'; more.textContent = `Tải thêm (${items.length - 5})`; more.setAttribute('aria-label', `Tải thêm cuộc trò chuyện trong ${name}`);
+        more.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); state.folderExpanded.add(name); renderSessions(); }); list.append(more);
       }
       folder.append(header, list); tree.append(folder); bindFolderHeader(header);
     });
@@ -583,45 +592,87 @@
     const parent = $('projectWorkspaceParentBtn');
     const use = $('projectWorkspaceUseBtn');
     const selection = $('projectWorkspaceSelection');
+    const loading = Boolean(workspace.loading);
+    const currentPath = text(workspace.currentPath).trim();
+    const selectedPath = text(state.projectSelectedCwd).trim();
+    const chatWorkspace = state.projectFolderPurpose === 'chat';
     roots?.replaceChildren();
     directories?.replaceChildren();
-    if (current) current.textContent = workspace.currentPath || 'Chọn một workspace root để duyệt thư mục.';
+    if (current) {
+      current.replaceChildren();
+      const label = document.createElement('span');
+      label.className = 'workspace-current-label';
+      label.textContent = loading ? 'Đang mở workspace' : 'Vị trí hiện tại';
+      const path = document.createElement('code');
+      path.className = 'workspace-current-path';
+      path.textContent = currentPath ? workspacePathLabel(currentPath) : 'Chọn một workspace root để bắt đầu.';
+      path.title = currentPath;
+      current.append(label, path);
+    }
     if (parent) {
       parent.hidden = !workspace.parentPath;
+      parent.disabled = loading;
+      parent.textContent = '← Lên một cấp';
       parent.onclick = () => { void loadProjectWorkspace(workspace.parentPath); };
     }
     if (use) {
-      const chatWorkspace = state.projectFolderPurpose === 'chat';
-      use.textContent = chatWorkspace ? 'Dùng workspace này' : 'Dùng thư mục này';
-      use.disabled = !workspace.currentPath;
+      use.textContent = chatWorkspace ? 'Chọn workspace này' : 'Chọn thư mục này';
+      use.disabled = !currentPath || loading;
       use.onclick = () => {
-        state.projectSelectedCwd = workspace.currentPath || '';
+        state.projectSelectedCwd = currentPath;
+        setProjectFolderFormError();
         if (chatWorkspace) closeProjectFolderModal({ cwd: state.projectSelectedCwd });
         else renderProjectWorkspacePicker();
       };
     }
-    if (selection) selection.textContent = state.projectSelectedCwd || 'Chưa chọn thư mục';
+    if (selection) {
+      selection.replaceChildren();
+      selection.classList.toggle('is-empty', !selectedPath);
+      const label = document.createElement('span');
+      label.className = 'workspace-selection-label';
+      label.textContent = selectedPath ? (chatWorkspace ? 'Chat mới sẽ chạy tại' : 'Dự án sẽ dùng') : 'Chưa chọn thư mục';
+      const path = document.createElement('code');
+      path.className = 'workspace-selection-path';
+      path.textContent = selectedPath ? workspacePathLabel(selectedPath) : 'Chọn “Chọn thư mục này” để tiếp tục.';
+      path.title = selectedPath;
+      selection.append(label, path);
+    }
     (workspace.roots || []).forEach((root) => {
       const button = document.createElement('button');
-      button.type = 'button'; button.className = 'btn btn-secondary btn-sm';
-      button.textContent = `${root.name} · ${root.path}`;
+      button.type = 'button'; button.className = 'workspace-root-chip';
+      const name = document.createElement('span'); name.className = 'workspace-root-name'; name.textContent = root.name;
+      const path = document.createElement('span'); path.className = 'workspace-root-path'; path.textContent = workspacePathLabel(root.path);
+      button.append(name, path);
       button.title = `Mở workspace root ${root.path}`;
+      button.setAttribute('aria-label', `Mở workspace ${root.name}`);
       button.addEventListener('click', () => { void loadProjectWorkspace(root.path); });
       roots?.append(button);
     });
     (workspace.directories || []).forEach((directory) => {
       const button = document.createElement('button');
-      button.type = 'button'; button.className = 'btn btn-secondary btn-sm';
-      button.textContent = `›  ${directory.name}`;
+      button.type = 'button'; button.className = 'workspace-directory-row';
+      const icon = svgIcon('folder');
+      const copy = document.createElement('span'); copy.className = 'workspace-directory-copy';
+      const name = document.createElement('span'); name.className = 'workspace-directory-name'; name.textContent = directory.name;
+      const detail = document.createElement('span'); detail.className = 'workspace-directory-detail'; detail.textContent = 'Mở thư mục';
+      const chevron = document.createElement('span'); chevron.className = 'workspace-directory-chevron'; chevron.textContent = '›'; chevron.setAttribute('aria-hidden', 'true');
+      copy.append(name, detail); button.append(icon, copy, chevron);
       button.title = directory.path;
+      button.setAttribute('aria-label', `Mở thư mục ${directory.name}`);
       button.addEventListener('click', () => { void loadProjectWorkspace(directory.path); });
       directories?.append(button);
     });
-    if (workspace.currentPath && !(workspace.directories || []).length) directories?.append(emptyNode('Không có thư mục con an toàn.'));
+    if (loading) {
+      const node = document.createElement('div'); node.className = 'workspace-picker-empty'; node.textContent = 'Đang tải thư mục…'; directories?.append(node);
+    } else if (currentPath && !(workspace.directories || []).length) {
+      const node = document.createElement('div'); node.className = 'workspace-picker-empty'; node.textContent = 'Không có thư mục con an toàn.'; directories?.append(node);
+    }
   }
 
   async function loadProjectWorkspace(path = null) {
     try {
+      state.projectWorkspace = { currentPath: path || state.projectWorkspace?.currentPath || '', loading: true };
+      renderProjectWorkspacePicker();
       const query = path ? `?path=${encodeURIComponent(path)}` : '';
       const { payload } = await readJson(`${API}/workspaces${query}`);
       state.projectWorkspace = payload;
@@ -649,8 +700,14 @@
     if (name) name.hidden = !visible;
     if (label) { label.hidden = !visible; label.style.display = visible ? 'block' : 'none'; }
   }
+  function setProjectFolderFormError(message = '') {
+    const error = $('projectFolderFormError');
+    if (!error) return;
+    error.textContent = message;
+    error.hidden = !message;
+  }
   function setProjectFolderModalDescription(value) {
-    const description = $('projectFolderModalTitle')?.nextElementSibling;
+    const description = $('projectFolderModalDescription');
     if (description) description.textContent = value;
   }
   function requestProjectFolder({ folder = null } = {}) {
@@ -665,6 +722,7 @@
     $('projectWorkspaceUseBtn') && ($('projectWorkspaceUseBtn').textContent = 'Dùng thư mục này');
     state.projectFolderEditingId = folder?.id || '';
     state.projectSelectedCwd = folder?.cwd || '';
+    setProjectFolderFormError();
     $('projectFolderModalTitle') && ($('projectFolderModalTitle').textContent = folder?.id ? 'Chọn thư mục workspace' : 'Tạo dự án');
     name.value = folder?.name || '';
     name.disabled = Boolean(folder?.id);
@@ -684,6 +742,7 @@
     state.projectFolderPurpose = 'chat';
     state.projectFolderEditingId = '';
     state.projectSelectedCwd = state.draftWorkspaceCwd || '';
+    setProjectFolderFormError();
     $('projectFolderModalTitle') && ($('projectFolderModalTitle').textContent = 'Chọn workspace cho chat mới');
     setProjectFolderModalDescription('Workspace chỉ chọn thư mục chạy cho chat này; không tạo hoặc gán project folder.');
     setProjectFolderNameVisible(false);
@@ -709,6 +768,7 @@
       if (event.key === 'Escape') cancel();
       if (event.key === 'Enter') { event.preventDefault(); $('projectFolderSaveBtn')?.click(); }
     });
+    $('projectFolderNameInput')?.addEventListener('input', () => setProjectFolderFormError());
     $('projectFolderSaveBtn')?.addEventListener('click', async () => {
       const button = $('projectFolderSaveBtn');
       const name = text($('projectFolderNameInput')?.value).trim();
@@ -718,8 +778,8 @@
         closeProjectFolderModal({ cwd: '' });
         return;
       }
-      if (!editingId && !name) return notify('Nhập tên dự án.', true);
-      if (!cwd) return notify('Chọn một thư mục workspace rồi bấm “Dùng thư mục này”.', true);
+      if (!editingId && !name) { setProjectFolderFormError('Nhập tên dự án để tiếp tục.'); $('projectFolderNameInput')?.focus(); return; }
+      if (!cwd) { setProjectFolderFormError('Chọn một thư mục rồi bấm “Chọn thư mục này”.'); $('projectWorkspaceUseBtn')?.focus(); return; }
       if (button) button.disabled = true;
       try {
         const url = editingId ? `${API}/folders/${encodeURIComponent(editingId)}` : `${API}/folders`;
@@ -728,7 +788,7 @@
         const { payload } = await readJson(url, { method, body: JSON.stringify(body) });
         closeProjectFolderModal(payload);
       } catch (error) {
-        notify(`Không thể lưu dự án: ${error.message}`, true);
+        setProjectFolderFormError(`Không thể lưu dự án: ${error.message}`);
       } finally {
         if (button) button.disabled = false;
       }

@@ -573,7 +573,7 @@ async function runContract() {
         OMP_DASHBOARD_TEST_APPROVAL_TIMEOUT_MS: String(TEST_APPROVAL_TIMEOUT_MS),
         OMP_DASHBOARD_TEST_CHAT_TURN_TIMEOUT_MS: "4000",
         OMP_DASHBOARD_TEST_SAFETY_COOLDOWN_MS: "1000",
-        OMP_DASHBOARD_TEST_SLOW_TURN_MS: "1500",
+        OMP_DASHBOARD_TEST_SLOW_TURN_MS: "3000",
         HOME: home,
         OMP_BIN: fakeBin,
         OMP_DASHBOARD_PORT: String(port),
@@ -2097,6 +2097,10 @@ async function runContract() {
     assert.equal(projectSession.payload.folderId, createdFolder.payload.id);
     assert.equal(projectSession.payload.folderName, "Contract folder");
     assert.equal(projectSession.payload.cwd, otherRoot, "project CWD must override any conflicting per-chat workspace");
+    const folderWithProject = await api("GET", "/api/v1/folders");
+    const projectFolderView = folderWithProject.payload.find((folder) => folder.id === createdFolder.payload.id);
+    assert.equal(projectFolderView?.sessionCount, 1, "folder count must include its project chat even when the main session list is paginated");
+    assert.equal(projectFolderView?.sessions?.[0]?.id, projectSession.payload.id, "folder response must include its assigned chat preview");
     let chatMetadata = JSON.parse(await readFile(metadataPath, "utf8"));
     assert.equal(chatMetadata.sessions[projectSession.payload.id].cwd, otherRoot, "new project chats must persist the project CWD before the first message");
     assert.equal(chatMetadata.sessions[projectSession.payload.id].folderId, createdFolder.payload.id);
