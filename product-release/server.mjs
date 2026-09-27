@@ -50,9 +50,10 @@ const MAX_CHAT_BODY_TEXT_CHARS = 80_000;
 const MAX_CHAT_BODY_VALUE_DEPTH = 4;
 const testChatTurnTimeout = process.env.NODE_ENV === "test" ? Number(process.env.OMP_DASHBOARD_TEST_CHAT_TURN_TIMEOUT_MS) : NaN;
 const CHAT_TURN_TIMEOUT_MS = Number.isSafeInteger(testChatTurnTimeout) && testChatTurnTimeout > 0 ? testChatTurnTimeout : 120_000;
-const EGO_BROWSER_TURN_TIMEOUT_MS = 300_000;
+const testLongChatTurnTimeout = process.env.NODE_ENV === "test" ? Number(process.env.OMP_DASHBOARD_TEST_LONG_CHAT_TURN_TIMEOUT_MS) : NaN;
+const LONG_CHAT_TURN_TIMEOUT_MS = Number.isSafeInteger(testLongChatTurnTimeout) && testLongChatTurnTimeout > 0 ? testLongChatTurnTimeout : 300_000;
 const LOCAL_PROMPT_RESULT_GRACE_MS = 1_000;
-const chatTurnTimeoutMs = (browserMode) => browserMode === "ego-browser" ? EGO_BROWSER_TURN_TIMEOUT_MS : CHAT_TURN_TIMEOUT_MS;
+const chatTurnTimeoutMs = (prompt, browserMode) => longRunningChatTurn(prompt, browserMode) ? LONG_CHAT_TURN_TIMEOUT_MS : CHAT_TURN_TIMEOUT_MS;
 const DASHBOARD_SESSION_COOKIE = "omp_dashboard_session";
 const DASHBOARD_SESSION_TOKEN = randomBytes(32).toString("base64url");
 const DASHBOARD_ORIGINS = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`]);
@@ -1755,6 +1756,15 @@ function looksLikeImageGenerationPrompt(value) {
   const image = /(?:ảnh|hình|image|picture|photo|png|jpe?g|svg|illustration|logo|poster)/i;
   return action.test(prompt) && image.test(prompt);
 }
+function isFullCodeAuditPrompt(value) {
+  const prompt = String(value || "").trim();
+  return /(?:đọc|read|audit|review|kiểm tra|phân tích|analy[sz]e|inspect)/i.test(prompt)
+    && /(?:toàn bộ|tất cả|entire|all)(?:\s|$|[.,:;!?])/i.test(prompt)
+    && /(?:file|tệp|code|mã nguồn|dự án|project|repo(?:sitory)?)/i.test(prompt);
+}
+function longRunningChatTurn(prompt, browserMode) {
+  return browserMode === "ego-browser" || looksLikeImageGenerationPrompt(prompt) || isFullCodeAuditPrompt(prompt);
+}
 
 function imageGenerationCapability(models) {
   const nativeModels = models.filter((model) => model.imageGeneration).map((model) => model.id);
@@ -2743,6 +2753,7 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
   let unsubscribe = () => {};
   let queueEntry = null;
   let failTurn;
+  let resetTurnTimeout = () => {};
   const done = new Promise((resolve, reject) => {
     const finish = (fn, value) => {
       if (finished) return;
@@ -2758,6 +2769,10 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
       fn(value);
     };
     failTurn = (error) => finish(reject, error);
+    resetTurnTimeout = () => {
+      if (timeout) clearTimeout(timeout);
+      timeout = setTimeout(() => finish(reject, Object.assign(new Error("OMP không trả lời trong thời gian cho phép"), { code: "UPSTREAM_TIMEOUT" })), chatTurnTimeoutMs(prompt, selectedBrowserMode));
+    };
     active.abort = () => {
       if (active.promptDispatched) return;
       finish(resolve, { id: null, content: reply, model, createdAt: new Date().toISOString(), aborted: true });
@@ -2768,6 +2783,7 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
         return;
       }
       if (event !== "omp" || !active.dispatched || !chatTurnOwner(record.contextId, requestId)) return;
+      resetTurnTimeout();
       for (const block of chatBodyBlocksFromFrame(frame, requestId, bodySequence++)) mergeChatBodyBlock(bodyBlocks, block);
       const failure = chatFrameFailure(frame);
       if (failure) return finish(reject, Object.assign(new Error(failure.message), { code: failure.code }));
@@ -2827,7 +2843,7 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
             active.dispatched = true;
             active.promptDispatched = true;
             dispatched = true;
-            timeout = setTimeout(() => finish(reject, Object.assign(new Error("OMP không trả lời trong thời gian cho phép"), { code: "UPSTREAM_TIMEOUT" })), chatTurnTimeoutMs(selectedBrowserMode));
+            resetTurnTimeout();
           });
           if (dispatched || finished) break;
         }
@@ -3479,7 +3495,9 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
     userMessagePersisted = true;
     appendChatMessage(sessionId, { id: `msg-${startedAt}`, role: "user", content: prompt, attachments, createdAt: new Date(startedAt).toISOString() });
   };
-  sendEvent("start", { requestId, sessionId, model: selectedModel.id });
+  const activityTimeoutMs = chatTurnTimeoutMs(prompt, selectedBrowserMode);
+  const longRunning = activityTimeoutMs > CHAT_TURN_TIMEOUT_MS;
+  sendEvent("start", { requestId, sessionId, model: selectedModel.id, activityTimeoutSeconds: Math.ceil(activityTimeoutMs / 1000), longRunning });
   const expectsGeneratedImage = looksLikeImageGenerationPrompt(prompt);
   let reply = "";
   let assistantMessage = null;
@@ -3516,6 +3534,10 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
     if (queueEntry?.started) queueEntry.release?.();
     else queueEntry?.cancel?.();
     if (!clientDisconnected && promptDispatched && event === "error" && ["UPSTREAM_TIMEOUT", "UPSTREAM_ERROR"].includes(errorPayload?.code)) void recycleGatewaySession(record);
+  };
+  const resetTurnTimeout = () => {
+    if (timeout) clearTimeout(timeout);
+    timeout = setTimeout(() => finish("error", { code: "UPSTREAM_TIMEOUT", message: "OMP không trả lời trong thời gian cho phép" }), activityTimeoutMs);
   };
   streamRequest.abort = () => finish("end", {
     sessionId,
@@ -3566,6 +3588,7 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
       return;
     }
     if (event !== "omp" || !streamRequest.dispatched || !chatTurnOwner(record.contextId, requestId)) return;
+    resetTurnTimeout();
     const bodyFrames = chatBodyBlocksFromFrame(frame, requestId, bodySequence++);
     for (const block of bodyFrames) {
       const mergedBlock = mergeChatBodyBlock(bodyBlocks, block);
@@ -3681,7 +3704,7 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
             streamRequest.promptDispatched = true;
             promptDispatched = true;
             dispatched = true;
-            timeout = setTimeout(() => finish("error", { code: "UPSTREAM_TIMEOUT", message: "OMP không trả lời trong thời gian cho phép" }), chatTurnTimeoutMs(selectedBrowserMode));
+            resetTurnTimeout();
           });
           if (dispatched || ended) break;
         }
