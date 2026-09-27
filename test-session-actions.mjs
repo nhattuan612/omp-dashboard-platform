@@ -477,6 +477,22 @@ async function fakeOmp(args) {
         emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ảnh mới đã xong" } });
         emit({ type: "message_end", message: { role: "assistant", content: "ảnh mới đã xong" } });
         emit({ type: "agent_end", message: { role: "assistant", content: "ảnh mới đã xong", model: "smoke-image-model" } });
+      } else if (frame.type === "prompt" && String(frame.message || "").includes("LONG_IMAGE_TIMEOUT_CONTRACT")) {
+        const outputImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+        emit({ type: "turn_start" });
+        await new Promise((resolve) => setTimeout(resolve, 4500));
+        emit({ type: "tool_execution_end", toolName: "image_gen", toolCallId: "long-image-1", result: "generated", attachments: [{ type: "image/png", data: outputImage, name: "long-result.png" }] });
+        emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "long-image-reply" } });
+        emit({ type: "message_end", message: { role: "assistant", content: "long-image-reply" } });
+        emit({ type: "agent_end", message: { role: "assistant", content: "long-image-reply", model: "smoke-image-model" } });
+      } else if (frame.type === "prompt" && String(frame.message || "").includes("LONG_AUDIT_TIMEOUT_CONTRACT")) {
+        emit({ type: "turn_start" });
+        await new Promise((resolve) => setTimeout(resolve, 4500));
+        emit({ type: "tool_execution_start", toolCallId: "long-audit-1", toolName: "read", args: { path: "src" } });
+        await new Promise((resolve) => setTimeout(resolve, 4500));
+        emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "long-audit-reply" } });
+        emit({ type: "message_end", message: { role: "assistant", content: "long-audit-reply" } });
+        emit({ type: "agent_end", message: { role: "assistant", content: "long-audit-reply", model: "smoke-model" } });
       } else if (frame.type === "prompt" && String(frame.message || "").includes("MEDIA_CONTRACT")) {
         const outputImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
         emit({ type: "turn_start" });
@@ -587,6 +603,7 @@ async function runContract() {
         OMP_DASHBOARD_TEST_CHAT_PROTOCOL: "rpc",
         OMP_DASHBOARD_TEST_APPROVAL_TIMEOUT_MS: String(TEST_APPROVAL_TIMEOUT_MS),
         OMP_DASHBOARD_TEST_CHAT_TURN_TIMEOUT_MS: "4000",
+        OMP_DASHBOARD_TEST_LONG_CHAT_TURN_TIMEOUT_MS: "5500",
         OMP_DASHBOARD_TEST_SAFETY_COOLDOWN_MS: "1000",
         OMP_DASHBOARD_TEST_SLOW_TURN_MS: "3000",
         HOME: home,
@@ -1892,6 +1909,28 @@ async function runContract() {
       assert.match(outbound.frame.message, /^\/skill:ego-browser\n\n/, "browser skill must run only when explicitly enabled");
       await reader.waitFor((event) => event.event === "end", "browser opt-in stream completion");
       passes.push("browser skill dispatches only after explicit opt-in");
+    }
+    {
+      const { reader } = await openStream(parent.id, "tạo ảnh LONG_IMAGE_TIMEOUT_CONTRACT", "long-image", [], "smoke-image-model");
+      const started = await reader.waitFor((event) => event.event === "start", "long image stream start");
+      assert.equal(started.data.longRunning, true);
+      assert.equal(started.data.activityTimeoutSeconds, 6);
+      const media = await reader.waitFor((event) => event.event === "media", "long image media", 12000);
+      assert.equal(media.data.attachments[0].name, "long-result.png");
+      await reader.waitFor((event) => event.event === "end", "long image stream completion", 12000);
+      passes.push("image generation receives the long-running watchdog");
+    }
+    {
+      const { reader } = await openStream(parent.id, "đọc toàn bộ file code dự án LONG_AUDIT_TIMEOUT_CONTRACT", "long-audit");
+      const started = await reader.waitFor((event) => event.event === "start", "long audit stream start");
+      assert.equal(started.data.longRunning, true);
+      assert.equal(started.data.activityTimeoutSeconds, 6);
+      const tool = await reader.waitFor((event) => event.event === "body" && event.data.block?.kind === "tool", "long audit activity", 12000);
+      assert.equal(tool.data.block.toolName, "read");
+      const delta = await reader.waitFor((event) => event.event === "delta" && event.data.content === "long-audit-reply", "long audit reply", 12000);
+      assert.equal(delta.data.content, "long-audit-reply");
+      await reader.waitFor((event) => event.event === "end", "long audit stream completion", 12000);
+      passes.push("active full-code audit refreshes its long-running watchdog");
     }
     {
       const inputImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
