@@ -612,6 +612,15 @@ async function runContract() {
     assert.ok(chatClient.includes("if (requestId !== state.sessionLoadRequestId) return;"));
     assert.ok(chatClient.includes("await loadFolders({ silent: true });"));
     passes.push("queued frontend turns remain in the tray until their backend turn dispatches");
+    assert.match(chatClient, /function copyText\(value, label = 'nội dung'\)/);
+    assert.match(chatClient, /Sao chép code/);
+    assert.match(chatClient, /Sao chép Markdown/);
+    assert.match(chatClient, /Chỉnh prompt trong ô nhập/);
+    assert.match(chatClient, /Tạo nhánh chat từ phản hồi này/);
+    assert.match(chatClient, /function fileChangeRows\(blocks\)/);
+    assert.match(chatClient, /ai-data-table/);
+    assert.match(chatClient, /function readAttachment\(file\)/);
+    passes.push("frontend exposes attachment, copy, prompt-revision, branch, markdown-table, and OMP file-change controls");
 
     async function api(method, path, body) {
       const response = await fetch(`${baseUrl}${path}`, {
