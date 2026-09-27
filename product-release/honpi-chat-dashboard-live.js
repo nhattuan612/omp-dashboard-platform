@@ -954,11 +954,42 @@
     const lines = text(source).replace(/\r/g, '').split('\n');
     let list = null; let listType = '';
     let code = null;
+    let codeLanguage = '';
+    let table = null;
     const flushList = () => { if (list) container.append(list); list = null; listType = ''; };
-    lines.forEach((line) => {
+    const tableCells = (line) => {
+      const value = text(line).trim();
+      if (!/^\|.*\|$/.test(value)) return null;
+      return value.slice(1, -1).split('|').map((cell) => cell.trim());
+    };
+    const tableDivider = (cells) => Array.isArray(cells) && cells.length && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+    const appendTableRow = (cells, tag) => { const row = document.createElement('tr'); cells.forEach((value) => { const cell = document.createElement(tag); appendInlineMarkdown(cell, value); row.append(cell); }); return row; };
+    const flushTable = () => { if (table) container.append(table.wrap); table = null; };
+    const appendCode = () => {
+      const box = document.createElement('div'); box.className = 'code-box';
+      const header = document.createElement('div'); header.className = 'code-header';
+      const label = document.createElement('span'); label.textContent = codeLanguage || 'code';
+      const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'code-copy-btn'; copy.textContent = 'Sao chép'; copy.title = 'Sao chép code'; copy.setAttribute('aria-label', 'Sao chép code');
+      const value = code.join('\n');
+      copy.addEventListener('click', () => void copyText(value, 'code'));
+      const pre = document.createElement('pre'); pre.className = 'code-pre'; const node = document.createElement('code'); node.textContent = value; pre.append(node);
+      header.append(label, copy); box.append(header, pre); container.append(box);
+    };
+    lines.forEach((line, index) => {
       const fence = line.match(/^\s*```(.*)$/);
-      if (fence) { if (code) { const pre = document.createElement('pre'); const node = document.createElement('code'); node.textContent = code.join('\n'); pre.append(node); container.append(pre); code = null; } else { flushList(); code = []; } return; }
+      if (fence) { if (code) { appendCode(); code = null; codeLanguage = ''; } else { flushList(); code = []; codeLanguage = text(fence[1]).trim().slice(0, 40); } return; }
       if (code) { code.push(line); return; }
+      const cells = tableCells(line);
+      if (table) {
+        if (tableDivider(cells)) return;
+        if (cells) { table.body.append(appendTableRow(cells, 'td')); return; }
+        flushTable();
+      }
+      if (cells && tableDivider(tableCells(lines[index + 1]))) {
+        flushList();
+        const wrap = document.createElement('div'); wrap.className = 'ai-data-table-wrap'; const node = document.createElement('table'); node.className = 'ai-data-table';
+        const head = document.createElement('thead'); head.append(appendTableRow(cells, 'th')); const body = document.createElement('tbody'); node.append(head, body); wrap.append(node); table = { wrap, body }; return;
+      }
       if (!line.trim()) { flushList(); return; }
       const heading = line.match(/^\s*#{1,3}\s+(.+?)\s*#*$/);
       if (heading) { flushList(); const node = document.createElement('h3'); node.className = 'chat-heading'; appendInlineMarkdown(node, heading[1]); container.append(node); return; }
@@ -971,8 +1002,21 @@
       if (!quote) node.className = 'chat-lead-text';
       appendInlineMarkdown(node, quote ? quote[1] : line); container.append(node);
     });
-    if (code) { const pre = document.createElement('pre'); const node = document.createElement('code'); node.textContent = code.join('\n'); pre.append(node); container.append(pre); }
+    if (code) appendCode();
+    flushTable();
     flushList();
+  }
+  async function copyText(value, label = 'nội dung') {
+    const content = text(value);
+    if (!content) return notify(`Không có ${label} để sao chép.`, true);
+    try {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(content);
+      else {
+        const field = document.createElement('textarea'); field.value = content; field.style.cssText = 'position:fixed;opacity:0;pointer-events:none;'; document.body.append(field); field.select();
+        try { if (!document.execCommand('copy')) throw new Error('copy unavailable'); } finally { field.remove(); }
+      }
+      notify(`Đã sao chép ${label}`);
+    } catch { notify(`Không thể sao chép ${label}.`, true); }
   }
   function attachmentImageSource(item) {
     const source = text(item?.data || item?.url || '').trim();
@@ -1246,6 +1290,68 @@
     if (!Array.isArray(blocks) || !blocks.length) return null;
     const body = document.createElement('div'); body.className = 'chat-body-toggles'; body.setAttribute('aria-label', 'Hoạt động Terminal OMP'); renderBodyBlocks(body, blocks); parent.append(body); return body;
   }
+  const fileEditAction = /\b(?:apply[_ -]?patch|write(?:[_ -]?file)?|edit(?:[_ -]?file)?|replace|create(?:[_ -]?file)?|delete(?:[_ -]?file)?|rename|move)\b/i;
+  const filePathPattern = /(?:~?\/|\.{1,2}\/)?(?:[\w@%+.,=-]+\/)*[\w@%+.,=-]+\.(?:[a-z0-9]{1,12})\b/gi;
+  function fileChangeRows(blocks) {
+    const rows = []; const seen = new Set();
+    groupedBodyBlocks(Array.isArray(blocks) ? blocks : []).forEach((block) => {
+      if (text(block?.kind) !== 'tool' || !fileEditAction.test([block.toolName, block.intent, bodyValueText(block.args), block.text, block.resultText].map(text).join('\n'))) return;
+      const sources = [block.args, block.result, block.text, block.resultText, block.intent].map(bodyValueText).join('\n');
+      for (const match of sources.matchAll(filePathPattern)) {
+        const path = text(match[0]).replace(/[),.;:]+$/, '');
+        if (!path || seen.has(path)) continue;
+        seen.add(path); rows.push({ path, status: text(block.status) || 'done', toolName: text(block.toolName) || 'OMP' });
+      }
+    });
+    return rows.slice(0, 12);
+  }
+  function renderFileChangeCard(host, blocks) {
+    if (!host) return [];
+    const rows = fileChangeRows(blocks); host.replaceChildren(); host.hidden = !rows.length;
+    if (!rows.length) return rows;
+    const running = rows.some((row) => row.status === 'running');
+    const failed = rows.every((row) => row.status === 'error');
+    const card = document.createElement('div'); card.className = 'file-change-card'; card.dataset.fileChangeCard = 'true';
+    const header = document.createElement('div'); header.className = 'file-change-card-header';
+    const left = document.createElement('div'); left.className = 'file-change-card-left';
+    const icon = document.createElement('span'); icon.className = 'file-change-icon-box'; icon.setAttribute('aria-hidden', 'true'); icon.textContent = '±';
+    const meta = document.createElement('div'); meta.className = 'file-change-meta';
+    const title = document.createElement('strong'); title.className = 'file-change-title'; title.textContent = failed ? 'Chỉnh sửa tệp chưa hoàn tất' : running ? `Đang chỉnh sửa ${rows.length} tệp` : `Đã chỉnh sửa ${rows.length} tệp`;
+    const detail = document.createElement('span'); detail.className = 'file-change-stats'; detail.textContent = 'Nguồn: hoạt động OMP';
+    meta.append(title, detail); left.append(icon, meta);
+    const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'btn-diff-review'; toggle.textContent = 'Xem hoạt động'; toggle.setAttribute('aria-expanded', 'false');
+    const list = document.createElement('div'); list.className = 'file-change-list'; list.hidden = true;
+    rows.forEach((row) => {
+      const item = document.createElement('div'); item.className = 'file-change-row';
+      const path = document.createElement('span'); path.className = 'file-path-wrap'; path.textContent = row.path; path.title = row.path;
+      const status = document.createElement('span'); status.className = 'file-diff-stats'; status.textContent = row.status === 'error' ? 'lỗi' : row.status === 'running' ? 'đang xử lý' : 'đã xong';
+      item.append(path, status); list.append(item);
+    });
+    toggle.addEventListener('click', () => { list.hidden = !list.hidden; toggle.setAttribute('aria-expanded', String(!list.hidden)); toggle.textContent = list.hidden ? 'Xem hoạt động' : 'Thu gọn'; });
+    header.append(left, toggle); card.append(header, list); host.append(card);
+    return rows;
+  }
+  function syncFileChangeFloatingBar(messages = state.messages) {
+    const bar = $('fileChangeFloatingBar'); const pill = $('fileChangeFloatingPill');
+    if (!bar || !pill) return;
+    const latest = [...(Array.isArray(messages) ? messages : [])].reverse().map((message) => fileChangeRows(message?.role === 'user' ? [] : message?.body)).find((rows) => rows.length);
+    const visible = Boolean(latest?.length);
+    bar.hidden = !visible; bar.classList.toggle('is-visible', visible); bar.style.removeProperty('display');
+    if (!visible) return;
+    pill.hidden = false; pill.disabled = false; pill.removeAttribute('aria-hidden'); pill.removeAttribute('onclick');
+    pill.replaceChildren(Object.assign(document.createElement('span'), { className: 'file-change-pill-text', textContent: `${latest.length} tệp đã thay đổi` }));
+    pill.title = 'Nhấp để xem hoạt động chỉnh sửa tệp'; pill.setAttribute('aria-label', pill.title);
+    pill.onclick = () => document.querySelector('[data-file-change-card="true"]')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+  function editUserPrompt(message) {
+    const input = $('chatInput');
+    if (!input) return notify('Không tìm thấy ô nhập prompt.', true);
+    if (text(input.value).trim() || state.attachments.length) { input.focus(); return notify('Ô nhập đang có bản nháp; hãy gửi hoặc xoá bản nháp trước khi chỉnh prompt.', true); }
+    input.value = text(message.content);
+    state.attachments = cloneSnapshot(Array.isArray(message.attachments) ? message.attachments : []);
+    renderAttachmentStrip(); input.dispatchEvent(new Event('input', { bubbles: true })); input.focus();
+    notify('Đã nạp prompt vào ô nhập; gửi sẽ tạo lượt mới.');
+  }
 
   function replaceQueuedUserMessage(messages, queueId, user) {
     const next = Array.isArray(messages) ? [...messages] : [];
@@ -1270,7 +1376,10 @@
       if (message.queueId && !message.requestId) wrap.dataset.queuePreviewId = message.queueId;
       renderMessageAttachments(wrap, message.attachments);
       if (text(message.content).trim()) { const bubble = document.createElement('div'); bubble.className = 'user-msg-bubble'; bubble.textContent = text(message.content); wrap.append(bubble); }
-      const footer = document.createElement('div'); footer.className = 'user-msg-footer'; const time = document.createElement('span'); time.className = 'user-msg-time'; time.textContent = new Date(message.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); footer.append(time); wrap.append(footer); return wrap;
+      const footer = document.createElement('div'); footer.className = 'user-msg-footer'; const time = document.createElement('span'); time.className = 'user-msg-time'; time.textContent = new Date(message.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'user-msg-act-btn'; copy.textContent = '⧉'; copy.title = 'Sao chép prompt'; copy.setAttribute('aria-label', 'Sao chép prompt'); copy.addEventListener('click', () => void copyText(message.content, 'prompt'));
+      const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'user-msg-act-btn'; edit.textContent = '✎'; edit.title = 'Chỉnh prompt trong ô nhập'; edit.setAttribute('aria-label', edit.title); edit.addEventListener('click', () => editUserPrompt(message));
+      footer.append(time, copy, edit); wrap.append(footer); return wrap;
     }
     const wrap = document.createElement('div');
     wrap.className = 'ai-response-wrap';
@@ -1285,6 +1394,7 @@
     const card = document.createElement('div');
     card.className = 'ai-message-card';
     renderMessageBody(card, message.body);
+    const fileChanges = document.createElement('div'); fileChanges.className = 'message-file-changes'; renderFileChangeCard(fileChanges, message.body); card.append(fileChanges);
     if (text(message.content).trim()) {
       const content = document.createElement('div');
       content.className = 'chat-markdown';
@@ -1292,17 +1402,12 @@
       card.append(content);
     }
     renderMessageAttachments(card, message.attachments);
-    if (text(message.content).trim()) {
+    if (text(message.content).trim() || (Array.isArray(message.attachments) && message.attachments.length)) {
       const actions = document.createElement('div');
       actions.className = 'msg-actions';
-      const copy = document.createElement('button');
-      copy.type = 'button';
-      copy.className = 'msg-act-btn';
-      copy.title = 'Sao chép phản hồi';
-      copy.setAttribute('aria-label', 'Sao chép phản hồi');
-      copy.textContent = '⧉';
-      copy.addEventListener('click', () => navigator.clipboard?.writeText(text(message.content)).then(() => notify('Đã sao chép phản hồi')).catch(() => notify('Không thể sao chép', true)));
-      actions.append(copy);
+      if (text(message.content).trim()) { const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'msg-act-btn'; copy.title = 'Sao chép Markdown'; copy.setAttribute('aria-label', copy.title); copy.textContent = '⧉'; copy.addEventListener('click', () => void copyText(message.content, 'Markdown')); actions.append(copy); }
+      const fork = document.createElement('button'); fork.type = 'button'; fork.className = 'msg-act-btn'; fork.title = 'Tạo nhánh chat từ phản hồi này'; fork.setAttribute('aria-label', fork.title); fork.textContent = '⌘'; fork.addEventListener('click', () => { if (!state.activeId) return notify('Chưa chọn cuộc trò chuyện.', true); void runAction(state.activeId, 'fork'); });
+      actions.append(fork);
       card.append(actions);
     }
     wrap.append(status, card);
@@ -1340,7 +1445,7 @@
   }
   function sanitizeProductionSurface() {
     const hide = (id) => { const node = $(id); if (node) { node.hidden = true; node.disabled = true; node.setAttribute('aria-hidden', 'true'); } };
-    ['fileChangeFloatingPill', 'toggleBottomPanelBtn', 'bottomPanel', 'headerActionDuplicate', 'headerActionExport', 'voiceRecordBtn', 'screenCaptureBtn', 'cameraCaptureBtn', 'microphoneCaptureBtn', 'videoCaptureBtn'].forEach(hide);
+    ['toggleBottomPanelBtn', 'bottomPanel', 'headerActionDuplicate', 'headerActionExport', 'voiceRecordBtn', 'screenCaptureBtn', 'cameraCaptureBtn', 'microphoneCaptureBtn', 'videoCaptureBtn'].forEach(hide);
     const tools = $('toolsContentArea');
     if (tools) { tools.replaceChildren(emptyNode('Chưa có công cụ backend')); tools.setAttribute('aria-live', 'polite'); }
     const toolsTab = $('drawerTabToolsBtn');
@@ -1353,6 +1458,7 @@
     stream.replaceChildren();
     state.messages = messages;
     messages.forEach((message) => stream.append(messageNode(message)));
+    syncFileChangeFloatingBar(messages);
     syncGreeting();
     const area = $('chatScrollArea'); if (area) area.scrollTop = area.scrollHeight;
   }
@@ -2028,6 +2134,7 @@
     bodyNode.className = 'chat-body-toggles';
     bodyNode.hidden = true;
     bodyNode.setAttribute('aria-label', 'Hoạt động Terminal OMP');
+    const fileChangesNode = document.createElement('div'); fileChangesNode.className = 'message-file-changes'; fileChangesNode.hidden = true;
     const replyNode = document.createElement('div');
     replyNode.className = 'chat-markdown';
     replyNode.dataset.streaming = 'true';
@@ -2040,8 +2147,10 @@
     const pushBodyBlock = (block) => {
       streamedBody = upsertBodyBlock(streamedBody, block);
       renderBodyBlocks(bodyNode, streamedBody);
+      renderFileChangeCard(fileChangesNode, streamedBody);
+      syncFileChangeFloatingBar([...state.messages, { role: 'assistant', body: streamedBody }]);
     };
-    card.append(bodyNode, replyNode, mediaNode);
+    card.append(bodyNode, fileChangesNode, replyNode, mediaNode);
     wrap.append(status, card);
     request.dom = { wrap, bodyNode, replyNode, mediaNode, card, label, approvals: [] };
     const mountChatTurn = () => {
@@ -2182,6 +2291,7 @@
           view.volatile = true;
           state.sessionViews.set(sessionId, view);
         }
+        if (isCurrentSession(guard)) syncFileChangeFloatingBar(state.messages);
       }
       await loadSessions(null, { silent: true }); if (isCurrentSession(guard)) notify('Đã nhận xong phản hồi');
     } catch (error) {
