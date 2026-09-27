@@ -13,6 +13,8 @@
   state.loadedModelSource = null;
   state.loadedModelProvider = null;
   state.modelAccessRequestId = 0;
+  state.folderLoadRequestId = 0;
+  state.sessionLoadRequestId = 0;
   let retryPromptText = '';
   let retryContext = null;
   let retryQueued = false;
@@ -874,12 +876,15 @@
     } catch (error) { notify(`Không thể ${actionLabel}: ${error.message}`, true); }
   }
   async function loadFolders(options = {}) {
+    const requestId = ++state.folderLoadRequestId;
     try {
       const { payload } = await readJson(`${API}/folders`);
+      if (requestId !== state.folderLoadRequestId) return state.folders;
       state.folders = Array.isArray(payload) ? payload : dataOf(payload, 'folders') || [];
       renderSessions();
       return state.folders;
     } catch (error) {
+      if (requestId !== state.folderLoadRequestId) return state.folders;
       if (!options.silent) notify(`Không tải được folder: ${error.message}`, true);
       renderSessions();
       return state.folders;
@@ -887,9 +892,11 @@
   }
   async function loadSessions(cursor = null, options = {}) {
     const loadGeneration = state.generation;
+    const requestId = ++state.sessionLoadRequestId;
     const url = `${API}/sessions?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
     try {
       const { payload, response } = await readJson(url);
+      if (requestId !== state.sessionLoadRequestId) return;
       const page = (Array.isArray(payload) ? payload : dataOf(payload, 'sessions') || [])
         .filter((item) => !String(item?.id || '').startsWith('models-') && item?.id)
         .map((item) => state.optimisticTitles.has(item.id) ? { ...item, title: state.optimisticTitles.get(item.id) } : item);
@@ -903,7 +910,10 @@
       }
       setConnectionStatus('Đã kết nối', 'connected');
       if (!options.silent) notify(`Đã kết nối backend chat · ${state.sessions.length} phiên`);
-    } catch (error) { setConnectionStatus('Đã ngắt kết nối', 'disconnected'); notify(`Không tải được session: ${error.message}`, true); }
+    } catch (error) {
+      if (requestId !== state.sessionLoadRequestId) return;
+      setConnectionStatus('Đã ngắt kết nối', 'disconnected'); notify(`Không tải được session: ${error.message}`, true);
+    }
   }
   async function loadAllSessions() { while (state.nextCursor) await loadSessions(state.nextCursor, { silent: true }); renderSessions(); }
 
@@ -1435,8 +1445,10 @@
         const { payload } = await readJson(`${API}/sessions`, { method: 'POST', body: JSON.stringify({ title, ...(options.folderId ? { folderId: options.folderId } : {}), ...(cwd ? { cwd } : {}), browserMode: state.browserMode, approvalMode: state.approvalMode, ...(state.selectedTools.length ? { tools: state.selectedTools } : {}) }) });
         const created = payload?.session || payload;
         if (!created?.id) throw new Error('Backend không trả id session hợp lệ');
+        state.sessionLoadRequestId += 1;
         state.sessions = [created, ...state.sessions.filter((item) => item.id !== created.id)];
         renderSessions();
+        await loadFolders({ silent: true });
         await selectSession(created.id, true, { deferMessages: true });
         return created;
       } catch (error) {
