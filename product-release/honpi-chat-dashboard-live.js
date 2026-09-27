@@ -3,7 +3,9 @@
   'use strict';
   window.HONPI_CHAT_CONFIG = { endpoints: { sessions: '/api/v1/sessions', stream: '/api/v1/chat/stream', models: '/api/v1/quota/models' } };
   const API = '/api/v1';
-  const state = { sessions: [], nextCursor: null, activeId: null, generation: 0, messages: [], models: [], activeModel: null, controller: null, requestId: null, activeRequest: null, createPromise: null, menu: null, folderMenu: null, quota: null, accounts: [], attachments: [], workspaceFiles: [], workspaceMention: '@', capabilities: null, selectedTools: [], toolsUpdating: false, folderExpanded: new Set(), folderCollapsed: new Set(), thinking: localStorage.getItem('omp.thinking') || 'max', browserMode: localStorage.getItem('omp.browserMode') || 'ego-browser', shareMode: localStorage.getItem('omp.shareMode') || 'encrypted', approvalMode: localStorage.getItem('omp.approvalMode') || 'always-ask', enterBehavior: localStorage.getItem('omp.enterBehavior') || 'queue', conversationDisplay: localStorage.getItem('omp.conversationDisplay') || 'compact', pendingPrompts: [], queuePaused: false, queueDraining: false, browserAction: null, browserStatus: null, media: { screenCapture: { status: 'unavailable', reason: 'Native screen capture is not provided by OMP dashboard.' }, camera: { status: 'unavailable' }, microphone: { status: 'unavailable' }, video: { status: 'unavailable' } } };
+  const BROWSER_MODE_PREFERENCE_VERSION = 'manual-v1';
+  const initialBrowserMode = localStorage.getItem('omp.browserModePreferenceVersion') === BROWSER_MODE_PREFERENCE_VERSION ? localStorage.getItem('omp.browserMode') : 'none';
+  const state = { sessions: [], nextCursor: null, activeId: null, generation: 0, messages: [], models: [], activeModel: null, controller: null, requestId: null, activeRequest: null, createPromise: null, menu: null, folderMenu: null, quota: null, accounts: [], attachments: [], workspaceFiles: [], workspaceMention: '@', capabilities: null, selectedTools: [], toolsUpdating: false, folderExpanded: new Set(), folderCollapsed: new Set(), thinking: localStorage.getItem('omp.thinking') || 'max', browserMode: initialBrowserMode === 'ego-browser' ? 'ego-browser' : 'none', shareMode: localStorage.getItem('omp.shareMode') || 'encrypted', approvalMode: localStorage.getItem('omp.approvalMode') || 'always-ask', enterBehavior: localStorage.getItem('omp.enterBehavior') || 'queue', conversationDisplay: localStorage.getItem('omp.conversationDisplay') || 'compact', pendingPrompts: [], queuePaused: false, queueDraining: false, browserAction: null, browserStatus: null, media: { screenCapture: { status: 'unavailable', reason: 'Native screen capture is not provided by OMP dashboard.' }, camera: { status: 'unavailable' }, microphone: { status: 'unavailable' }, video: { status: 'unavailable' } } };
   state.enterBehavior = 'send';
   state.modelAccess = null;
   state.modelAccessInitialized = false;
@@ -236,6 +238,11 @@
   }
   function snapshotSettings() {
     return { model: state.activeModel || null, modelProvider: state.activeModelProvider, modelSource: state.modelSource, thinking: state.thinking, browserMode: state.browserMode, approvalMode: state.approvalMode, tools: [...state.selectedTools] };
+  }
+  function setBrowserMode(value) {
+    state.browserMode = value === 'ego-browser' ? 'ego-browser' : 'none';
+    localStorage.setItem('omp.browserMode', state.browserMode);
+    localStorage.setItem('omp.browserModePreferenceVersion', BROWSER_MODE_PREFERENCE_VERSION);
   }
   const setConnectionStatus = (label, stateName = 'connected') => {
     const pill = $('connectionStatusPill');
@@ -2985,7 +2992,7 @@
     if (plugins && !$('ompBrowserModeSelect')) {
       const card = document.createElement('div'); card.className = 'settings-section-card';
       const title = document.createElement('div'); title.className = 'settings-section-title'; title.textContent = 'Browser mode OMP';
-      const help = document.createElement('div'); help.className = 'settings-help-text'; help.textContent = 'Gửi order trong ô chat; OMP sẽ nạp /skill:ego-browser và tự điều khiển browser bằng runtime mặc định. Không có panel URL/ref/selector thủ công.';
+      const help = document.createElement('div'); help.className = 'settings-help-text'; help.textContent = 'Mặc định tắt. Chỉ bật Ego Browser cho các order cần web; lựa chọn giữ nguyên đến khi tắt. Order có ảnh luôn gửi thẳng vào OMP, không qua browser skill.';
       const select = document.createElement('select'); select.id = 'ompBrowserModeSelect'; select.className = 'settings-select';
       const shareTitle = document.createElement('div'); shareTitle.className = 'settings-section-title'; shareTitle.textContent = 'Share mode OMP';
       const shareHelp = document.createElement('div'); shareHelp.className = 'settings-help-text'; shareHelp.textContent = 'Encrypted tạo liên kết OMP; Local chỉ dùng trên dashboard máy này. Collab chỉ bật khi có host adapter.';
@@ -2996,12 +3003,12 @@
       const card = document.createElement('div'); card.id = 'ompMemoryStatus'; card.className = 'settings-section-card settings-memory-panel';
       plugins.append(card);
     }
-    const select = $('ompBrowserModeSelect'); const modes = state.capabilities?.browsers || [];
+    const select = $('ompBrowserModeSelect'); const modes = [{ id: 'none', label: 'Tắt · Chat thường', status: 'supported' }, ...(state.capabilities?.browsers || [])];
     if (select) {
       select.replaceChildren(...modes.map((mode) => { const option = document.createElement('option'); option.value = mode.id; option.textContent = `${mode.label}${mode.status === 'unavailable' ? ' · Chưa khả dụng' : mode.status === 'partial' ? ' · Một phần' : ''}`; option.disabled = mode.status === 'unavailable'; return option; }));
-      const selected = modes.find((mode) => mode.id === state.browserMode && mode.status !== 'unavailable') || modes.find((mode) => mode.status === 'supported' || mode.status === 'partial');
+      const selected = modes.find((mode) => mode.id === state.browserMode && mode.status !== 'unavailable') || modes[0];
       state.browserMode = selected?.id || 'none'; localStorage.setItem('omp.browserMode', state.browserMode); select.value = state.browserMode;
-      if (select.dataset.bound !== 'true') { select.dataset.bound = 'true'; select.addEventListener('change', () => { state.browserMode = select.value; localStorage.setItem('omp.browserMode', state.browserMode); syncBrowserPill(); }); }
+      if (select.dataset.bound !== 'true') { select.dataset.bound = 'true'; select.addEventListener('change', () => { setBrowserMode(select.value); syncBrowserPill(); }); }
     }
     const shareSelect = $('ompShareModeSelect'); const shareModes = state.capabilities?.shareModes || [];
     if (shareSelect) {
@@ -3018,14 +3025,14 @@
   function syncBrowserPill() {
     const toggle = $('egoBrowserToggle'); if (!toggle) return;
     const mode = state.capabilities?.browsers?.find((item) => item.id === state.browserMode);
-    const enabled = Boolean(mode && mode.status !== 'unavailable');
-    const modeLabel = mode?.label || 'Browser skill tắt';
+    const enabled = state.browserMode === 'ego-browser' && Boolean(mode && mode.status !== 'unavailable');
+    const modeLabel = mode?.label || 'Ego Browser';
     toggle.classList.toggle('active', enabled);
-    const label = toggle.querySelector('span'); if (label) label.textContent = enabled ? modeLabel : 'Browser skill tắt';
+    const label = toggle.querySelector('span'); if (label) label.textContent = enabled ? modeLabel : 'Ego Browser · Tắt';
     toggle.title = enabled
       ? 'Đang bật · Gõ order trong ô chat để OMP gọi /skill:ego-browser'
-      : 'Bật Ego Browser skill · Gõ order trong ô chat để OMP điều khiển browser';
-    toggle.setAttribute('aria-label', toggle.title); toggle.hidden = false; toggle.removeAttribute('aria-hidden');
+      : 'Bật Ego Browser khi order cần web';
+    toggle.setAttribute('aria-label', toggle.title); toggle.setAttribute('aria-pressed', String(enabled)); toggle.hidden = false; toggle.removeAttribute('aria-hidden');
   }
   async function loadCapabilities() {
     try {
@@ -3313,8 +3320,7 @@
     document.addEventListener('click', unsupported, true);
     $('egoBrowserToggle')?.addEventListener('click', (event) => {
       event.preventDefault(); event.stopImmediatePropagation();
-      state.browserMode = state.browserMode === 'ego-browser' ? 'none' : 'ego-browser';
-      localStorage.setItem('omp.browserMode', state.browserMode);
+      setBrowserMode(state.browserMode === 'ego-browser' ? 'none' : 'ego-browser');
       if (!state.activeId) prewarmDraftWorker();
       syncBrowserPill();
       notify(state.browserMode === 'ego-browser' ? 'Ego Browser skill đã bật · Gõ order trong ô chat.' : 'Ego Browser skill đã tắt · Prompt gửi như chat thường.');

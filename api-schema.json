@@ -1471,7 +1471,7 @@
           "modelProvider": { "type": "string", "description": "Provider model trong OMP; dùng để phân biệt các model trùng ID.", "example": "anthropic" },
           "requestId": { "type": "string", "maxLength": 128, "pattern": "^[A-Za-z0-9._:-]{1,128}$" },
           "thinking": { "type": "string", "enum": ["max", "high", "medium", "low", "none"] },
-          "browserMode": { "type": "string", "enum": ["ego-browser", "none"], "default": "ego-browser" },
+          "browserMode": { "type": "string", "enum": ["ego-browser", "none"], "default": "none" },
           "approvalMode": { "type": "string", "enum": ["always-ask", "write", "yolo"] },
           "attachments": { "type": "array", "maxItems": 4, "items": { "type": "object" } },
           "modelSource": { "type": "string", "enum": ["quota", "omp"], "default": "quota", "description": "quota cho phép toàn bộ model OMP provider google-antigravity của account được chọn, gồm mọi family; omp dùng catalog đầy đủ, còn model Antigravity vẫn ghim credential đã chọn." }

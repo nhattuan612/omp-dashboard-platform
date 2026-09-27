@@ -636,6 +636,9 @@ async function runContract() {
     assert.match(chatClient, /function fileChangeRows\(blocks\)/);
     assert.match(chatClient, /ai-data-table/);
     assert.match(chatClient, /function readAttachment\(file\)/);
+    assert.match(chatClient, /const BROWSER_MODE_PREFERENCE_VERSION = 'manual-v1';/);
+    assert.match(chatClient, /function setBrowserMode\(value\)/);
+    assert.match(chatClient, /aria-pressed/);
     assert.match(acpAdapter, /isImageGenerationTool\(name\) \? imageAttachments\(output\) : \[\]/);
     passes.push("frontend exposes attachment, copy, prompt-revision, branch, markdown-table, and OMP file-change controls");
 
@@ -839,14 +842,14 @@ async function runContract() {
       const response = await fetch(`${baseUrl}/api/v1/chat/stream`, {
         method: "POST",
         headers: { cookie, "content-type": "application/json", accept: "text/event-stream" },
-        body: JSON.stringify({ sessionId, requestId: `auto-title-${randomUUID()}`, prompt, model: "smoke-model", tools: ["read"], browserMode: "none" }),
+        body: JSON.stringify({ sessionId, requestId: `auto-title-${randomUUID()}`, prompt, model: "smoke-model", tools: ["read"] }),
       });
       if (response.status !== 200) throw new Error(`smoke stream failed (${response.status}): ${await response.text()}`);
       const reader = createSseReader(response);
       await reader.waitFor((event) => event.event === "start", "smoke stream start");
       await reader.waitFor((event) => event.event === "end", "smoke stream completion");
     }
-    async function openStream(sessionId, prompt, label, attachments = [], model = "smoke-model", modelSource = "quota", browserMode = "none") {
+    async function openStream(sessionId, prompt, label, attachments = [], model = "smoke-model", modelSource = "quota", browserMode) {
       const requestId = `${label}-${randomUUID()}`;
       const response = await fetch(`${baseUrl}/api/v1/chat/stream`, {
         method: "POST",
@@ -1873,6 +1876,22 @@ async function runContract() {
       const ended = await reader.waitFor((event) => event.event === "end", "follow-up stream completion");
       assert.equal(ended.data.done, true);
       passes.push("active follow-up stays on one native stream until terminal settle");
+    }
+    {
+      const { reader } = await openStream(parent.id, "AUTO_TITLE_CONTRACT BROWSER_DEFAULT_CONTRACT", "browser-default");
+      await reader.waitFor((event) => event.event === "start", "browser default stream start");
+      const outbound = await waitForFakeFrame(home, (item) => item.frame.type === "prompt" && String(item.frame.message || "").includes("BROWSER_DEFAULT_CONTRACT"));
+      assert.doesNotMatch(outbound.frame.message, /^\/skill:ego-browser/, "browser must stay off when browserMode is omitted");
+      await reader.waitFor((event) => event.event === "end", "browser default stream completion");
+      passes.push("browser skill is opt-in when browserMode is omitted");
+    }
+    {
+      const { reader } = await openStream(parent.id, "AUTO_TITLE_CONTRACT BROWSER_OPT_IN_CONTRACT", "browser-opt-in", [], "smoke-model", "quota", "ego-browser");
+      await reader.waitFor((event) => event.event === "start", "browser opt-in stream start");
+      const outbound = await waitForFakeFrame(home, (item) => item.frame.type === "prompt" && String(item.frame.message || "").includes("BROWSER_OPT_IN_CONTRACT"));
+      assert.match(outbound.frame.message, /^\/skill:ego-browser\n\n/, "browser skill must run only when explicitly enabled");
+      await reader.waitFor((event) => event.event === "end", "browser opt-in stream completion");
+      passes.push("browser skill dispatches only after explicit opt-in");
     }
     {
       const inputImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
