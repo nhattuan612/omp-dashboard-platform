@@ -846,12 +846,12 @@ async function runContract() {
       await reader.waitFor((event) => event.event === "start", "smoke stream start");
       await reader.waitFor((event) => event.event === "end", "smoke stream completion");
     }
-    async function openStream(sessionId, prompt, label, attachments = [], model = "smoke-model", modelSource = "quota") {
+    async function openStream(sessionId, prompt, label, attachments = [], model = "smoke-model", modelSource = "quota", browserMode = "none") {
       const requestId = `${label}-${randomUUID()}`;
       const response = await fetch(`${baseUrl}/api/v1/chat/stream`, {
         method: "POST",
         headers: { cookie, "content-type": "application/json", accept: "text/event-stream" },
-        body: JSON.stringify({ sessionId, requestId, prompt, model, modelSource, tools: ["read"], attachments, browserMode: "none" }),
+        body: JSON.stringify({ sessionId, requestId, prompt, model, modelSource, tools: ["read"], attachments, browserMode }),
       });
       if (response.status !== 200) throw new Error(`${label} stream failed (${response.status}): ${await response.text()}`);
       return { response, requestId, reader: createSseReader(response) };
@@ -1880,10 +1880,11 @@ async function runContract() {
       const { reader } = await openStream(parent.id, "tạo ảnh MEDIA_CONTRACT prompt", "media", [
         { name: "tiny.png", type: "image/png", size: 68, data: inputImage },
         { name: "notes.txt", type: "text/plain", size: inputText.length, text: inputText },
-      ], "smoke-image-model");
+      ], "smoke-image-model", "quota", "ego-browser");
       await reader.waitFor((event) => event.event === "start", "media stream start");
       const outbound = await waitForFakeFrame(home, (item) => item.frame.type === "prompt" && String(item.frame.message || "").includes("MEDIA_CONTRACT"));
       assert.deepEqual(outbound.frame.images, [inputImage]);
+      assert.doesNotMatch(outbound.frame.message, /^\/skill:ego-browser/, "image blocks must bypass the skill wrapper so ACP delivers them to OMP");
       const delta = await reader.waitFor((event) => event.event === "delta" && event.data.content === "media-reply", "media text delta");
       assert.equal(delta.data.content, "media-reply");
       const media = await reader.waitFor((event) => event.event === "media", "assistant media event");
