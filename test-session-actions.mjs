@@ -607,6 +607,8 @@ async function runContract() {
     assert.match(chatClient, /const isServerQueuedTurn = \(queue\) => queue\?\.phase === 'paused' \|\| \(queue\?\.phase === 'fifo' && Number\(queue\.queueAhead\) > 0\);/);
     assert.match(chatClient, /if \(isServerQueuedTurn\(request\.queueState\) && !\['waiting', 'end', 'done', 'error'\]\.includes\(event\)\) return;/);
     assert.match(chatClient, /if \(isServerQueuedTurn\(request\.queueState\)\) \{\s*renderQueueTray\(\);\s*return;\s*\}\s*mountChatTurn\(\);/);
+    assert.ok(chatClient.includes("if (previousId !== id) { void loadQuota(); await loadModels(); }"));
+    assert.ok(chatClient.includes("if (state.activeId) {\n      const promptSettings = snapshotSettings();"));
     passes.push("queued frontend turns remain in the tray until their backend turn dispatches");
 
     async function api(method, path, body) {
@@ -893,8 +895,8 @@ async function runContract() {
     assert.equal(defaultSwitch.status, 200, `Gemini default selection failed: ${JSON.stringify(defaultSwitch.payload)}`);
     assert.equal(defaultSwitch.payload.scope, "default");
     const preDefaultModels = await api("GET", `/api/v1/quota/models?sessionId=${encodeURIComponent(preDefaultSession.id)}`);
-    assert.equal(preDefaultModels.status, 409);
-    assert.equal(preDefaultModels.payload.error?.code, "ACCOUNT_SELECTION_REQUIRED", "an existing unpinned chat must not inherit a later default");
+    assert.equal(preDefaultModels.status, 200);
+    assert.equal(preDefaultModels.payload.account.id, googleAccount.id, "a dashboard chat created before any default must inherit the current default");
     const parent = await createFixture("Contract parent");
     const changedDefault = await api("POST", "/api/v1/quota/switch", { accountId: googleAltAccount.id });
     assert.equal(changedDefault.status, 200, `Google Antigravity default change failed: ${JSON.stringify(changedDefault.payload)}`);
@@ -905,7 +907,7 @@ async function runContract() {
     assert.equal(currentDefaultModels.payload.account.id, googleAltAccount.id);
     const restoredDefault = await api("POST", "/api/v1/quota/switch", { accountId: googleAccount.id });
     assert.equal(restoredDefault.status, 200);
-    passes.push("Gemini default is snapshotted for new chats and never retroactively applies to existing chats");
+    passes.push("Gemini default repairs dashboard chats missing a creation snapshot while preserving captured defaults");
     const googleModelAccess = await api("GET", "/api/v1/quota/models");
     assert.equal(googleModelAccess.status, 200, `selected Gemini models failed: ${JSON.stringify(googleModelAccess.payload)}`);
     assert.equal(googleModelAccess.payload.account.id, googleAccount.id);
