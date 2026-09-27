@@ -2202,6 +2202,10 @@
         let payload; try { payload = JSON.parse(parts.join('\n')); } catch { payload = { content: parts.join('\n') }; }
         if (isServerQueuedTurn(request.queueState) && !['waiting', 'end', 'done', 'error'].includes(event)) return;
         if (event === 'error') throw new Error(payload.message || 'Backend stream báo lỗi');
+        if (event === 'start' && payload.longRunning) {
+          setStreamStatus(`Đang xử lý tác vụ dài · tự gia hạn khi OMP hoạt động (${Number(payload.activityTimeoutSeconds) || 300}s)`, 'thinking');
+          return;
+        }
         if (event === 'end' || event === 'done') {
           done = true;
           normalEnd = true;
