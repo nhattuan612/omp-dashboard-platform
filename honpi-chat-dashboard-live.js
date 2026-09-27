@@ -175,7 +175,7 @@
       return node;
     };
     (view?.transientNodes || []).forEach((node) => insertNode(node, node.dataset.requestId || null));
-    requestsForSession(sessionId).forEach((request) => {
+    requestsForSession(sessionId).filter((request) => request.mounted).forEach((request) => {
       let anchor = insertNode(request.dom?.wrap, request.requestId);
       (request.dom?.approvals || []).forEach((node) => { anchor = insertNode(node, request.requestId, anchor); });
     });
@@ -1697,10 +1697,8 @@
     if (queue.phase === 'fifo' && Number(queue.queueAhead) > 0) return `Đang chờ lượt trước · còn ${Number(queue.queueAhead)} order phía trước`;
     return 'Đang xử lý';
   }
-  const serverQueueItems = (sessionId = state.activeId) => requestsForSession(sessionId).filter((request) => {
-    const queue = request.queueState || {};
-    return queue.phase === 'paused' || (queue.phase === 'fifo' && Number(queue.queueAhead) > 0);
-  });
+  const isServerQueuedTurn = (queue) => queue?.phase === 'paused' || (queue?.phase === 'fifo' && Number(queue.queueAhead) > 0);
+  const serverQueueItems = (sessionId = state.activeId) => requestsForSession(sessionId).filter((request) => isServerQueuedTurn(request.queueState));
   async function discardServerQueuedRequest(request) {
     if (!request || request.status === 'stopping') return;
     request.status = 'stopping'; renderQueueTray();
@@ -1790,18 +1788,7 @@
     });
   }
   function renderQueuedPreview(item) {
-    const stream = $('chatStream');
-    if (!stream || (item.sessionId ? item.sessionId !== state.activeId : state.activeId) ) return;
-    const existing = [...stream.children].find((node) => node.dataset.queuePreviewId === item.id);
-    if (existing) { item.previewRendered = true; return; }
-    const node = messageNode({ role: 'user', content: item.prompt, createdAt: item.createdAt, attachments: item.attachments });
-    node.dataset.queuePreviewId = item.id;
-    stream.append(node);
-    if (!state.messages.some((message) => message.queueId === item.id)) {
-      state.messages.push({ role: 'user', content: item.prompt, createdAt: item.createdAt, attachments: item.attachments, queueId: item.id });
-    }
-    item.previewRendered = true;
-    hideGreeting();
+    item.previewRendered = false;
   }
   function renderSessionQueuePreviews(sessionId) {
     if (state.activeId !== sessionId) return;
@@ -1934,7 +1921,7 @@
     const capabilityError = imageGenerationModelError(prompt, model, modelProvider);
     if (capabilityError) { notify(capabilityError, true); return false; }
     const guard = sessionGuard(sessionId, state.generation);
-    const request = { sessionId, requestId: nextRequestId(), controller: new AbortController(), status: 'running', guard, settings: cloneSnapshot({ ...settings, model, modelProvider, modelSource }), prompt, attachments: cloneSnapshot(attachments), dom: null };
+    const request = { sessionId, requestId: nextRequestId(), controller: new AbortController(), status: 'running', guard, settings: cloneSnapshot({ ...settings, model, modelProvider, modelSource }), prompt, attachments: cloneSnapshot(attachments), createdAt: new Date().toISOString(), mounted: false, queueState: { phase: 'fifo', queueAhead: 1, queuedTurns: 0, retryAfterSeconds: 0 }, queueStateReceived: false, dom: null };
     const visibleStream = () => isCurrentSession(guard) ? $('chatStream') : null;
     state.requests.set(request.requestId, request);
     syncRequestAliases();
@@ -1943,20 +1930,6 @@
     state.startedSessions.add(sessionId);
     autoTitleSession(sessionId, prompt);
     const queueItem = options.item;
-    const stream = visibleStream();
-    const preview = queueItem && [...(stream?.children || [])].find((node) => node.dataset.queuePreviewId === queueItem.id);
-    const user = { role: 'user', content: prompt, requestId: request.requestId, createdAt: new Date().toISOString(), attachments: cloneSnapshot(attachments), ...(queueItem ? { queueId: queueItem.id } : {}) };
-    if (preview) delete preview.dataset.queuePreviewId;
-    if (isCurrentSession(guard)) {
-      state.messages = replaceQueuedUserMessage(state.messages, queueItem?.id, user);
-      if (!preview) stream?.append(messageNode(user));
-    }
-    if (!isCurrentSession(guard)) {
-      const view = state.sessionViews.get(sessionId) || { messages: [], transientNodes: [], volatile: true, scrollTop: 0 };
-      view.messages = replaceQueuedUserMessage(view.messages, queueItem?.id, user);
-      view.volatile = true;
-      state.sessionViews.set(sessionId, view);
-    }
     const wrap = document.createElement('div');
     wrap.className = 'ai-response-wrap';
     wrap.dataset.requestId = request.requestId;
@@ -1997,7 +1970,24 @@
     card.append(bodyNode, replyNode, mediaNode);
     wrap.append(status, card);
     request.dom = { wrap, bodyNode, replyNode, mediaNode, card, label, approvals: [] };
-    visibleStream()?.append(wrap);
+    const mountChatTurn = () => {
+      if (request.mounted) return;
+      request.mounted = true;
+      const stream = visibleStream();
+      const preview = queueItem && [...(stream?.children || [])].find((node) => node.dataset.queuePreviewId === queueItem.id);
+      const user = { role: 'user', content: prompt, requestId: request.requestId, createdAt: request.createdAt, attachments: cloneSnapshot(attachments), ...(queueItem ? { queueId: queueItem.id } : {}) };
+      if (preview) delete preview.dataset.queuePreviewId;
+      if (isCurrentSession(guard)) {
+        state.messages = replaceQueuedUserMessage(state.messages, queueItem?.id, user);
+        if (!preview) stream?.append(messageNode(user));
+        stream?.append(wrap);
+      } else {
+        const view = state.sessionViews.get(sessionId) || { messages: [], transientNodes: [], volatile: true, scrollTop: 0 };
+        view.messages = replaceQueuedUserMessage(view.messages, queueItem?.id, user);
+        view.volatile = true;
+        state.sessionViews.set(sessionId, view);
+      }
+    };
     let normalEnd = false;
     try {
       const response = await fetch(`${API}/chat/stream`, { method: 'POST', headers: { Accept: 'text/event-stream', 'content-type': 'application/json' }, signal: request.controller.signal, body: JSON.stringify({ sessionId, prompt, model, modelProvider, modelSource, requestId: request.requestId, thinking: settings.thinking, browserMode: settings.browserMode, approvalMode: settings.approvalMode, tools: settings.tools?.length ? settings.tools : undefined, attachments }) });
@@ -2019,15 +2009,18 @@
         block.split(/\r?\n/).forEach((line) => { if (line.startsWith('event:')) event = line.slice(6).trim(); if (line.startsWith('data:')) parts.push(line.slice(5).trimStart()); });
         if (!parts.length) return;
         let payload; try { payload = JSON.parse(parts.join('\n')); } catch { payload = { content: parts.join('\n') }; }
+        if (isServerQueuedTurn(request.queueState) && !['waiting', 'end', 'done', 'error'].includes(event)) return;
         if (event === 'error') throw new Error(payload.message || 'Backend stream báo lỗi');
         if (event === 'end' || event === 'done') {
           done = true;
           normalEnd = true;
           completionPayload = payload;
+          if (!payload.aborted) mountChatTurn();
           if (Array.isArray(payload.body)) payload.body.forEach(pushBodyBlock);
           setStreamStatus(payload.totalDuration ? `Đã hoàn tất · ${payload.totalDuration}` : 'Đã hoàn tất', 'done');
         }
         if (event === 'body' && payload.block) {
+          mountChatTurn();
           setBodyLoadingStatus(payload.block);
           pushBodyBlock(payload.block);
           if (isCurrentSession(guard) && $('chatScrollArea')) $('chatScrollArea').scrollTop = $('chatScrollArea').scrollHeight;
@@ -2035,11 +2028,18 @@
         }
         if (event === 'waiting') {
           request.queueState = { phase: payload.phase || 'fifo', queueAhead: Number(payload.queueAhead) || 0, queuedTurns: Number(payload.queuedTurns) || 0, retryAfterSeconds: Number(payload.retryAfterSeconds) || 0, reason: payload.reason || null };
+          request.queueStateReceived = true;
+          if (isServerQueuedTurn(request.queueState)) {
+            renderQueueTray();
+            return;
+          }
+          mountChatTurn();
           setStreamStatus(queueStatusLabel(request.queueState), request.queueState.phase === 'paused' ? 'paused' : 'waiting');
           renderQueueTray();
           return;
         }
         if (event === 'approval') {
+          mountChatTurn();
           setStreamStatus('Đang chờ Síp xác nhận', 'waiting');
           const approval = approvalNode(payload, guard, request);
           request.dom.approvals.push(approval);
@@ -2048,6 +2048,7 @@
           return;
         }
         if (event === 'command_output') {
+          mountChatTurn();
           if (payload.bodyBlockId && streamedBody.some((block) => block.id === payload.bodyBlockId)) return;
           pushBodyBlock({ id: payload.bodyBlockId || `command:${streamedBody.length}`, kind: 'command', title: 'Command output', status: 'done', command: payload.command, text: `${payload.command ? `$ ${payload.command}\n` : ''}${text(payload.text)}` });
           if (isCurrentSession(guard) && $('chatScrollArea')) $('chatScrollArea').scrollTop = $('chatScrollArea').scrollHeight;
@@ -2058,6 +2059,7 @@
           return;
         }
         if (event === 'lifecycle' && ['turn_start', 'agent_start'].includes(payload.type)) {
+          mountChatTurn();
           request.queueState = null;
           setStreamStatus('Đang xử lý', 'thinking');
           renderQueueTray();
@@ -2073,7 +2075,7 @@
           renderMessageAttachments(mediaNode, streamedAttachments);
         }
         const delta = payload.content || payload.delta || payload.chunk || '';
-        if (delta) { request.queueState = null; setStreamStatus('Đang viết phản hồi', 'writing'); renderQueueTray(); streamedText += text(delta); renderSafeMarkdown(replyNode, streamedText); if (isCurrentSession(guard) && $('chatScrollArea')) $('chatScrollArea').scrollTop = $('chatScrollArea').scrollHeight; }
+        if (delta) { mountChatTurn(); request.queueState = null; setStreamStatus('Đang viết phản hồi', 'writing'); renderQueueTray(); streamedText += text(delta); renderSafeMarkdown(replyNode, streamedText); if (isCurrentSession(guard) && $('chatScrollArea')) $('chatScrollArea').scrollTop = $('chatScrollArea').scrollHeight; }
       };
       while (true) {
         const part = await reader.read();
@@ -2112,6 +2114,7 @@
       if (request.controller.signal.aborted) {
         if (isCurrentSession(guard)) setStreamStatus('Đã dừng phản hồi', 'done');
       } else {
+        if (!request.queueStateReceived || !isServerQueuedTurn(request.queueState)) mountChatTurn();
         request.status = 'error';
         const errorText = String(error.message || error);
         const timedOut = /thời gian cho phép|timeout|timed out/i.test(errorText);
