@@ -93,17 +93,18 @@
     return /(?:tạo|vẽ|sinh|generate|create|draw|make|redesign|transform|biến đổi)/i.test(prompt)
       && /(?:ảnh|hình|image|picture|photo|png|jpe?g|svg|illustration|logo|poster)/i.test(prompt);
   };
-  const supportsImageGeneration = (model) => Boolean(model?.imageGeneration)
-    || /(?:image|imagen)/i.test(`${text(model?.id)} ${text(model?.name)}`);
+  const supportsImageGeneration = (model) => Boolean(model?.imageGeneration);
   const imageGenerationModels = () => state.models.filter((model) => supportsImageGeneration(model));
   const imageGenerationModelError = (prompt, modelId, modelProvider = state.activeModelProvider) => {
     if (!looksLikeImageGenerationPrompt(prompt)) return '';
+    const imageGeneration = state.media?.imageGeneration;
+    if (imageGeneration?.status !== 'unavailable') return '';
     const model = state.models.find((item) => item.id === modelId && (!modelProvider || item.provider === modelProvider));
-    if (supportsImageGeneration(model) || /(?:image|imagen)/i.test(text(modelId))) return '';
+    if (supportsImageGeneration(model)) return '';
     const candidate = imageGenerationModels()[0];
     return candidate
       ? `Model "${modelId}" chỉ đọc/phân tích ảnh. Chọn "${candidate.name || candidate.id}" (Tạo ảnh) để nhận ảnh đầu ra.`
-      : 'Model hiện tại chỉ đọc/phân tích ảnh; OMP chưa cung cấp model tạo ảnh trong runtime này.';
+      : (imageGeneration?.reason || 'OMP chưa cung cấp tool tạo ảnh trong runtime này.');
   };
   const modelAccessError = (modelId, modelSource = state.modelSource, modelProvider = state.activeModelProvider) => {
     if (modelSource !== state.modelSource) return '';

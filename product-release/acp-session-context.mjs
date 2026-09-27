@@ -13,6 +13,20 @@ function contentText(value) {
   return "";
 }
 
+function imageAttachments(value) {
+  const blocks = Array.isArray(value) ? value : value && typeof value === "object" ? [value] : [];
+  return blocks.flatMap((block) => {
+    const type = String(block?.mimeType || block?.mime_type || block?.type || "").toLowerCase();
+    const data = block?.data ?? block?.inlineData?.data ?? block?.inline_data?.data ?? "";
+    if (!/^image\//.test(type) || typeof data !== "string" || !data) return [];
+    return [{ type, data, ...(typeof block.name === "string" ? { name: block.name } : {}) }];
+  });
+}
+
+function isImageGenerationTool(value) {
+  return /(?:^|[\s:_-])(?:image[\s_-]?gen|generate[\s_-]?image(?:[\s_-]?asset)?|create[\s_-]?image|imagen)(?:$|[\s:_-])/i.test(String(value || ""));
+}
+
 function modelId(value) {
   return typeof value === "string" ? value.slice(value.indexOf("/") + 1) : "";
 }
@@ -581,7 +595,9 @@ export class AcpSessionContext {
     const name = String(update.title || update.kind || "tool");
     const failed = update.status === "failed";
     if (update.status === "completed" || failed) {
-      this.#emit("omp", { type: "tool_execution_end", toolName: name, toolCallId: id, result: contentText(update.rawOutput) || contentText(update.content), isError: failed || update.isError === true });
+      const output = update.rawOutput ?? update.content;
+      const attachments = isImageGenerationTool(name) ? imageAttachments(output) : [];
+      this.#emit("omp", { type: "tool_execution_end", toolName: name, toolCallId: id, result: contentText(output), isError: failed || update.isError === true, ...(attachments.length ? { attachments } : {}) });
     } else {
       this.#emit("omp", { type: "tool_execution_update", toolName: name, toolCallId: id, partialResult: contentText(update.rawOutput) || contentText(update.content), status: update.status });
     }

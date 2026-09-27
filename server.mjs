@@ -1,7 +1,7 @@
 import http from "node:http";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -34,6 +34,8 @@ const OMP_SESSION_ROOT = join(homedir(), ".omp/agent/sessions");
 const OMP_LOG_ROOT = join(homedir(), ".omp/logs");
 const OMP_ARCHIVE_ROOT = join(homedir(), ".omp/agent/archive/console-sessions");
 const OMP_TRASH_ROOT = join(homedir(), ".omp/agent/trash/console-sessions");
+const OMP_AGENT_BLOB_ROOT = join(homedir(), ".omp/agent/blobs");
+const OMP_IMAGEGEN_SKILL = join(homedir(), ".omp/agent/skills/imagegen/SKILL.md");
 const GENERAL_CHAT_CWD = process.env.OMP_DASHBOARD_GENERAL_WORKSPACE || join(homedir(), "Documents", "OMP General Chat");
 const DEFAULT_CHAT_CWD = process.env.OMP_DASHBOARD_WORKSPACE || process.cwd();
 const PORT = Number(process.env.OMP_DASHBOARD_PORT || 4177);
@@ -468,9 +470,34 @@ function chatAttachmentName(value) {
   return name || "attachment";
 }
 
-function chatImageSource(value, type = "image/png") {
+function ompBlobImageSource(value) {
+  const match = typeof value === "string" && value.match(/^blob:sha256:([a-f0-9]{64})$/i);
+  if (!match) return "";
+  const hash = match[1].toLowerCase();
+  for (const path of [join(OMP_AGENT_BLOB_ROOT, hash), ...["png", "jpg", "jpeg", "gif", "webp"].map((extension) => join(OMP_AGENT_BLOB_ROOT, `${hash}.${extension}`))]) {
+    try {
+      const info = statSync(path);
+      if (!info.isFile() || info.size > Math.floor(MAX_CHAT_ATTACHMENT_DATA_CHARS * 3 / 4)) continue;
+      const bytes = readFileSync(path);
+      if (createHash("sha256").update(bytes).digest("hex") !== hash) continue;
+      const type = bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ? "image/png"
+        : bytes.subarray(0, 3).equals(Buffer.from([255, 216, 255])) ? "image/jpeg"
+          : bytes.subarray(0, 6).toString("ascii").match(/^GIF8[79]a$/) ? "image/gif"
+            : bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP" ? "image/webp"
+              : "";
+      if (type) return `data:${type};base64,${bytes.toString("base64")}`;
+    } catch {}
+  }
+  return "";
+}
+
+function chatImageSource(value, type = "image/png", options = {}) {
   const source = typeof value === "string" ? value.trim() : "";
   if (!source) return "";
+  if (options.allowOmpBlob) {
+    const blob = ompBlobImageSource(source);
+    if (blob) return blob;
+  }
   const dataUrl = source.match(/^data:(image\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)$/i);
   if (dataUrl) {
     const encoded = dataUrl[2].replace(/\s+/g, "");
@@ -507,7 +534,7 @@ function normalizeChatAttachment(item, options = {}) {
     ? item.text
     : typeof item.content === "string" && !/^image\//.test(type) ? item.content : "";
   const textContent = textValue ? textValue.slice(0, MAX_CHAT_ATTACHMENT_TEXT_CHARS) : "";
-  const data = /^image\//.test(type) ? chatImageSource(rawData, type) : "";
+  const data = /^image\//.test(type) ? chatImageSource(rawData, type, options) : "";
   if (!textContent && !data) return null;
   const sizeValue = Number(item.size);
   const attachment = {
@@ -527,12 +554,12 @@ function attachmentKey(item) {
   return createHash("sha256").update(`${item?.name || ""}\0${item?.type || ""}\0${item?.data || item?.text || ""}`).digest("hex");
 }
 
-function mergeChatAttachments(...values) {
+function mergeChatAttachmentsWithOptions(options, ...values) {
   const merged = [];
   const seen = new Set();
   for (const value of values) {
     for (const item of Array.isArray(value) ? value : []) {
-      const attachment = normalizeChatAttachment(item);
+      const attachment = normalizeChatAttachment(item, options);
       if (!attachment) continue;
       const key = attachmentKey(attachment);
       if (seen.has(key)) continue;
@@ -544,7 +571,15 @@ function mergeChatAttachments(...values) {
   return merged;
 }
 
-function chatMessageAttachments(message) {
+function mergeChatAttachments(...values) {
+  return mergeChatAttachmentsWithOptions({}, ...values);
+}
+
+function mergeOmpChatAttachments(...values) {
+  return mergeChatAttachmentsWithOptions({ allowOmpBlob: true }, ...values);
+}
+
+function chatMessageAttachments(message, options = {}) {
   const candidates = [
     ...(Array.isArray(message?.attachments) ? message.attachments : []),
     ...(Array.isArray(message?.images) ? message.images.map((data) => ({ type: "image/png", data })) : []),
@@ -570,7 +605,7 @@ function chatMessageAttachments(message) {
       });
     }
   }
-  return mergeChatAttachments(candidates);
+  return options.allowOmpBlob ? mergeOmpChatAttachments(candidates) : mergeChatAttachments(candidates);
 }
 
 function messageText(message) {
@@ -1721,13 +1756,27 @@ function looksLikeImageGenerationPrompt(value) {
   return action.test(prompt) && image.test(prompt);
 }
 
-function isImageGenerationModel(value) {
-  return /(?:image|imagen)/i.test(String(value || ""));
+function imageGenerationCapability(models) {
+  const nativeModels = models.filter((model) => model.imageGeneration).map((model) => model.id);
+  if (nativeModels.length) return { status: "supported", models: nativeModels, source: "model" };
+  if (existsSync(OMP_IMAGEGEN_SKILL)) return { status: "supported", models: [], source: "skill", invocation: "$imagegen" };
+  return { status: "unavailable", models: [], reason: "OMP chưa có model hoặc skill tạo ảnh có thể trả ảnh về chat." };
 }
 
-function assertImageGenerationModel(prompt, model) {
-  if (!looksLikeImageGenerationPrompt(prompt) || isImageGenerationModel(model)) return;
-  throw Object.assign(new Error(`Model "${model}" chỉ đọc/phân tích ảnh. Hãy chọn model có nhãn "Tạo ảnh" (ví dụ gemini-3.1-flash-image) để nhận ảnh đầu ra.`), { code: "IMAGE_GENERATION_MODEL_REQUIRED", field: "model" });
+function assertImageGenerationAvailable(prompt, model, models) {
+  if (!looksLikeImageGenerationPrompt(prompt) || model.imageGeneration || existsSync(OMP_IMAGEGEN_SKILL)) return;
+  const candidate = models.find((item) => item.imageGeneration);
+  const message = candidate
+    ? `Model "${model.id}" không tạo ảnh đầu ra. Hãy chọn "${candidate.name || candidate.id}".`
+    : "OMP runtime chưa có model hoặc skill tạo ảnh có thể trả ảnh về chat.";
+  throw Object.assign(new Error(message), { code: "IMAGE_GENERATION_MODEL_REQUIRED", field: "model" });
+}
+
+function imageOutputInstruction(prompt) {
+  if (!looksLikeImageGenerationPrompt(prompt)) return "";
+  return existsSync(OMP_IMAGEGEN_SKILL)
+    ? "\n\n[Dashboard media contract: use $imagegen to create or edit the requested image. Return the generated image as an attachment. Do not say the image is complete unless an image attachment is returned.]"
+    : "\n\n[Dashboard media contract: return the generated image as an attachment. Do not say the image is complete unless an image attachment is returned.]";
 }
 
 function normalizeModels(data) {
@@ -1736,13 +1785,14 @@ function normalizeModels(data) {
     const id = item.id || item.modelId;
     const name = item.name || item.displayName || id;
     const explicitImageGeneration = item.imageGeneration ?? item.capabilities?.imageGeneration ?? item.capabilities?.image_generation;
+    const output = item.output ?? item.outputs ?? item.capabilities?.output ?? item.capabilities?.outputs;
     return {
       id,
       name,
       provider: item.provider || "OMP",
       contextWindow: Number(item.contextWindow || item.contextLength || 0),
       isDefault: Boolean(item.isDefault || item.default) || (item.provider === "google-antigravity" && id === "gemini-3.8-flash"),
-      imageGeneration: explicitImageGeneration == null ? isImageGenerationModel(`${id} ${name}`) : Boolean(explicitImageGeneration),
+      imageGeneration: explicitImageGeneration === true || (Array.isArray(output) && output.includes("image")),
       ...(item.description ? { description: item.description } : {}),
     };
   }).filter((item) => item.id);
@@ -2651,11 +2701,16 @@ function frameCommandOutput(frame) {
   };
 }
 
+function isImageGenerationTool(value) {
+  return /(?:^|[\s:_-])(?:image[\s_-]?gen|generate[\s_-]?image(?:[\s_-]?asset)?|create[\s_-]?image|imagen)(?:$|[\s:_-])/i.test(String(value || ""));
+}
+
 function frameAssistantAttachments(frame) {
-  if ((frame?.type === "message_end" || frame?.type === "agent_end") && frame.message?.role === "assistant") return chatMessageAttachments(frame.message);
+  if (frame?.type === "tool_execution_end" && isImageGenerationTool(frame.toolName)) return mergeOmpChatAttachments(frame.attachments);
+  if ((frame?.type === "message_end" || frame?.type === "agent_end") && frame.message?.role === "assistant") return chatMessageAttachments(frame.message, { allowOmpBlob: true });
   const update = frame?.assistantMessageEvent;
   if (frame?.type !== "message_update" || !update || update.type === "text_delta" || update.type === "text_end") return [];
-  return chatMessageAttachments({ content: [update] });
+  return chatMessageAttachments({ content: [update] }, { allowOmpBlob: true });
 }
 
 
@@ -2664,6 +2719,7 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
   const thinking = options.thinking;
   const selectedBrowserMode = options.browserMode;
   const modelProvider = typeof options.modelProvider === "string" ? options.modelProvider : null;
+  const expectsGeneratedImage = looksLikeImageGenerationPrompt(prompt);
   const startedAt = Date.now();
   if (activeMemoryOperations.has(record.contextId)) throw Object.assign(new Error("Đang xử lý lệnh Memory trong session này."), { code: "CONFLICT" });
   record.updatedAt = startedAt;
@@ -2725,6 +2781,7 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
         }
         assistantMessage = assistantMessage || frameAssistantMessage(frame);
         if (!reply && !assistantMessage && !assistantAttachments.length) return finish(reject, Object.assign(new Error("OMP kết thúc lượt nhưng không trả nội dung"), { code: "UPSTREAM_ERROR" }));
+        if (expectsGeneratedImage && !assistantAttachments.length) return finish(reject, Object.assign(new Error("OMP không trả ảnh đầu ra; lượt này chưa được tính là đã tạo ảnh."), { code: "UPSTREAM_IMAGE_MISSING" }));
         for (const block of chatBodyBlocksFromMessage(assistantMessage, requestId)) mergeChatBodyBlock(bodyBlocks, block);
         const message = { id: `msg-${Date.now()}`, role: "assistant", content: reply || chatMessageText(assistantMessage), model: assistantMessage?.model || model || "neural-flash-3.8", createdAt: new Date().toISOString(), ...(bodyBlocks.length ? { body: bodyBlocks } : {}), ...(assistantAttachments.length ? { attachments: assistantAttachments } : {}), ...(assistantMessage?.usage?.total ? { totalTokens: assistantMessage.usage.total } : {}) };
         appendChatMessage(sessionId, message);
@@ -2760,7 +2817,7 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
             const currentWaitMs = currentSafety.blocked ? Math.max(1000, currentBlockedUntil - Date.now()) : Math.max(0, currentNextRequestAt - Date.now());
             if (finished || currentSafety.blocked || currentWaitMs > 0) return;
             const attachmentContext = attachments.filter((item) => item.text).map((item) => `\n\n[Attached file: ${item.name}]\n${item.text}`).join("");
-            const outboundMessage = `${browserPrompt(prompt, selectedBrowserMode)}${attachmentContext}`;
+            const outboundMessage = `${browserPrompt(prompt, selectedBrowserMode)}${attachmentContext}${imageOutputInstruction(prompt)}`;
             const images = attachments.filter((item) => item.data && /^image\//.test(item.type)).map((item) => item.data);
             consoleBridge.send(record.contextId, { id: `model-${startedAt}`, type: "set_model", ...(modelProvider ? { provider: modelProvider } : {}), modelId: model });
             if (thinking) consoleBridge.send(record.contextId, { id: `thinking-${startedAt}`, type: "set_thinking_level", level: thinking });
@@ -3390,7 +3447,7 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
   const selectedApprovalMode = approvalMode(value("approvalMode"));
   const modelValidationStartedAt = Date.now();
   const { model, models } = await validateChatModel(requestedModel, modelProvider);
-  assertImageGenerationModel(prompt, model.id);
+  assertImageGenerationAvailable(prompt, model, models);
   const modelValidationMs = Date.now() - modelValidationStartedAt;
   const quotaCheckStartedAt = Date.now();
   const selectedModel = modelSource === "quota"
@@ -3422,6 +3479,7 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
     appendChatMessage(sessionId, { id: `msg-${startedAt}`, role: "user", content: prompt, attachments, createdAt: new Date(startedAt).toISOString() });
   };
   sendEvent("start", { requestId, sessionId, model: selectedModel.id });
+  const expectsGeneratedImage = looksLikeImageGenerationPrompt(prompt);
   let reply = "";
   let assistantMessage = null;
   let assistantAttachments = [];
@@ -3568,6 +3626,7 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
       }
       assistantMessage = assistantMessage || frameAssistantMessage(frame);
       if (!reply && !assistantMessage && !assistantAttachments.length) return finish("error", { code: "UPSTREAM_ERROR", message: "OMP kết thúc lượt nhưng không trả nội dung" });
+      if (expectsGeneratedImage && !assistantAttachments.length) return finish("error", { code: "UPSTREAM_IMAGE_MISSING", message: "OMP không trả ảnh đầu ra; lượt này chưa được tính là đã tạo ảnh." });
       for (const block of chatBodyBlocksFromMessage(assistantMessage, requestId)) mergeChatBodyBlock(bodyBlocks, block);
       reply = chatMessageText(assistantMessage) || reply;
       const createdAt = new Date().toISOString();
@@ -3614,7 +3673,7 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
             consoleBridge.send(record.contextId, { id: `model-${startedAt}`, type: "set_model", provider: selectedModel.provider, modelId: selectedModel.id });
             if (thinking) consoleBridge.send(record.contextId, { id: `thinking-${startedAt}`, type: "set_thinking_level", level: thinking });
             const attachmentContext = attachments.filter((item) => item.text).map((item) => `\n\n[Attached file: ${item.name}]\n${item.text}`).join("");
-            const outboundMessage = `${browserPrompt(prompt, selectedBrowserMode)}${attachmentContext}`;
+            const outboundMessage = `${browserPrompt(prompt, selectedBrowserMode)}${attachmentContext}${imageOutputInstruction(prompt)}`;
             const images = attachments.filter((item) => item.data && /^image\//.test(item.type)).map((item) => item.data);
             consoleBridge.send(record.contextId, { id: `prompt-${startedAt}`, type: "prompt", message: outboundMessage, ...(images.length ? { images } : {}) });
             streamRequest.dispatched = true;
@@ -4622,7 +4681,7 @@ const server = http.createServer(async (req, res) => {
       const requestId = chatRequestId(body.requestId);
       if (activeChatRequests.has(requestId)) throw Object.assign(new Error("requestId đang được xử lý"), { code: "CONFLICT" });
       const { model, models } = await validateChatModel(chatModel(body.model), modelProvider);
-      assertImageGenerationModel(prompt, model.id);
+      assertImageGenerationAvailable(prompt, model, models);
       const selectedModel = modelSource === "quota"
         ? await assertQuotaModelAllowed(model.id, models, modelProvider, sessionId)
         : await assertGoogleQuotaModelAllowed(model, models, modelProvider, sessionId);
@@ -4697,7 +4756,8 @@ const server = http.createServer(async (req, res) => {
   if ((req.url === "/api/omp/v1/capabilities" || req.url === "/api/v1/omp/capabilities") && req.method === "GET") {
     try {
       const models = await availableModels();
-      const imageGenerationModels = models.filter((model) => model.imageGeneration).map((model) => model.id);
+      const imageGeneration = imageGenerationCapability(models);
+      const imageGenerationModels = imageGeneration.models;
       const tools = await readOmpToolCatalog();
       return json(res, 200, {
         ok: true, capabilityVersion: OMP_CAPABILITY_VERSION, contractVersion: OMP_GATEWAY_VERSION,
@@ -4705,7 +4765,7 @@ const server = http.createServer(async (req, res) => {
         imageGenerationModels,
         features: ["sessions", "streaming", "commands", "abort", "slash-commands", "file-references", "media-attachments", "image-generation", "approval-roundtrip", "browser-control", "memory"],
         sessionActions: { abort: "supported", followUp: "supported", fork: "supported", reconnect: "supported", resumeQueue: "supported", steer: "unavailable" },
-        featureStatus: { "session-actions": "supported", "file-reference": "supported", "media-attachments": "supported", "image-generation": imageGenerationModels.length ? "supported" : "unavailable", "stream-recovery": "partial", approval: "supported", "agent-hub": "unavailable", memory: "supported", share: "partial", "browser-control": "supported", media: "partial", "screen-capture": "unavailable" },
+        featureStatus: { "session-actions": "supported", "file-reference": "supported", "media-attachments": "supported", "image-generation": imageGeneration.status, "stream-recovery": "partial", approval: "supported", "agent-hub": "unavailable", memory: "supported", share: "partial", "browser-control": "supported", media: "partial", "screen-capture": "unavailable" },
         browserControl: {
           status: "supported",
           provider: "omp-skill",
@@ -4718,7 +4778,7 @@ const server = http.createServer(async (req, res) => {
           status: "partial",
           fileAttachments: "supported",
           imageAttachments: "supported",
-          imageGeneration: imageGenerationModels.length ? { status: "supported", models: imageGenerationModels } : { status: "unavailable", models: [] },
+          imageGeneration,
           screenCapture: { status: "unavailable", note: "Native screen capture chưa có adapter." },
           camera: "unavailable",
           microphone: "unavailable",

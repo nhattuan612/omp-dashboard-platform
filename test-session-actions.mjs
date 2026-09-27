@@ -462,6 +462,21 @@ async function fakeOmp(args) {
         emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: text } });
         emit({ type: "message_end", message: { role: "assistant", content: text } });
         emit({ type: "agent_end", message: { role: "assistant", content: text, model: "smoke-model" } });
+      } else if (frame.type === "prompt" && String(frame.message || "").includes("IMAGEGEN_BLOB_CONTRACT")) {
+        const outputImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+        const hash = "431ced6916a2a21a156e38701afe55bbd7f88969fbbfc56d7fe099d47f265460";
+        await mkdir(homePath(process.env.HOME, "agent", "blobs"), { recursive: true, mode: 0o700 });
+        await writeFile(homePath(process.env.HOME, "agent", "blobs", `${hash}.png`), Buffer.from(outputImage.split(",")[1], "base64"), { mode: 0o600 });
+        emit({ type: "turn_start" });
+        emit({ type: "tool_execution_end", toolName: "image_gen", toolCallId: "imagegen-1", result: "generated", attachments: [{ type: "image/png", data: `blob:sha256:${hash}`, name: "generated.png" }] });
+        emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "imagegen-reply" } });
+        emit({ type: "message_end", message: { role: "assistant", content: "imagegen-reply" } });
+        emit({ type: "agent_end", message: { role: "assistant", content: "imagegen-reply", model: "smoke-image-model" } });
+      } else if (frame.type === "prompt" && String(frame.message || "").includes("IMAGEGEN_MISSING_MEDIA_CONTRACT")) {
+        emit({ type: "turn_start" });
+        emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ảnh mới đã xong" } });
+        emit({ type: "message_end", message: { role: "assistant", content: "ảnh mới đã xong" } });
+        emit({ type: "agent_end", message: { role: "assistant", content: "ảnh mới đã xong", model: "smoke-image-model" } });
       } else if (frame.type === "prompt" && String(frame.message || "").includes("MEDIA_CONTRACT")) {
         const outputImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
         emit({ type: "turn_start" });
@@ -604,6 +619,7 @@ async function runContract() {
     const passes = [];
 
     const chatClient = await readFile(join(PROJECT_ROOT, "honpi-chat-dashboard-live.js"), "utf8");
+    const acpAdapter = await readFile(join(PROJECT_ROOT, "acp-session-context.mjs"), "utf8");
     assert.match(chatClient, /const isServerQueuedTurn = \(queue\) => queue\?\.phase === 'paused' \|\| \(queue\?\.phase === 'fifo' && Number\(queue\.queueAhead\) > 0\);/);
     assert.match(chatClient, /if \(isServerQueuedTurn\(request\.queueState\) && !\['waiting', 'end', 'done', 'error'\]\.includes\(event\)\) return;/);
     assert.match(chatClient, /if \(isServerQueuedTurn\(request\.queueState\)\) \{\s*renderQueueTray\(\);\s*return;\s*\}\s*mountChatTurn\(\);/);
@@ -620,6 +636,7 @@ async function runContract() {
     assert.match(chatClient, /function fileChangeRows\(blocks\)/);
     assert.match(chatClient, /ai-data-table/);
     assert.match(chatClient, /function readAttachment\(file\)/);
+    assert.match(acpAdapter, /isImageGenerationTool\(name\) \? imageAttachments\(output\) : \[\]/);
     passes.push("frontend exposes attachment, copy, prompt-revision, branch, markdown-table, and OMP file-change controls");
 
     async function api(method, path, body) {
@@ -1883,6 +1900,26 @@ async function runContract() {
       assert.equal(userMessage.attachments.find((item) => item.name === "notes.txt").text, inputText);
       assert.equal(assistantMessage.attachments[0].name, "result.png");
       passes.push("image-generation model returns assistant media and persists the generated image");
+    }
+    {
+      const outputImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+      const { reader } = await openStream(parent.id, "tạo ảnh IMAGEGEN_BLOB_CONTRACT", "imagegen-blob", [], "smoke-image-model");
+      await reader.waitFor((event) => event.event === "start", "imagegen blob stream start");
+      const media = await reader.waitFor((event) => event.event === "media", "imagegen blob media");
+      assert.equal(media.data.attachments[0].data, outputImage, "only a checksum-verified OMP image blob may reach chat");
+      const ended = await reader.waitFor((event) => event.event === "end", "imagegen blob stream completion");
+      assert.equal(ended.data.attachments[0].name, "generated.png");
+      const messages = await api("GET", `/api/v1/sessions/${encodeURIComponent(parent.id)}/messages`);
+      assert.ok(messages.payload.some((item) => item.role === "assistant" && item.content === "imagegen-reply" && item.attachments?.[0]?.data === outputImage));
+      passes.push("image generation tool blob is checksum-verified, streamed, and persisted");
+    }
+    {
+      const { reader } = await openStream(parent.id, "tạo ảnh IMAGEGEN_MISSING_MEDIA_CONTRACT", "imagegen-missing", [], "smoke-image-model");
+      await reader.waitFor((event) => event.event === "start", "imagegen missing-media stream start");
+      await assert.rejects(reader.waitFor((event) => event.event === "end", "imagegen missing-media error"), /UPSTREAM_IMAGE_MISSING|không trả ảnh đầu ra/);
+      const messages = await api("GET", `/api/v1/sessions/${encodeURIComponent(parent.id)}/messages`);
+      assert.ok(!messages.payload.some((item) => item.role === "assistant" && item.content === "ảnh mới đã xong"), "text-only image claims must not persist as successful output");
+      passes.push("text-only image claims fail instead of completing successfully");
     }
     {
       const { reader } = await openStream(parent.id, "LOCAL_COMMAND_CONTRACT prompt", "local-command");
