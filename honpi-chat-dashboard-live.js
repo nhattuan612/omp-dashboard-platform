@@ -111,7 +111,9 @@
       return '';
     }
     const account = state.modelAccess?.account;
-    if (!account) return 'Chưa xác minh model theo quota account đang hoạt động.';
+    if (!account) return state.modelAccessErrorCode === 'ACCOUNT_SELECTION_REQUIRED'
+      ? 'Chat này chưa có account Gemini quota; hãy chọn account trong Quota.'
+      : 'Chưa xác minh model theo quota account đang hoạt động.';
     if (!account.canUse) return `Quota account không khả dụng: ${account.availabilityReason || account.availabilityLabel || 'hãy chọn account khác'}.`;
     if (!state.models.length) return `Quota ${account.provider} không có model khả dụng trong OMP.`;
     if (!modelId || !state.models.some((model) => model.id === modelId && (!modelProvider || model.provider === modelProvider))) return 'Hãy chọn model thuộc danh mục của quota account đang hoạt động.';
@@ -1356,7 +1358,7 @@
     const guard = sessionGuard(id, state.generation + 1);
     state.generation = guard.generation;
     state.activeId = id;
-    if (previousId !== id) { void loadQuota(); void loadModels(); }
+    if (previousId !== id) { void loadQuota(); await loadModels(); }
     syncRequestAliases();
     if ($('ompMemoryStatus')) void loadOmpMemory(guard);
     if (!options.deferMessages) state.messages = [];
@@ -2223,11 +2225,13 @@
   async function sendPrompt() {
     const input = $('chatInput'); const prompt = text(input?.value).trim();
     if (!prompt) { notify('Vui lòng nhập nội dung trước khi gửi.', true); return; }
-    const promptSettings = snapshotSettings();
-    const accessError = modelAccessError(promptSettings.model, promptSettings.modelSource, promptSettings.modelProvider);
-    if (accessError) { notify(accessError, true); return; }
-    const capabilityError = imageGenerationModelError(prompt, promptSettings.model, promptSettings.modelProvider);
-    if (capabilityError) { notify(capabilityError, true); return; }
+    if (state.activeId) {
+      const promptSettings = snapshotSettings();
+      const accessError = modelAccessError(promptSettings.model, promptSettings.modelSource, promptSettings.modelProvider);
+      if (accessError) { notify(accessError, true); return; }
+      const capabilityError = imageGenerationModelError(prompt, promptSettings.model, promptSettings.modelProvider);
+      if (capabilityError) { notify(capabilityError, true); return; }
+    }
     clearRetry(state.activeId);
     const attachments = state.attachments.splice(0);
     const settings = snapshotSettings();
