@@ -609,6 +609,8 @@ async function runContract() {
     assert.match(chatClient, /if \(isServerQueuedTurn\(request\.queueState\)\) \{\s*renderQueueTray\(\);\s*return;\s*\}\s*mountChatTurn\(\);/);
     assert.ok(chatClient.includes("if (previousId !== id) { void loadQuota(); await loadModels(); }"));
     assert.ok(chatClient.includes("if (state.activeId) {\n      const promptSettings = snapshotSettings();"));
+    assert.ok(chatClient.includes("if (requestId !== state.sessionLoadRequestId) return;"));
+    assert.ok(chatClient.includes("await loadFolders({ silent: true });"));
     passes.push("queued frontend turns remain in the tray until their backend turn dispatches");
 
     async function api(method, path, body) {
