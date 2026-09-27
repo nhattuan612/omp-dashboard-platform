@@ -1412,7 +1412,8 @@
           "id": { "type": "string" },
           "name": { "type": "string" },
           "cwd": { "type": "string", "description": "CWD workspace thật của project folder." },
-          "sessionCount": { "type": "integer", "description": "Số chat được gán folder; chỉ có trong GET /api/v1/folders." }
+          "sessionCount": { "type": "integer", "description": "Số chat được gán folder; chỉ có trong GET /api/v1/folders." },
+          "sessions": { "type": "array", "description": "Preview các chat đã gán để sidebar render đúng khi danh sách chat chính đang phân trang.", "items": { "$ref": "#/components/schemas/ChatSession" } }
         }
       },
       "CreateChatFolderRequest": {
