@@ -472,6 +472,11 @@ async function fakeOmp(args) {
         emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "imagegen-reply" } });
         emit({ type: "message_end", message: { role: "assistant", content: "imagegen-reply" } });
         emit({ type: "agent_end", message: { role: "assistant", content: "imagegen-reply", model: "smoke-image-model" } });
+      } else if (frame.type === "prompt" && String(frame.message || "").includes("AUTO_IMAGE_MODEL_CONTRACT")) {
+        const outputImage = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+        emit({ type: "turn_start" });
+        emit({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "auto-image-reply" }, { type: "image", type: "image/png", data: outputImage, name: "auto-image.png" }] } });
+        emit({ type: "agent_end", message: { role: "assistant", content: [{ type: "text", text: "auto-image-reply" }, { type: "image", type: "image/png", data: outputImage, name: "auto-image.png" }], model: "smoke-image-model" } });
       } else if (frame.type === "prompt" && String(frame.message || "").includes("IMAGEGEN_MISSING_MEDIA_CONTRACT")) {
         emit({ type: "turn_start" });
         emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "ảnh mới đã xong" } });
@@ -713,14 +718,6 @@ async function runContract() {
     const prewarmState = await api("GET", "/api/console/state");
     assert.ok(prewarmState.payload.acpWorkers.some((worker) => worker.pid === prewarmed.payload.worker.pid && worker.contexts === 0), "prewarm must not allocate an ACP session");
     passes.push("ACP prewarm starts and reuses one context-free worker");
-
-    const unsupportedImageTurn = await api("POST", "/api/v1/chat/send", {
-      prompt: "tạo một ảnh PNG màu đỏ",
-      model: "smoke-model",
-    });
-    assert.equal(unsupportedImageTurn.status, 400, `unsupported image-generation model should be rejected before dispatch: ${JSON.stringify(unsupportedImageTurn.payload)}`);
-    assert.equal(unsupportedImageTurn.payload.error?.code, "IMAGE_GENERATION_MODEL_REQUIRED");
-    passes.push("unsupported image generation is rejected before dispatch");
 
     async function createFixture(title, cwd = workspaceRoot) {
       const created = await api("POST", "/api/v1/sessions", { title, cwd, tools: ["read"] });
@@ -965,6 +962,17 @@ async function runContract() {
     assert.equal(googleModelAccess.payload.models.find((model) => model.id === "smoke-model")?.isDefault, true);
     assert.equal(await readFile(ompSelectionPath, "utf8"), ompSelectionSentinel, "quota selection must not rewrite OMP's terminal-global selected account");
     passes.push("Google Antigravity quota lists its full provider catalog and requires explicit selection without changing OMP global state");
+
+    const autoImageTurn = await api("POST", "/api/v1/chat/send", {
+      sessionId: parent.id,
+      prompt: "tạo một ảnh PNG AUTO_IMAGE_MODEL_CONTRACT",
+      model: "smoke-model",
+    });
+    assert.equal(autoImageTurn.status, 200, `image generation should auto-route before dispatch: ${JSON.stringify(autoImageTurn.payload)}`);
+    assert.equal(autoImageTurn.payload.model, "smoke-image-model");
+    assert.equal(autoImageTurn.payload.attachments?.[0]?.name, "auto-image.png");
+    assert.ok((await readFakeFrames(home)).some((item) => item.frame.type === "set_model" && item.frame.provider === "google-antigravity" && item.frame.modelId === "smoke-image-model"), "image requests must select the native image model");
+    passes.push("image generation auto-routes to the native image model");
 
     const scopedGeminiSession = await createFixture("Session-scoped Gemini selection");
     const scopedSwitch = await api("POST", "/api/v1/quota/switch", { accountId: googleAltAccount.id, sessionId: scopedGeminiSession.id });

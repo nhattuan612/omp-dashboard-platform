@@ -47,6 +47,10 @@ for await (const line of lines) {
     sendCommands(sessionId);
   } else if (frame.method === "session/prompt") {
     const text = (frame.params.prompt || []).map((part) => part.text || "").join("");
+    if (text === "ERROR_429") {
+      reply(frame.id, { stopReason: "error", errorStatus: 429, errorMessage: "image quota exhausted" });
+      continue;
+    }
     send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: frame.params.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: frame.params.sessionId + ":" + text } } } });
     reply(frame.id, { stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } });
   } else if (frame.method === "session/cancel") {
@@ -87,6 +91,14 @@ try {
   assert.ok(!firstFrames.some((frame) => JSON.stringify(frame).includes("B_ONLY")), "one chat must not receive another session's output");
   assert.ok(secondFrames.some((frame) => JSON.stringify(frame).includes("B_ONLY")));
   assert.ok(!secondFrames.some((frame) => JSON.stringify(frame).includes("A_ONLY")), "sibling output must remain isolated");
+  await wait(1050);
+  const errorFrameCount = bridge.get(second.id).frames.length;
+  await bridge.send(second.id, { id: "prompt-error", type: "prompt", message: "ERROR_429" });
+  const errorFrames = bridge.get(second.id).frames.slice(errorFrameCount);
+  const terminalError = errorFrames.find((frame) => frame.type === "agent_end");
+  assert.equal(terminalError?.message?.errorStatus, 429, "ACP terminal errors must preserve their upstream status");
+  assert.equal(terminalError?.message?.errorMessage, "image quota exhausted", "ACP terminal errors must preserve their upstream message");
+  passes.push("ACP terminal errors preserve upstream status and message");
   const frameCountBeforeReplay = firstFrames.length;
   const writesBeforeReplay = liveA.chunks.length;
   const clientB = bridge.createClient();
