@@ -1832,8 +1832,9 @@ function browserMode(value) {
   return mode;
 }
 
-function browserPrompt(prompt, mode) {
-  if (mode !== "ego-browser" || /^\/skill:ego-browser(?:\s|$)/i.test(prompt)) return prompt;
+function browserPrompt(prompt, mode, hasImages = false) {
+  // OMP expands /skill prompts into a custom message, which cannot carry ACP image blocks.
+  if (hasImages || mode !== "ego-browser" || /^\/skill:ego-browser(?:\s|$)/i.test(prompt)) return prompt;
   return `/skill:ego-browser\n\n${prompt}`;
 }
 
@@ -2816,9 +2817,9 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
             const currentNextRequestAt = Number(currentSafety.nextRequestAt || 0);
             const currentWaitMs = currentSafety.blocked ? Math.max(1000, currentBlockedUntil - Date.now()) : Math.max(0, currentNextRequestAt - Date.now());
             if (finished || currentSafety.blocked || currentWaitMs > 0) return;
-            const attachmentContext = attachments.filter((item) => item.text).map((item) => `\n\n[Attached file: ${item.name}]\n${item.text}`).join("");
-            const outboundMessage = `${browserPrompt(prompt, selectedBrowserMode)}${attachmentContext}${imageOutputInstruction(prompt)}`;
             const images = attachments.filter((item) => item.data && /^image\//.test(item.type)).map((item) => item.data);
+            const attachmentContext = attachments.filter((item) => item.text).map((item) => `\n\n[Attached file: ${item.name}]\n${item.text}`).join("");
+            const outboundMessage = `${browserPrompt(prompt, selectedBrowserMode, images.length > 0)}${attachmentContext}${imageOutputInstruction(prompt)}`;
             consoleBridge.send(record.contextId, { id: `model-${startedAt}`, type: "set_model", ...(modelProvider ? { provider: modelProvider } : {}), modelId: model });
             if (thinking) consoleBridge.send(record.contextId, { id: `thinking-${startedAt}`, type: "set_thinking_level", level: thinking });
             consoleBridge.send(record.contextId, { id: `prompt-${startedAt}`, type: "prompt", message: outboundMessage, ...(images.length ? { images } : {}) });
@@ -3672,9 +3673,9 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
             if (ended || safety.blocked || waitMs > 0) return;
             consoleBridge.send(record.contextId, { id: `model-${startedAt}`, type: "set_model", provider: selectedModel.provider, modelId: selectedModel.id });
             if (thinking) consoleBridge.send(record.contextId, { id: `thinking-${startedAt}`, type: "set_thinking_level", level: thinking });
-            const attachmentContext = attachments.filter((item) => item.text).map((item) => `\n\n[Attached file: ${item.name}]\n${item.text}`).join("");
-            const outboundMessage = `${browserPrompt(prompt, selectedBrowserMode)}${attachmentContext}${imageOutputInstruction(prompt)}`;
             const images = attachments.filter((item) => item.data && /^image\//.test(item.type)).map((item) => item.data);
+            const attachmentContext = attachments.filter((item) => item.text).map((item) => `\n\n[Attached file: ${item.name}]\n${item.text}`).join("");
+            const outboundMessage = `${browserPrompt(prompt, selectedBrowserMode, images.length > 0)}${attachmentContext}${imageOutputInstruction(prompt)}`;
             consoleBridge.send(record.contextId, { id: `prompt-${startedAt}`, type: "prompt", message: outboundMessage, ...(images.length ? { images } : {}) });
             streamRequest.dispatched = true;
             streamRequest.promptDispatched = true;
