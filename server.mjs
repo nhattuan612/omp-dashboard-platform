@@ -3776,24 +3776,23 @@ async function readGeminiSelection(sessionId = null) {
   const sessionAccountId = typeof session.geminiAccountId === "string" ? session.geminiAccountId.trim() : "";
   const snapshotAccountId = typeof session.geminiDefaultAccountIdAtCreation === "string" ? session.geminiDefaultAccountIdAtCreation.trim() : "";
   const isSessionPinned = Boolean(sessionAccountId);
+  const inheritCurrentDefault = !isSessionPinned && (!hasExistingSession || (hasStoredSession && !snapshotAccountId));
   const accountId = isSessionPinned
     ? sessionAccountId
-    : hasExistingSession
-      ? snapshotAccountId
-      : typeof metadata.geminiDefaultAccountId === "string" ? metadata.geminiDefaultAccountId.trim() : "";
+    : snapshotAccountId || (inheritCurrentDefault && typeof metadata.geminiDefaultAccountId === "string" ? metadata.geminiDefaultAccountId.trim() : "");
   return {
     sessionId,
     accountId,
     provider: isSessionPinned
       ? session.geminiProvider || ""
-      : hasExistingSession
+      : snapshotAccountId
         ? session.geminiDefaultProviderAtCreation || ""
-        : metadata.geminiDefaultProvider || "",
+        : inheritCurrentDefault ? metadata.geminiDefaultProvider || "" : "",
     selectedAt: isSessionPinned
       ? session.geminiAccountSelectedAt || null
-      : hasExistingSession
+      : snapshotAccountId
         ? session.geminiDefaultSelectedAtAtCreation || null
-        : metadata.geminiDefaultSelectedAt || null,
+        : inheritCurrentDefault ? metadata.geminiDefaultSelectedAt || null : null,
     scope: isSessionPinned ? "session" : accountId ? "default" : "none",
   };
 }
