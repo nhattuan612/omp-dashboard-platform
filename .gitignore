@@ -13,6 +13,7 @@ credentials/
 state.json
 selected-account.json
 protect-config.json
+omp-account-control.json
 auth-events.json
 account-colors.json
 chat-metadata.json

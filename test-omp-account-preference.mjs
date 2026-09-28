@@ -1,86 +1,59 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { createGeminiAccountPinController, geminiQuotaAccountId } from "./gemini-account-pin-extension.mjs";
+import { geminiQuotaAccountId } from "./gemini-account-pin-extension.mjs";
 
-const preferencePath = join(homedir(), ".omp/usage-dashboard/selected-account.json");
-const preference = JSON.parse(await readFile(preferencePath, "utf8"));
-const preferredEmail = String(preference.email || "").trim().toLowerCase();
-if (!preferredEmail) throw new Error("OMP global account preference is unavailable for this test");
+const originalHome = process.env.HOME;
+const home = await mkdtemp(join(tmpdir(), "omp-account-control-"));
+process.env.HOME = home;
+const stateDir = join(home, ".omp", "usage-dashboard");
+const preferencePath = join(stateDir, "selected-account.json");
+const controlPath = join(stateDir, "omp-account-control.json");
+const extensionPath = join(process.cwd(), "omp/agent/extensions/omp-account-preference.js");
+const { default: registerAccountControl } = await import(`${pathToFileURL(extensionPath).href}?test=${Date.now()}`);
 
-const extensionPath = join(homedir(), ".omp/agent/extensions/omp-account-preference.js");
-const { default: registerAccountPreference } = await import(pathToFileURL(extensionPath).href);
+const globalAccount = { provider: "google-antigravity", credentialId: 17, email: "global@example.test", projectId: "global-project" };
+const dashboardAccount = { provider: "google-antigravity", credentialId: 29, email: "dashboard@example.test", projectId: "dashboard-project" };
 
-const globalAccount = {
-  provider: "google-antigravity",
-  credentialId: 17,
-  email: preferredEmail,
-  accountId: "global-account",
-  projectId: "global-project",
-};
-const dashboardAccount = {
-  provider: "google-antigravity",
-  credentialId: 29,
-  email: "dashboard-selected@example.test",
-  accountId: "dashboard-account",
-  projectId: "dashboard-project",
-};
-
-function makeAuthStorage() {
+function makeAuthStorage(pinResult = true, targetActive = false) {
   const pinned = new Map();
-  const accounts = [globalAccount, dashboardAccount];
+  const accounts = [globalAccount, { ...dashboardAccount, active: targetActive }];
   return {
     pinned,
-    keys: {
-      async getWithCredential(provider, sessionId) {
-        const credentialId = pinned.get(`${provider}\0${sessionId}`);
-        const account = accounts.find((item) => item.provider === provider && item.credentialId === credentialId);
-        return account
-          ? { ok: true, credentialId: account.credentialId, apiKey: `synthetic-${account.credentialId}` }
-          : { ok: false, error: "no synthetic session pin" };
-      },
-    },
-    async getOAuthAccessByCredentialId(provider, credentialId) {
-      const account = accounts.find((item) => item.provider === provider && item.credentialId === credentialId);
-      return account
-        ? { ok: true, credentialId, accessToken: `synthetic-${credentialId}` }
-        : undefined;
-    },
-    oauth: {
-      accounts(provider) { return accounts.filter((account) => account.provider === provider); },
-    },
-    sessions: {
-      pin(provider, sessionId, credentialId) {
-        pinned.set(`${provider}\0${sessionId}`, credentialId);
-        return true;
-      },
+    listOAuthAccounts(provider) { return accounts.filter((account) => account.provider === provider); },
+    pinSessionOAuthAccount(provider, sessionId, credentialId) {
+      pinned.set(`${provider}\0${sessionId}`, credentialId);
+      return pinResult;
     },
   };
 }
 
-test("global preference does not overwrite a dashboard chat's explicit Gemini pin", async () => {
+test("OMP account control ignores legacy preference when off and pins only the configured quota account", async (t) => {
+  t.after(async () => {
+    process.env.HOME = originalHome;
+    await rm(home, { recursive: true, force: true });
+  });
+  await mkdir(stateDir, { recursive: true, mode: 0o700 });
+  await writeFile(preferencePath, `${JSON.stringify({ email: globalAccount.email })}\n`, { mode: 0o600 });
   const authStorage = makeAuthStorage();
   const handlers = new Map();
-  const sessionId = "synthetic-dashboard-session";
-  const context = {
-    modelRegistry: { authStorage },
-    sessionManager: { getSessionId: () => sessionId },
-  };
-  registerAccountPreference({
-    on(event, handler) { handlers.set(event, handler); },
-    logger: { info() {}, warn() {} },
-  });
+  const context = { modelRegistry: { authStorage }, sessionManager: { getSessionId: () => "synthetic-session" } };
+  registerAccountControl({ on(event, handler) { handlers.set(event, handler); }, logger: { info() {} } });
 
   await handlers.get("session_start")({}, context);
-  assert.equal(authStorage.pinned.get(`google-antigravity\0${sessionId}`), globalAccount.credentialId);
+  assert.equal(authStorage.pinned.get("google-antigravity\0synthetic-session"), undefined, "off must preserve OMP's original account behavior");
 
-  const controller = createGeminiAccountPinController(authStorage);
-  await controller.pinSession(sessionId, geminiQuotaAccountId(dashboardAccount.provider, dashboardAccount));
-  await handlers.get("before_agent_start")?.({}, context);
+  await writeFile(controlPath, `${JSON.stringify({ enabled: true, accountId: geminiQuotaAccountId(dashboardAccount.provider, dashboardAccount), provider: dashboardAccount.provider })}\n`, { mode: 0o600 });
+  await handlers.get("before_agent_start")({}, context);
+  assert.equal(authStorage.pinned.get("google-antigravity\0synthetic-session"), dashboardAccount.credentialId);
 
-  const result = await authStorage.keys.getWithCredential("google-antigravity", sessionId, {});
-  assert.equal(result.credentialId, dashboardAccount.credentialId);
+  await writeFile(controlPath, `${JSON.stringify({ enabled: true, accountId: "acc-000000000000", provider: dashboardAccount.provider })}\n`, { mode: 0o600 });
+  await assert.rejects(() => handlers.get("before_agent_start")({}, context), /KHỐNG CHẾ OMP/);
+
+  await writeFile(controlPath, `${JSON.stringify({ enabled: true, accountId: geminiQuotaAccountId(dashboardAccount.provider, dashboardAccount), provider: dashboardAccount.provider })}\n`, { mode: 0o600 });
+  const strictContext = { modelRegistry: { authStorage: makeAuthStorage(false, true) }, sessionManager: { getSessionId: () => "strict-session" } };
+  await assert.rejects(() => handlers.get("session_start")({}, strictContext), /KHỐNG CHẾ OMP/);
 });

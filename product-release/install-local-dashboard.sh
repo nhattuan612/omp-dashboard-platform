@@ -14,6 +14,9 @@ PLIST="$LAUNCH_DIR/$LABEL.plist"
 PLIST_BACKUP=LaunchAgent.plist
 BACKUP_ROOT="$TARGET_DIR/backups/deploy"
 APP_FILES='server.mjs console-bridge.mjs acp-worker.mjs acp-session-context.mjs gemini-account-pin-extension.mjs honpi-dashboard-mark-8138753b.png honpi-chat-dashboard-SKE.html honpi-quota-dashboard-SKE.html honpi-chat-dashboard-live.js honpi-chat-dashboard-legacy.js'
+OMP_EXTENSION_SOURCE="$SOURCE_DIR/omp-account-preference.js"
+OMP_EXTENSION_TARGET="${HOME}/.omp/agent/extensions/omp-account-preference.js"
+OMP_EXTENSION_BACKUP=OMPAccountPreference.js
 
 fail() {
   printf '%s\n' "$*" >&2
@@ -24,6 +27,7 @@ fail() {
 case "$NODE_BIN" in /*) ;; *) fail "Node.js path must be absolute" ;; esac
 [ -x "${HOME}/.bun/bin/omp" ] || fail "OMP is required at ~/.bun/bin/omp"
 case "$LABEL" in ''|*[!A-Za-z0-9._-]*) fail "Invalid LaunchAgent label" ;; esac
+[ -f "$OMP_EXTENSION_SOURCE" ] || fail "Missing OMP extension release asset"
 
 xml_escape() {
   printf '%s' "$1" | /usr/bin/sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
@@ -37,6 +41,7 @@ write_manifest() {
     for file in $APP_FILES; do
       if [ -f "$file" ]; then set -- "$@" "$file"; else set -- "$@" "ABSENT-$file"; fi
     done
+    if [ -f "$OMP_EXTENSION_BACKUP" ]; then set -- "$@" "$OMP_EXTENSION_BACKUP"; else set -- "$@" "ABSENT-$OMP_EXTENSION_BACKUP"; fi
     if [ -f "$PLIST_BACKUP" ]; then set -- "$@" "$PLIST_BACKUP"; else set -- "$@" "ABSENT-$PLIST_BACKUP"; fi
     /usr/bin/shasum -a 256 "$@"
   ) > "$backup/MANIFEST.sha256"
@@ -47,7 +52,7 @@ verify_backup() {
   backup=$1
   [ -d "$backup" ] || fail "Backup does not exist: $backup"
   [ -f "$backup/BACKUP-VERSION" ] || fail "Legacy or non-code-only backup rejected"
-  [ "$(/bin/cat "$backup/BACKUP-VERSION")" = "code-only-v1" ] || fail "Invalid backup version"
+  [ "$(/bin/cat "$backup/BACKUP-VERSION")" = "code-only-v2" ] || fail "Invalid backup version"
   [ -f "$backup/MANIFEST.sha256" ] || fail "Backup checksum manifest missing"
   (CDPATH= cd -- "$backup" && /usr/bin/shasum -a 256 -c MANIFEST.sha256 >/dev/null) || fail "Backup checksum mismatch"
 }
@@ -65,6 +70,15 @@ restore_backup() {
       fail "Backup file or absence marker missing: $file"
     fi
   done
+  if [ -f "$backup/$OMP_EXTENSION_BACKUP" ]; then
+    /bin/mkdir -p "$(/usr/bin/dirname "$OMP_EXTENSION_TARGET")" || return 1
+    /bin/cp "$backup/$OMP_EXTENSION_BACKUP" "$OMP_EXTENSION_TARGET" || return 1
+    /bin/chmod 600 "$OMP_EXTENSION_TARGET" || return 1
+  elif [ -f "$backup/ABSENT-$OMP_EXTENSION_BACKUP" ]; then
+    /bin/rm -f "$OMP_EXTENSION_TARGET" || return 1
+  else
+    fail "Backup OMP extension or absence marker missing"
+  fi
   if [ -f "$backup/$PLIST_BACKUP" ]; then
     /bin/cp "$backup/$PLIST_BACKUP" "$PLIST" || return 1
     /bin/chmod 600 "$PLIST" || return 1
@@ -104,7 +118,7 @@ timestamp=$(/bin/date +%Y%m%d-%H%M%S)
 BACKUP_DIR="$BACKUP_ROOT/$timestamp-$$"
 /bin/mkdir "$BACKUP_DIR"
 /bin/chmod 700 "$BACKUP_DIR"
-printf 'code-only-v1\n' > "$BACKUP_DIR/BACKUP-VERSION"
+printf 'code-only-v2\n' > "$BACKUP_DIR/BACKUP-VERSION"
 for file in $APP_FILES; do
   [ -f "$SOURCE_DIR/$file" ] || fail "Missing release asset: $file"
   if [ -f "$TARGET_DIR/$file" ]; then
@@ -113,6 +127,11 @@ for file in $APP_FILES; do
     : > "$BACKUP_DIR/ABSENT-$file"
   fi
 done
+if [ -f "$OMP_EXTENSION_TARGET" ]; then
+  /bin/cp "$OMP_EXTENSION_TARGET" "$BACKUP_DIR/$OMP_EXTENSION_BACKUP"
+else
+  : > "$BACKUP_DIR/ABSENT-$OMP_EXTENSION_BACKUP"
+fi
 if [ -f "$PLIST" ]; then
   /bin/cp "$PLIST" "$BACKUP_DIR/$PLIST_BACKUP"
 else
@@ -133,6 +152,14 @@ for file in $APP_FILES; do
     fail "Failed to install $file"
   fi
 done
+
+if ! /bin/mkdir -p "$(/usr/bin/dirname "$OMP_EXTENSION_TARGET")" \
+  || ! /bin/cp "$OMP_EXTENSION_SOURCE" "$OMP_EXTENSION_TARGET" \
+  || ! /bin/chmod 600 "$OMP_EXTENSION_TARGET" \
+  || ! /usr/bin/cmp -s "$OMP_EXTENSION_SOURCE" "$OMP_EXTENSION_TARGET"; then
+  rollback_failed_install || true
+  fail "Failed to install OMP account control extension"
+fi
 
 NODE_XML=$(xml_escape "$NODE_BIN")
 TARGET_XML=$(xml_escape "$TARGET_DIR")
