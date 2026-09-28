@@ -408,16 +408,6 @@ async function designHtml() {
 
 const server = http.createServer(async (req, res) => {
   try {
-  if (req.url === "/console" && req.method === "GET") {
-    const page = await readDashboardAsset("console.html");
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-    return res.end(page);
-  }
-  if (req.url === "/console-live.js" && req.method === "GET") {
-    const script = await readDashboardAsset("console-live.js");
-    res.writeHead(200, { "content-type": "application/javascript; charset=utf-8", "cache-control": "no-store" });
-    return res.end(script);
-  }
   if (req.url === "/api/omp/v1/capabilities" && req.method === "GET") {
     return json(res, 200, {
       ok: true,

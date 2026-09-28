@@ -5003,17 +5003,6 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     return res.end(page);
   }
-  if (requestUrl.pathname === "/console" && req.method === "GET") {
-    const page = await readDashboardAsset("console.html", res.cspNonce);
-    issueDashboardCookie(res);
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    return res.end(page);
-  }
-  if (requestUrl.pathname === "/console-live.js" && req.method === "GET") {
-    const script = await readDashboardAsset("console-live.js");
-    res.writeHead(200, { "content-type": "application/javascript; charset=utf-8" });
-    return res.end(script);
-  }
   if (requestUrl.pathname === "/honpi-chat-dashboard-live.js" && req.method === "GET") {
     const script = await readDashboardAsset("honpi-chat-dashboard-live.js");
     res.writeHead(200, { "content-type": "application/javascript; charset=utf-8", "cache-control": "no-store" });

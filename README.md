@@ -1,11 +1,11 @@
 # OMP Dashboard Platform
 
-Dashboard local để theo dõi quota Gemini của OMP, chọn account ưu tiên, xem nhật ký token và mở OMP Web Console.
+Dashboard local để theo dõi quota Gemini của OMP, chọn account ưu tiên và xem nhật ký token.
 
 ## Thành phần
 
 - `dashboard/`: server Node.js, giao diện quota và History token.
-- `dashboard/console.html`, `dashboard/console-live.js`, `dashboard/console-bridge.mjs`: OMP Web Console Slice 1, gọi OMP RPC trực tiếp và hiển thị raw capability/event.
+- `dashboard/console-bridge.mjs`: cầu nối OMP RPC dùng chung cho gateway và các luồng backend.
 - `integrations/deepseek-harness-omp/`: host-side client để DeepSeek Harness dùng OMP Gateway, giữ Google auth/quota/skill ở OMP.
 - `omp/agent/extensions/omp-account-preference.js`: extension OMP tự pin account được chọn khi mở session.
 - `integrations/open-design-pi-omp`: wrapper tùy chọn cho app gọi OMP; không chứa logic account.
@@ -63,15 +63,3 @@ dsh web --no-open
 ```
 
 DSH Web dùng OMP route khi chọn `OMP · Gemini Pro` hoặc `OMP · Gemini Pro · Ego`; tài khoản, quota, skill và Ego vẫn do OMP quản lý. Không đưa `.dsh/.credentials.yaml` hoặc token vào repository.
-
-## OMP Web Console
-
-Mở `http://127.0.0.1:4177/console`, bấm `Khởi động OMP context`, rồi nhập prompt. Console hiện session/project list từ ACP, prompt/steer/follow-up, model, thinking, fast mode, queue, compaction, retry, bash, todos, subagents, login providers, extension dialogs, transcript/history, slash-command palette và `Advanced / Raw` RPC luôn hiển thị.
-
-Chạy test smoke không gọi model:
-
-```sh
-node tests/console-smoke.mjs
-node tests/omp-gateway-smoke.mjs
-node tests/omp-client-smoke.mjs
-```
