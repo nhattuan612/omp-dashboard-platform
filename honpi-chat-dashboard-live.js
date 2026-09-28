@@ -1436,7 +1436,8 @@
   function syncWorkspaceMeta(session) {
     const isDraft = !session && !state.activeId;
     const cwd = session?.cwd || (isDraft ? state.draftWorkspaceCwd : '');
-    const name = cwd ? workspaceName(cwd) : isDraft ? 'General' : 'Workspace chưa xác định';
+    const projectName = session?.folderName?.trim() || '';
+    const name = projectName || (isDraft ? (cwd ? workspaceName(cwd) : 'General') : 'Workspace chung');
     const label = $('promptCurrentWsLabel'); if (label) label.textContent = name;
     const wrapper = $('promptWsWrapper'); const trigger = $('promptWorkspaceTrigger'); const dropdown = $('promptWsDropdown'); const chevron = $('promptWsChevron');
     if (wrapper) { wrapper.classList.toggle('is-picker', isDraft); wrapper.classList.toggle('is-info-only', !isDraft); }
@@ -1444,8 +1445,8 @@
       trigger.disabled = !isDraft;
       trigger.setAttribute('aria-haspopup', 'dialog');
       trigger.setAttribute('aria-controls', 'projectFolderModal');
-      trigger.title = isDraft ? `Workspace chat mới: ${cwd || 'General'}` : `Workspace chat: ${cwd || 'chưa xác định'}`;
-      trigger.setAttribute('aria-label', isDraft ? `Chọn workspace cho chat mới. Hiện tại: ${name}` : `Workspace chat: ${name}`);
+      trigger.title = isDraft ? `Workspace chat mới: ${cwd || 'General'}` : projectName ? `Folder dự án: ${projectName}` : `Workspace chung: ${cwd || 'General'}`;
+      trigger.setAttribute('aria-label', isDraft ? `Chọn workspace cho chat mới. Hiện tại: ${name}` : projectName ? `Folder dự án: ${projectName}` : `Workspace chung: ${name}`);
       if (isDraft) trigger.removeAttribute('aria-disabled'); else trigger.setAttribute('aria-disabled', 'true');
     }
     if (dropdown) { dropdown.hidden = true; dropdown.classList.remove('show'); }
