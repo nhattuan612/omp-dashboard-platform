@@ -1658,12 +1658,14 @@ input, select { font: inherit; }
         </div>
         <div class="safety-controls">
           <label class="safety-toggle" title="Bật hoặc tắt guard chống 429"><input type="checkbox" id="safetyEnabled" checked> <span>Bảo vệ 429</span></label>
+          <label class="safety-toggle" title="Buộc session OMP/PI/OpenDesign mới dùng đúng account đang chọn ở Quota"><input type="checkbox" id="ompAccountControl"> <span>KHỐNG CHẾ OMP</span></label>
           <select class="select-input safety-mode-select" id="safetyMode" aria-label="Phạm vi Safety Guard">
             <option value="auto">Tự động mọi Google</option>
             <option value="manual">Chọn tài khoản</option>
           </select>
           <button class="btn btn-secondary btn-sm" id="safetyAccountsBtn">Tài khoản áp dụng</button>
           <span class="brand-badge" id="safety-applied-badge" style="color: var(--success); border-color: color-mix(in oklab, var(--success), transparent 70%);">🛡️ -- tài khoản</span>
+          <span class="brand-badge" id="ompAccountControlState">🔒 Đang tải…</span>
         </div>
       </div>
       <div class="safety-accounts-editor" id="safetyAccountsEditor" aria-label="Chọn tài khoản Google được bảo vệ"></div>
@@ -1948,7 +1950,7 @@ input, select { font: inherit; }
   window.HONPI_QUOTA_CONFIG = { production: true, apiBase: '/api/v1', route: '/quota' };
   const API = {
     accounts: '/api/v1/quota/accounts', overview: '/api/v1/quota/overview',
-    protect: '/api/v1/quota/protect-status', protectConfig: '/api/v1/quota/protect-config', history: '/api/v1/quota/history',
+    protect: '/api/v1/quota/protect-status', protectConfig: '/api/v1/quota/protect-config', ompControl: '/api/v1/quota/omp-control', history: '/api/v1/quota/history',
     quick: '/api/v1/quota/quick-check', switchAccount: '/api/v1/quota/switch',
     sync: '/api/v1/quota/sync', deleteAccount: '/api/v1/quota/accounts', login: '/api/login', loginStatus: '/api/login-status'
   };
@@ -1958,6 +1960,7 @@ input, select { font: inherit; }
   let historyItems = [], historyPage = 1, historyCompact = false, historyScopeStats = {};
   const HISTORY_PAGE_SIZE = 12;
   let safetyConfig = { enabled: true, mode: 'auto', accountIds: [] };
+  let ompControl = { enabled: false };
   let loginPoll = null;
   const COLORS = ['cyan','orange','emerald','purple','pink','indigo','teal','amber'];
   const esc = (v) => String(v ?? '--').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
@@ -2121,8 +2124,10 @@ input, select { font: inherit; }
     renderSafetyEditor();
     const quickKpis=document.querySelectorAll('#quickCheckModal .modal-kpi-card'); if(quickKpis[2]) quickKpis[2].querySelector('div').textContent=`${data.status || '--'} (${data.cooldownSec || 0}s)`;
   }
+  function updateOmpControl(data) { if (!data) return; ompControl={enabled:data.enabled===true}; const input=document.getElementById('ompAccountControl'); if(input)input.checked=ompControl.enabled; const badge=document.getElementById('ompAccountControlState'); if(badge)badge.textContent=data.status||'--'; }
   async function saveSafetyConfig(next, message='✓ Đã cập nhật Safety Guard') { try { const data=await api(API.protectConfig,{method:'POST',body:JSON.stringify(next)}); updateProtect(data); showToast(message); } catch(e) { showToast(`✕ Không cập nhật Safety Guard: ${e.message}`); updateProtect(await api(API.protectConfig).catch(()=>null)); } }
   async function toggleSafety(enabled) { await saveSafetyConfig({enabled}, enabled ? '✓ Đã bật bảo vệ 429' : '✓ Đã tắt bảo vệ 429'); }
+  async function toggleOmpControl(enabled) { try { updateOmpControl(await api(API.ompControl,{method:'POST',body:JSON.stringify({enabled})})); showToast(enabled ? '✓ Đã bật KHỐNG CHẾ OMP cho session mới' : '✓ Đã tắt KHỐNG CHẾ OMP'); } catch(e) { showToast(`✕ Không cập nhật KHỐNG CHẾ OMP: ${e.message}`); updateOmpControl(await api(API.ompControl).catch(()=>null)); } }
   async function changeSafetyMode(mode) { const next={mode}; if(mode==='manual' && !safetyConfig.accountIds.length) next.accountIds=ACCOUNTS.filter(a=>a.hasGoogleProtect).map(a=>a.id); await saveSafetyConfig(next, mode==='auto' ? '✓ Đã chuyển sang tự động bảo vệ mọi Google' : '✓ Đã chuyển sang chọn account bảo vệ'); }
   function toggleSafetyAccounts() { const box=document.getElementById('safetyAccountsEditor'); if(!box)return; if(safetyConfig.mode!=='manual'){showToast('Chuyển sang “Chọn tài khoản” để thêm hoặc bớt account.'); return;} box.classList.toggle('is-open'); }
   async function toggleSafetyAccount(id, checked) { const accountIds=new Set(safetyConfig.accountIds); if(checked)accountIds.add(id); else accountIds.delete(id); await saveSafetyConfig({mode:'manual',accountIds:[...accountIds]}, checked ? '✓ Đã thêm account vào Safety Guard' : '✓ Đã bỏ account khỏi Safety Guard'); }
@@ -2158,11 +2163,11 @@ input, select { font: inherit; }
   function toggleHistoryCompact() { historyCompact=!historyCompact; ['token-history','history-log'].forEach(id=>document.getElementById(id)?.classList.toggle('is-compact',historyCompact)); const b=document.getElementById('history-collapse'); if(b)b.textContent=historyCompact?'Mở rộng':'Thu gọn'; }
   async function loadHistory(scope=currentPeriod) { const data=await api(`${API.history}?scope=${encodeURIComponent(scope)}`); renderHistory(data,scope); }
   async function loadAll() {
-    const [raw, overview, protect] = await Promise.all([api(API.accounts),api(API.overview),api(API.protect)]);
+    const [raw, overview, protect, control] = await Promise.all([api(API.accounts),api(API.overview),api(API.protect),api(API.ompControl)]);
     let models = [];
     try { const modelData = await api('/api/v1/models'); models = Array.isArray(modelData) ? modelData : (Array.isArray(modelData?.models) ? modelData.models : []); } catch (e) { showToast(`⚠ Không tải được danh sách model: ${e.message}`); }
     const accountModels = (account) => { const key=String(account?.providerKey || '').toLowerCase(); return account?.planEligible && key === 'google-antigravity' ? models.filter(model => String(model?.provider || '').toLowerCase() === key) : []; };
-    ACCOUNTS=Array.isArray(raw)?raw.map((account, i)=>normalize({...account, models:accountModels(account)}, i)):[]; activeAccountId=ACCOUNTS.find(a=>a.isActive)?.id || ''; activeStartTime=Date.now() - Math.max(0, Number(ACCOUNTS.find(a=>a.id===activeAccountId)?.sessionDurationMs||0)); renderStatusFilterCounts(); renderAccountCards(); renderQuickModalAccounts(); updateOverview(overview); updateProtect(protect);
+    ACCOUNTS=Array.isArray(raw)?raw.map((account, i)=>normalize({...account, models:accountModels(account)}, i)):[]; activeAccountId=ACCOUNTS.find(a=>a.isActive)?.id || ''; activeStartTime=Date.now() - Math.max(0, Number(ACCOUNTS.find(a=>a.id===activeAccountId)?.sessionDurationMs||0)); renderStatusFilterCounts(); renderAccountCards(); renderQuickModalAccounts(); updateOverview(overview); updateProtect(protect); updateOmpControl(control);
     historyScopeStats = {}; renderHistoryScopeCards(); const currentData = await api(`${API.history}?scope=${currentPeriod}`); renderHistory(currentData, currentPeriod);
     const scopes = ['1h','24h','7d','30d','all'].filter(scope => scope !== currentPeriod); Promise.allSettled(scopes.map(scope => api(`${API.history}?scope=${scope}`))).then(results => { results.forEach((result, i) => { if (result.status === 'fulfilled') historyScopeStats[scopes[i]] = result.value; }); renderHistoryScopeCards(); });
   }
@@ -2240,7 +2245,7 @@ input, select { font: inherit; }
     historyScopeStats = {}; renderHistoryScopeCards(); ['history-requests','history-total','history-input','history-output'].forEach(id=>set(id,'--')); set('trend-range-label','Đang tải dữ liệu live OMP…');set('live-sync-time','Cập nhật: Đang tải…');
     document.querySelectorAll('#history-summary .period-btn').forEach(b=>b.disabled=false);
     document.querySelectorAll('.filter-count').forEach(x=>x.textContent='--');
-    const safety=document.getElementById('safety-panel');if(safety){set('safety-state','Đang tải…');set('safety-active','--');set('safety-cooldown','--');set('safety-429','--');set('safety-next-request','Đang tải…');const b=safety.querySelector('.safety-header .brand-badge');if(b)b.textContent='🛡️ Đang tải…';const c=safety.querySelector('.safety-accounts-chips');if(c)c.textContent='Đang tải…'}
+    const safety=document.getElementById('safety-panel');if(safety){set('safety-state','Đang tải…');set('safety-active','--');set('safety-cooldown','--');set('safety-429','--');set('safety-next-request','Đang tải…');set('ompAccountControlState','🔒 Đang tải…');const b=safety.querySelector('.safety-header .brand-badge');if(b)b.textContent='🛡️ Đang tải…';const c=safety.querySelector('.safety-accounts-chips');if(c)c.textContent='Đang tải…'}
     document.querySelectorAll('#quickCheckModal .modal-kpi-card .mono').forEach(x=>x.textContent='--');document.querySelectorAll('#quickCheckModal .quota-win-card').forEach(card=>{const v=card.querySelector('.quota-win-val'),f=card.querySelector('.progress-bar-fill'),m=card.querySelectorAll('.quota-win-meta span');if(v)v.textContent='--';if(f)updateQuotaBar(f,null,null,card.querySelector('.quota-win-name')?.textContent?.trim()||'Quota');m.forEach(x=>x.textContent='--')});
   }
   function setOAuthButton(label, disabled) { const b=document.getElementById('oauthLoginBtn'); if(!b)return; b.disabled=Boolean(disabled); const text=b.querySelector('span:last-child'); if(text)text.textContent=label; }
@@ -2289,6 +2294,7 @@ input, select { font: inherit; }
     if (!(control instanceof HTMLInputElement || control instanceof HTMLSelectElement)) return;
     if (control.id === 'sort-select') return handleSort(control.value);
     if (control.id === 'safetyEnabled') return void toggleSafety(control.checked);
+    if (control.id === 'ompAccountControl') return void toggleOmpControl(control.checked);
     if (control.id === 'safetyMode') return void changeSafetyMode(control.value);
     if (control.dataset.quotaAction === 'toggle-safety-account' && control.dataset.accountId) {
       void toggleSafetyAccount(control.dataset.accountId, control.checked);
