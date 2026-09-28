@@ -766,6 +766,10 @@ async function runContract() {
     assert.match(chatClient, /if \(isServerQueuedTurn\(request\.queueState\)\) \{\s*renderQueueTray\(\);\s*return;\s*\}\s*mountChatTurn\(\);/);
     assert.match(chatClient, /queuePausedSessions: new Map\(\)/);
     assert.match(chatClient, /const MAX_WEB_PENDING_PROMPTS = 32/);
+    assert.match(chatClient, /draftPromptPreview: null/);
+    assert.match(chatClient, /function renderDraftPromptPreview\(prompt, attachments, draftId\)/);
+    assert.match(chatClient, /startInitialPrompt\(prompt, settings, attachments, draftId\)/);
+    assert.match(chatClient, /preserveDraftPreview: Boolean\(state\.draftPromptPreview\)/);
     assert.match(chatClient, /if \(requestsForSession\(sessionId\)\.length \|\| state\.queueDrainingSessions\.has\(sessionId\) \|\| sessionHasQueuedPrompt\(sessionId\) \|\| queueIsPaused\(sessionId\)\)/);
     assert.match(chatClient, /enqueuePrompt\(prompt, null, \{ settings, attachments \}\)/);
     assert.match(chatClient, /if \(normalEnd && !state\.queueDrainingSessions\.has\(sessionId\)\) queueMicrotask\(\(\) => void drainQueue\(sessionId\)\)/);
