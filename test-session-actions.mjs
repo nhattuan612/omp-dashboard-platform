@@ -764,6 +764,18 @@ async function runContract() {
     assert.match(chatClient, /const isServerQueuedTurn = \(queue\) => queue\?\.phase === 'paused' \|\| \(queue\?\.phase === 'fifo' && Number\(queue\.queueAhead\) > 0\);/);
     assert.match(chatClient, /if \(isServerQueuedTurn\(request\.queueState\) && !\['waiting', 'end', 'done', 'error'\]\.includes\(event\)\) return;/);
     assert.match(chatClient, /if \(isServerQueuedTurn\(request\.queueState\)\) \{\s*renderQueueTray\(\);\s*return;\s*\}\s*mountChatTurn\(\);/);
+    assert.match(chatClient, /queuePausedSessions: new Map\(\)/);
+    assert.match(chatClient, /const MAX_WEB_PENDING_PROMPTS = 32/);
+    assert.match(chatClient, /if \(requestsForSession\(sessionId\)\.length \|\| state\.queueDrainingSessions\.has\(sessionId\) \|\| sessionHasQueuedPrompt\(sessionId\) \|\| queueIsPaused\(sessionId\)\)/);
+    assert.match(chatClient, /enqueuePrompt\(prompt, null, \{ settings, attachments \}\)/);
+    assert.match(chatClient, /if \(normalEnd && !state\.queueDrainingSessions\.has\(sessionId\)\) queueMicrotask\(\(\) => void drainQueue\(sessionId\)\)/);
+    assert.match(chatClient, /editingQueueId/);
+    assert.match(chatClient, /function cancelQueueEdit\(silent = false\)/);
+    assert.match(chatClient, /function renderQueuedPreview\(item\)/);
+    assert.match(chatClient, /const firstQueued = next\.findIndex\(\(message\) => message\.queueId && !message\.requestId\)/);
+    assert.match(chatClient, /Đang chờ web gửi/);
+    assert.match(chatClient, /Đang gửi lên OMP/);
+    assert.match(chatClient, /Đã ưu tiên order/);
     assert.ok(chatClient.includes("if (previousId !== id) { void loadQuota(); await loadModels(); }"));
     assert.ok(chatClient.includes("if (state.activeId) {\n      const promptSettings = snapshotSettings();"));
     assert.ok(chatClient.includes("if (requestId !== state.sessionLoadRequestId) return;"));
