@@ -1907,14 +1907,15 @@ function normalizeModels(data) {
   return list.map((item) => {
     const id = item.id || item.modelId;
     const name = item.name || item.displayName || id;
+    const provider = item.provider || "OMP";
     const explicitImageGeneration = item.imageGeneration ?? item.capabilities?.imageGeneration ?? item.capabilities?.image_generation;
     const output = item.output ?? item.outputs ?? item.capabilities?.output ?? item.capabilities?.outputs;
     return {
       id,
       name,
-      provider: item.provider || "OMP",
+      provider,
       contextWindow: Number(item.contextWindow || item.contextLength || 0),
-      isDefault: Boolean(item.isDefault || item.default) || (item.provider === "google-antigravity" && id === "gemini-3.8-flash"),
+      isDefault: provider === LOGIN_PROVIDER && (Boolean(item.isDefault || item.default) || id === "gemini-3.8-flash"),
       imageGeneration: explicitImageGeneration === true || (Array.isArray(output) && output.includes("image")) || (explicitImageGeneration == null && isImageGenerationModel(`${id} ${name}`)),
       ...(item.description ? { description: item.description } : {}),
     };
@@ -1971,7 +1972,9 @@ async function validateChatModel(model, requestedProvider = null) {
 
 function normalizeChatModel(model, models, modelSource) {
   if (modelSource !== "omp" || String(model.provider || "").toLowerCase() !== "google" || !isGeminiModel(model)) return model;
-  return models.find((item) => item.id === model.id && item.provider === LOGIN_PROVIDER) || model;
+  return models.find((item) => item.id === model.id && item.provider === LOGIN_PROVIDER)
+    || models.find((item) => item.id === model.id.replace(/-preview$/i, "") && item.provider === LOGIN_PROVIDER)
+    || model;
 }
 
 async function resolveChatModel(modelId, modelSource, modelProvider, sessionId, prompt = "") {

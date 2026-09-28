@@ -369,6 +369,7 @@ async function fakeOmp(args) {
           { id: "smoke-antigravity-gpt", name: "GPT family fixture model", provider: "google-antigravity" },
           { id: "smoke-cli-gemini", name: "Gemini CLI smoke model", provider: "google-gemini-cli" },
           { id: "smoke-model", name: "Generic Google provider Gemini smoke model", provider: "google" },
+          { id: "smoke-model-preview", name: "Generic Google provider Gemini preview model", provider: "google", isDefault: true },
           { id: "smoke-openai-model", name: "Fixture OpenAI Model", provider: "openai-codex" },
           { id: "smoke-external-model", name: "Fixture external OMP model", provider: "anthropic" },
         ] } });
@@ -1483,6 +1484,17 @@ async function runContract() {
     assert.ok((await readFakeFrames(home)).some((item) => item.frame.type === "set_model" && item.frame.provider === "google-antigravity" && item.frame.modelId === "smoke-model"), "OMP should normalize a duplicate generic Google Gemini model to Antigravity");
     passes.push("Chat OMP source normalizes duplicate generic Google Gemini models to Antigravity");
 
+    const previewGoogleSend = await api("POST", "/api/v1/chat/send", {
+      sessionId: parent.id,
+      prompt: "QUOTA_MODEL_GUARD_CONTRACT generic Google preview model",
+      model: "smoke-model-preview",
+      modelProvider: "google",
+      modelSource: "omp",
+    });
+    assert.equal(previewGoogleSend.status, 200, `OMP source should normalize a Google preview model: ${JSON.stringify(previewGoogleSend.payload)}`);
+    assert.ok((await readFakeFrames(home)).some((item) => item.frame.type === "set_model" && item.frame.provider === "google-antigravity" && item.frame.modelId === "smoke-model"), "OMP should normalize a Google preview model to its Antigravity base model");
+    passes.push("Chat OMP source normalizes Google preview Gemini models to their Antigravity base model");
+
     const allCatalogStream = await openStream(
       parent.id,
       "QUOTA_MODEL_GUARD_CONTRACT all-source stream",
@@ -1622,6 +1634,7 @@ async function runContract() {
     const fullCatalog = await api("GET", "/api/v1/models");
     assert.ok(fullCatalog.payload.some((model) => model.id === "smoke-openai-model"));
     assert.ok(fullCatalog.payload.some((model) => model.id === "smoke-external-model"));
+    assert.equal(fullCatalog.payload.find((model) => model.id === "smoke-model-preview")?.isDefault, false, "generic Google API models must not become the dashboard default");
     assert.deepEqual((await api("GET", "/api/v1/quota/accounts")).payload.filter((account) => account.isActive).map((account) => account.id), [googleAccount.id]);
     passes.push("ChatGPT and other OMP models remain available independently of Gemini quota accounts");
 
