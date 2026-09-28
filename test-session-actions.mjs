@@ -211,6 +211,11 @@ async function fakeOmp(args) {
       process.exitCode = 7;
       return;
     } catch {}
+    try {
+      await readFile(homePath(process.env.HOME || "", "usage-dashboard", "test-empty-usage.txt"), "utf8");
+      process.stdout.write(`${JSON.stringify({ reports: [], accountsWithoutUsage: [], disabledCredentials: [], capacity: {} })}\n`);
+      return;
+    } catch {}
     let disabledCredentials = [];
     try {
       const fixture = JSON.parse(await readFile(homePath(process.env.HOME || "", "usage-dashboard", "test-disabled-credentials.json"), "utf8"));
@@ -226,14 +231,25 @@ async function fakeOmp(args) {
       { provider: "google-antigravity", metadata: { email: "smoke-google-alt@example.test" }, limits: [
         { id: "gemini-alt-5h", label: "Gemini 5h", window: { id: "5h", label: "5h", durationMs: 18000000 }, amount: { used: 12, usedFraction: 0.12, remaining: 88, limit: 100 } },
         { id: "gemini-alt-weekly", label: "Gemini Weekly", window: { id: "weekly", label: "weekly", durationMs: 604800000 }, amount: { used: 18, usedFraction: 0.18, remaining: 82, limit: 100 } },
+        { id: "shared-alt-5h", label: "Claude & GPT (shared) 5h", window: { id: "5h", label: "5h", durationMs: 18000000 }, amount: { used: 22, usedFraction: 0.22, remaining: 78, limit: 100 } },
+        { id: "shared-alt-weekly", label: "Claude & GPT (shared) Weekly", window: { id: "weekly", label: "weekly", durationMs: 604800000 }, amount: { used: 32, usedFraction: 0.32, remaining: 68, limit: 100 } },
       ] },
       { provider: "google-antigravity", metadata: { email: "smoke-usage-only@example.test" }, limits: [
         { id: "usage-google-daily", label: "Usage (Google)", window: { id: "daily", label: "daily", durationMs: 86400000 }, amount: { used: 10, usedFraction: 0.1, remaining: 90, limit: 100 } },
+      ] },
+      { provider: "google-antigravity", metadata: { email: "smoke-daily-full@example.test" }, limits: [
+        { id: "usage-google-daily", label: "Usage (Google)", window: { id: "daily", label: "daily", durationMs: 86400000 }, amount: { used: 10, usedFraction: 0.1, remaining: 90, limit: 100 } },
+        { id: "usage-anthropic-daily", label: "Usage (Anthropic)", window: { id: "daily", label: "daily", durationMs: 86400000 }, amount: { used: 20, usedFraction: 0.2, remaining: 80, limit: 100 } },
+        { id: "usage-openai-daily", label: "Usage (OpenAI)", window: { id: "daily", label: "daily", durationMs: 86400000 }, amount: { used: 30, usedFraction: 0.3, remaining: 70, limit: 100 } },
       ] },
       { provider: "google-antigravity", metadata: { email: "smoke-missing-week@example.test" }, limits: [
         { id: "gemini-only-five-hour", label: "Gemini 5h", window: { id: "5h", label: "5h", durationMs: 18000000 }, amount: { used: 10, usedFraction: 0.1, remaining: 90, limit: 100 } },
       ] },
       { provider: "google-antigravity", metadata: { email: "smoke-missing-5h@example.test" }, limits: [
+        { id: "gemini-only-weekly", label: "Gemini Weekly", window: { id: "weekly", label: "weekly", durationMs: 604800000 }, amount: { used: 10, usedFraction: 0.1, remaining: 90, limit: 100 } },
+      ] },
+      { provider: "google-antigravity", metadata: { email: "smoke-gemini-only@example.test" }, limits: [
+        { id: "gemini-only-5h", label: "Gemini 5h", window: { id: "5h", label: "5h", durationMs: 18000000 }, amount: { used: 10, usedFraction: 0.1, remaining: 90, limit: 100 } },
         { id: "gemini-only-weekly", label: "Gemini Weekly", window: { id: "weekly", label: "weekly", durationMs: 604800000 }, amount: { used: 10, usedFraction: 0.1, remaining: 90, limit: 100 } },
       ] },
       { provider: "google-antigravity", metadata: { email: "smoke-shared-only@example.test" }, limits: [
@@ -246,6 +262,14 @@ async function fakeOmp(args) {
       ] },
       { provider: "openai-codex", metadata: { email: "smoke-google@example.test" }, limits: [{ id: "codex-smoke-5h", label: "GPT 5h", window: { id: "5h", label: "5h", durationMs: 18000000 }, amount: { used: 10, usedFraction: 0.1, remaining: 90, limit: 100 } }] },
     ], accountsWithoutUsage: [], disabledCredentials, capacity: {} })}\n`);
+    return;
+  }
+  if (args[0] === "auth-gateway" && args[1] === "check") {
+    try {
+      process.stdout.write(await readFile(homePath(process.env.HOME || "", "usage-dashboard", "test-broker-usage.json"), "utf8"));
+    } catch {
+      process.stdout.write(`${JSON.stringify({ credentials: [] })}\n`);
+    }
     return;
   }
   if (args[0] === "config" && args[1] === "get" && args[2] === "memory.backend") {
@@ -267,6 +291,13 @@ async function fakeOmp(args) {
   }
   if (args[0] === "share") {
     process.stdout.write(`https://share.example.test/${basename(args[1] || "session.jsonl")}\n`);
+    return;
+  }
+  if (args[0] === "auth-broker" && args[1] === "login") {
+    try {
+      process.stderr.write(await readFile(homePath(process.env.HOME || "", "usage-dashboard", "test-login-stderr.txt"), "utf8"));
+      process.exitCode = 7;
+    } catch {}
     return;
   }
   if (args.includes("acp")) {
@@ -326,6 +357,7 @@ async function fakeOmp(args) {
         emit({ type: "response", id: frame.id, command: frame.type, success: true, data: { sessionFile: stateSessionPath, sessionId: stateSessionId } });
       } else if (frame.type === "get_available_models") {
         emit({ type: "response", id: frame.id, command: frame.type, success: true, data: { models: [
+          { id: "smoke-model", name: "Conflicting Gemini CLI smoke model", provider: "google-gemini-cli" },
           { id: "smoke-model", name: "Gemini Session action smoke model", provider: "google-antigravity", isDefault: true },
           { id: "smoke-image-model", name: "Gemini Fixture Image Model", provider: "google-antigravity", imageGeneration: true },
           { id: "smoke-antigravity-claude", name: "Claude family fixture model", provider: "google-antigravity" },
@@ -641,7 +673,80 @@ async function runContract() {
     assert.equal(page.status, 200, "isolated /chat route must load");
     const cookie = (page.headers.get("set-cookie") || "").split(";")[0];
     assert.match(cookie, /^omp_dashboard_session=/, "isolated dashboard must issue its own session cookie");
+    const chatHtml = await page.text();
+    assert.match(chatHtml, /\/honpi-dashboard-mark-8138753b\.png/, "chat must reuse the shared dashboard mark");
+    assert.doesNotMatch(chatHtml, /data:image\/png;base64,iVBORw0KGgoAAAANSUhEUgAABMw/, "chat must not embed the repeated dashboard mark");
+    const quotaPage = await fetch(`${baseUrl}/quota`);
+    assert.equal(quotaPage.status, 200, "isolated /quota route must load");
+    const quotaHtml = await quotaPage.text();
+    assert.match(quotaHtml, /HONPI_QUOTA_CONFIG/, "quota must embed the production client config");
+    assert.match(quotaHtml, /\/api\/v1\/quota\/switch/, "quota client must use the direct quota-selection API");
+    assert.match(quotaHtml, /\/honpi-dashboard-mark-8138753b\.png/, "quota must reuse the shared dashboard mark");
+    const dashboardMark = await fetch(`${baseUrl}/honpi-dashboard-mark-8138753b.png`);
+    assert.equal(dashboardMark.status, 200, "shared dashboard mark must load");
+    assert.equal(dashboardMark.headers.get("cache-control"), "public, max-age=31536000, immutable");
+    assert.equal((await dashboardMark.arrayBuffer()).byteLength, 737344);
+    assert.equal((await fetch(`${baseUrl}/dashboard-live.js`)).status, 404, "removed dashboard-live route must not return a server error");
     const passes = [];
+    passes.push("dashboard pages reuse the cacheable mark and the removed legacy route is absent");
+
+    await api("POST", "/api/refresh");
+    const emptyUsageFixture = homePath(home, "usage-dashboard", "test-empty-usage.txt");
+    await mkdir(dirname(emptyUsageFixture), { recursive: true, mode: 0o700 });
+    await writeFile(emptyUsageFixture, "1\n", { mode: 0o600 });
+    const startedLogin = await api("POST", "/api/login", { email: "baseline-google@example.test" });
+    assert.equal(startedLogin.status, 202, `OAuth login did not start: ${JSON.stringify(startedLogin.payload)}`);
+    assert.equal(startedLogin.payload.accountEmail, "baseline-google@example.test", "OAuth login must retain its target email");
+    let loginStatus;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      loginStatus = await api("GET", "/api/login-status");
+      if (["complete", "error"].includes(loginStatus.payload.state)) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(loginStatus.payload.state, "error", `OAuth without a usage account must fail closed: ${JSON.stringify(loginStatus.payload)}`);
+    assert.match(loginStatus.payload.message, /OMP chưa nhận account quota/, `OAuth without a usage account must disclose the usage sync failure: ${JSON.stringify(loginStatus.payload)}`);
+    await rm(emptyUsageFixture, { force: true });
+    await api("POST", "/api/refresh");
+    passes.push("OAuth completion fails closed when OMP usage does not expose the account");
+
+    const loginErrorFixture = homePath(home, "usage-dashboard", "test-login-stderr.txt");
+    await writeFile(loginErrorFixture, "https://oauth.example.test/secret\nError: OAUTH_FAILURE_SENTINEL\n    at async /$bunfs/root/omp:1:1\n", { mode: 0o600 });
+    const failedLogin = await api("POST", "/api/login", { email: "diagnostic-google@example.test" });
+    assert.equal(failedLogin.status, 202, "diagnostic OAuth login did not start");
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      loginStatus = await api("GET", "/api/login-status");
+      if (loginStatus.payload.state === "error") break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.match(loginStatus.payload.message, /OAUTH_FAILURE_SENTINEL/, "OAuth failure must preserve its root diagnostic");
+    assert.doesNotMatch(loginStatus.payload.message, /https?:\/\/|\bat async\b|\$bunfs/, "OAuth failure must not expose URLs or stack frames");
+    await rm(loginErrorFixture, { force: true });
+    passes.push("OAuth errors preserve the root diagnostic without URLs or stack frames");
+
+    const brokerUsageFixture = homePath(home, "usage-dashboard", "test-broker-usage.json");
+    await writeFile(emptyUsageFixture, "1\n", { mode: 0o600 });
+    await writeFile(brokerUsageFixture, `${JSON.stringify({ credentials: [{
+      provider: "google-antigravity",
+      email: "broker-google@example.test",
+      ok: true,
+      report: {
+        provider: "google-antigravity",
+        metadata: { email: "broker-google@example.test" },
+        limits: [
+          { id: "broker-gemini-5h", label: "Gemini", window: { id: "5h", label: "5h", durationMs: 18000000 }, amount: { used: 10, usedFraction: 0.1, remaining: 90, limit: 100 } },
+          { id: "broker-gemini-weekly", label: "Gemini", window: { id: "weekly", label: "weekly", durationMs: 604800000 }, amount: { used: 15, usedFraction: 0.15, remaining: 85, limit: 100 } },
+          { id: "broker-shared-5h", label: "Claude & GPT (shared)", scope: { shared: true }, window: { id: "5h", label: "5h", durationMs: 18000000 }, amount: { used: 20, usedFraction: 0.2, remaining: 80, limit: 100 } },
+          { id: "broker-shared-weekly", label: "Claude & GPT (shared)", scope: { shared: true }, window: { id: "weekly", label: "weekly", durationMs: 604800000 }, amount: { used: 25, usedFraction: 0.25, remaining: 75, limit: 100 } },
+        ],
+      },
+    }] })}\n`, { mode: 0o600 });
+    await api("POST", "/api/refresh");
+    const brokerAccounts = await api("GET", "/api/v1/quota/accounts");
+    assert.equal(brokerAccounts.payload.find((account) => account.email === "broker-google@example.test")?.canUse, true, "broker usage fallback must expose an eligible account");
+    await rm(emptyUsageFixture, { force: true });
+    await rm(brokerUsageFixture, { force: true });
+    await api("POST", "/api/refresh");
+    passes.push("Quota falls back to the broker usage probe when omp usage is empty");
 
     const chatClient = await readFile(join(PROJECT_ROOT, "honpi-chat-dashboard-live.js"), "utf8");
     const acpAdapter = await readFile(join(PROJECT_ROOT, "acp-session-context.mjs"), "utf8");
@@ -888,6 +993,15 @@ async function runContract() {
     assert.equal(chunkedFolder.status, 201, `split UTF-8 request failed: ${JSON.stringify(chunkedFolder.payload)}`);
     assert.equal(chunkedFolder.payload.name, chunkedFolderName, "a code point split across HTTP chunks must decode intact");
     passes.push("JSON body parser preserves UTF-8 code points split across request chunks");
+    const interactiveLoginAt = Math.floor(Date.now() / 1000) - 61;
+    const credentialRefreshedAt = interactiveLoginAt + 60;
+    const credentialDatabase = homePath(home, "agent", "agent.db");
+    await mkdir(dirname(credentialDatabase), { recursive: true, mode: 0o700 });
+    await new Promise((resolve, reject) => {
+      const sql = `CREATE TABLE IF NOT EXISTS auth_credentials (identity_key TEXT, data TEXT, created_at INTEGER, updated_at INTEGER, credential_type TEXT, provider TEXT); INSERT INTO auth_credentials VALUES ('email:smoke-google@example.test', '{"authorizedAt":${interactiveLoginAt * 1000}}', ${interactiveLoginAt - 7 * 86400}, ${credentialRefreshedAt}, 'oauth', 'google-antigravity');`;
+      const child = spawn("/usr/bin/sqlite3", [credentialDatabase, sql], { stdio: "ignore" });
+      child.once("error", reject); child.once("close", (code) => code === 0 ? resolve() : reject(new Error(`credential fixture sqlite exited ${code}`)));
+    });
     const preDefaultSession = await createFixture("Contract before Gemini default");
     const quotaAccounts = await api("GET", "/api/v1/quota/accounts");
     assert.equal(quotaAccounts.status, 200, `quota accounts failed: ${JSON.stringify(quotaAccounts.payload)}`);
@@ -901,8 +1015,10 @@ async function runContract() {
     const googleAccount = quotaAccounts.payload.find((account) => account.email === "smoke-google@example.test");
     const googleAltAccount = quotaAccounts.payload.find((account) => account.email === "smoke-google-alt@example.test");
     const usageOnlyAccount = quotaAccounts.payload.find((account) => account.email === "smoke-usage-only@example.test");
+    const dailyFullAccount = quotaAccounts.payload.find((account) => account.email === "smoke-daily-full@example.test");
     const missingWeekAccount = quotaAccounts.payload.find((account) => account.email === "smoke-missing-week@example.test");
     const missingFiveHourAccount = quotaAccounts.payload.find((account) => account.email === "smoke-missing-5h@example.test");
+    const geminiOnlyAccount = quotaAccounts.payload.find((account) => account.email === "smoke-gemini-only@example.test");
     const sharedOnlyAccount = quotaAccounts.payload.find((account) => account.email === "smoke-shared-only@example.test");
     assert.ok(googleAccount && googleAltAccount, `fixture should expose Google Antigravity accounts: ${JSON.stringify(quotaAccounts.payload)}`);
     assert.notEqual(googleAccount.id, googleAltAccount.id, "same-provider Google credentials must retain distinct account IDs");
@@ -910,16 +1026,27 @@ async function runContract() {
     assert.equal(quotaAccounts.payload.some((account) => account.email === "smoke-cli@example.test"), false, "Gemini CLI credentials must not enter Google Antigravity quota");
     assert.equal(quotaAccounts.payload.some((account) => account.providerKey === "openai-codex"), false, "OpenAI credentials must not enter Google quota");
     assert.ok(usageOnlyAccount, "Google usage-only accounts must remain visible");
-    assert.equal(usageOnlyAccount.canUse, false, "daily Google usage must not qualify for Gemini quota");
-    assert.equal(usageOnlyAccount.usage5hPct, null, "daily usage must not be presented as Gemini 5-hour quota");
+    assert.equal(usageOnlyAccount.canUse, false, "daily Google usage without Claude and GPT must not qualify");
+    assert.equal(usageOnlyAccount.statusCode, "entitlement_unverified", "missing model capability must fail closed");
+    assert.equal(usageOnlyAccount.statusLabel, "Thiếu capability model");
+    assert.equal(usageOnlyAccount.primaryQuotaLabel, "Ngày", "daily usage must retain its real window label");
+    assert.equal(usageOnlyAccount.usage5hPct, 10, "the primary quota value must expose daily telemetry without calling it 5-hour quota");
+    assert.ok(dailyFullAccount?.canUse, "Google, Anthropic and OpenAI daily quotas must qualify as a usable Antigravity account");
+    assert.equal(dailyFullAccount?.primaryQuotaLabel, "Ngày");
     assert.ok(missingWeekAccount && !missingWeekAccount.canUse, "Gemini 5-hour quota without a weekly bucket must remain unavailable");
     assert.ok(missingFiveHourAccount && !missingFiveHourAccount.canUse, "Gemini weekly quota without a 5-hour bucket must remain unavailable");
+    assert.ok(geminiOnlyAccount && !geminiOnlyAccount.canUse, "Gemini-only entitlement must not qualify as a Pro/Ultra quota account");
     assert.ok(sharedOnlyAccount && !sharedOnlyAccount.canUse, "Claude/GPT shared buckets must not substitute for Gemini quota");
     assert.equal(googleAccount.canUse, true, "Gemini 5-hour and weekly quota buckets should qualify");
+    assert.equal(googleAccount.tokenLoginIso, new Date(interactiveLoginAt * 1000).toISOString(), "the OAuth display time must use OMP's interactive authorization time, not a later token refresh");
     assert.deepEqual(quotaAccounts.payload.filter((account) => account.isActive), [], "no account should be selected before an explicit choice");
     const unselectedModels = await api("GET", "/api/v1/quota/models");
     assert.equal(unselectedModels.status, 409);
     assert.equal(unselectedModels.payload.error?.code, "ACCOUNT_SELECTION_REQUIRED");
+    const baselineSelection = await api("POST", "/api/v1/quota/switch", { accountId: googleAccount.id });
+    assert.equal(baselineSelection.status, 200, `baseline account selection failed: ${JSON.stringify(baselineSelection.payload)}`);
+    const baselineModels = await api("GET", "/api/v1/quota/models");
+    assert.equal(baselineModels.payload.account.id, googleAccount.id, "baseline account selection must update the chat default");
     const allOmpModelsBeforeSelection = await api("GET", "/api/v1/models");
     assert.equal(allOmpModelsBeforeSelection.status, 200);
     assert.ok(allOmpModelsBeforeSelection.payload.some((model) => model.id === "smoke-antigravity-claude"));
@@ -944,8 +1071,8 @@ async function runContract() {
     assert.equal(defaultSwitch.status, 200, `Gemini default selection failed: ${JSON.stringify(defaultSwitch.payload)}`);
     assert.equal(defaultSwitch.payload.scope, "default");
     const preDefaultModels = await api("GET", `/api/v1/quota/models?sessionId=${encodeURIComponent(preDefaultSession.id)}`);
-    assert.equal(preDefaultModels.status, 200);
-    assert.equal(preDefaultModels.payload.account.id, googleAccount.id, "a dashboard chat created before any default must inherit the current default");
+    assert.equal(preDefaultModels.status, 409);
+    assert.equal(preDefaultModels.payload.error?.code, "ACCOUNT_SELECTION_REQUIRED", "a pre-existing chat without a pin or creation snapshot must never inherit a later default");
     const parent = await createFixture("Contract parent");
     const changedDefault = await api("POST", "/api/v1/quota/switch", { accountId: googleAltAccount.id });
     assert.equal(changedDefault.status, 200, `Google Antigravity default change failed: ${JSON.stringify(changedDefault.payload)}`);
@@ -1083,8 +1210,12 @@ async function runContract() {
     assert.equal(refreshedGeneration.status, 200, `generation refresh failed: ${JSON.stringify(refreshedGeneration.payload)}`);
     const providerGeneration = await api("GET", "/api/v1/quota/accounts");
     assert.equal(providerGeneration.payload.find((account) => account.id === googleAccount.id)?.generationStatus, "quota_blocked");
+    assert.equal(providerGeneration.payload.find((account) => account.id === googleAccount.id)?.canUse, true, "a historical 429 must not lock an account with live quota remaining");
+    assert.equal(providerGeneration.payload.find((account) => account.id === googleAccount.id)?.statusCode, "warning");
     assert.deepEqual(providerGeneration.payload.filter((account) => account.isActive).map((account) => account.id), [googleAccount.id], "Google Protect must not rotate to a sibling account after a 429");
     assert.equal((await api("GET", "/api/v1/quota/protect-status")).payload.selectedAccountId, googleAccount.id);
+    const blockedOverview = await api("GET", "/api/v1/quota/overview");
+    assert.ok(blockedOverview.payload.statusCounts.warn >= 1, "a historical 429 with live quota remaining must be counted as warning");
     const quotaHistory = await api("GET", "/api/v1/quota/history?scope=all");
     assert.equal(quotaHistory.status, 200, `quota history failed: ${JSON.stringify(quotaHistory.payload)}`);
     assert.equal(quotaHistory.payload.totalRequests, 2, `Gemini history must include only requests pinned before their timestamps: ${JSON.stringify(quotaHistory.payload)}`);
@@ -1108,6 +1239,16 @@ async function runContract() {
     const recoveredQuotaSync = await api("POST", "/api/v1/quota/sync", {});
     assert.equal(recoveredQuotaSync.status, 200, `quota recovery sync failed: ${JSON.stringify(recoveredQuotaSync.payload)}`);
     assert.equal((await api("GET", "/api/v1/quota/accounts")).payload.find((account) => account.id === googleAccount.id)?.generationStatus, "live");
+    await seedUsageRecord(home, randomUUID(), {
+      pinHash: googlePin,
+      provider: "anthropic",
+      model: "smoke-external-model",
+      errorStatus: 403,
+      timestamp: new Date(Date.now() + 1_000).toISOString(),
+    });
+    const externalFailureSync = await api("POST", "/api/v1/quota/sync", {});
+    assert.equal(externalFailureSync.status, 200);
+    assert.equal((await api("GET", "/api/v1/quota/accounts")).payload.find((account) => account.id === googleAccount.id)?.generationStatus, "live", "a non-Google model failure must not mark the pinned Gemini account as denied");
     const recoveredGoogleSwitch = await api("POST", "/api/v1/quota/switch", { accountId: googleAccount.id });
     assert.equal(recoveredGoogleSwitch.status, 200, `manual Google account selection after recovery failed: ${JSON.stringify(recoveredGoogleSwitch.payload)}`);
     assert.equal((await api("GET", "/api/v1/quota/models")).payload.account.id, googleAccount.id);
@@ -1332,6 +1473,16 @@ async function runContract() {
     });
     assert.equal(invalidModelSource.status, 400, "unknown model source should fail closed");
     assert.equal(invalidModelSource.payload.error?.code, "BAD_REQUEST");
+
+    const implicitQuotaProvider = await api("POST", "/api/v1/chat/send", {
+      sessionId: parent.id,
+      prompt: "QUOTA_MODEL_GUARD_CONTRACT omitted provider fallback",
+      model: "smoke-model",
+      modelSource: "quota",
+    });
+    assert.equal(implicitQuotaProvider.status, 200, `quota source must resolve duplicate model IDs to the selected provider: ${JSON.stringify(implicitQuotaProvider.payload)}`);
+    assert.ok((await readFakeFrames(home)).some((item) => item.frame.type === "set_model" && item.frame.provider === "google-antigravity" && item.frame.modelId === "smoke-model"));
+    passes.push("Quota source resolves duplicate model IDs to the selected provider when modelProvider is omitted");
 
     const allCatalogCommand = await api("POST", `/api/omp/v1/sessions/${encodeURIComponent(parent.id)}/command`, {
       type: "set_model",

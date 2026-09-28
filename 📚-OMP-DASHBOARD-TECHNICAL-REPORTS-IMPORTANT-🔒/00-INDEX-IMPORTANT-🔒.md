@@ -1,6 +1,6 @@
 # OMP Dashboard — bộ tài liệu kỹ thuật nội bộ 🔒
 
-**Cập nhật:** 2026-09-26 (Asia/Ho_Chi_Minh)  
+**Cập nhật:** 2026-09-28 (Asia/Ho_Chi_Minh)
 **Phạm vi:** runtime OMP Usage Dashboard tại máy local; không phải tài liệu phát hành cho khách hàng.  
 **Mục đích:** tra cứu nhanh khi vận hành, sửa lỗi, kiểm thử capability và bàn giao kỹ thuật.
 
@@ -25,6 +25,10 @@
 | Kiểm tra concurrency, queue và QA ego-browser | [13 — Chat concurrency, queue isolation và ego-browser QA](13-CHAT-CONCURRENCY-QUEUE-AND-EGO-QA-REPORT-IMPORTANT-🔒.md) |
 | Tra cứu sửa Quota/Chat và bằng chứng kiểm chứng | [14 — Quota & Chat repair verification](14-CHAT-QUOTA-REPAIR-AND-VERIFICATION-REPORT-IMPORTANT-🔒.md) |
 | Theo dõi ACP worker pool, queue, deploy và lịch sử | [15 — ACP worker pool: triển khai, kiểm chứng và lịch sử](15-ACP-WORKER-POOL-IMPLEMENTATION-AND-DEPLOYMENT-HISTORY-IMPORTANT-🔒.md) |
+| Đối chiếu trạng thái trước khi đăng nhập lại Quota | [15 — Quota auth baseline](15-QUOTA-AUTH-BASELINE-2026-09-27-171244-IMPORTANT-🔒.md) |
+| Xác minh Quota sau đăng nhập | [16 — Quota post-login check](16-QUOTA-POST-LOGIN-CHECK-2026-09-27-182904-IMPORTANT-🔒.md) |
+| Khôi phục fallback nguồn Quota qua Auth Broker | [17 — Auth Broker recovery](17-AUTH-BROKER-RECOVERY-2026-09-27-IMPORTANT-🔒.md) |
+| Hiệu chỉnh entitlement và Google verification | [18 — Entitlement verification correction](18-ENTITLEMENT-VERIFICATION-CORRECTION-2026-09-27-IMPORTANT-🔒.md) |
 
 
 ## Trạng thái hiện tại
@@ -71,5 +75,6 @@
 11. Khắc phục tương tác Quota bị CSP chặn bằng event delegation; browser live xác nhận Details, filter, search/sort, theme, quick-check, lịch sử hoạt động và CSP vẫn nghiêm. Xem phần tiếp nối trong [14 — Quota & Chat repair verification](14-CHAT-QUOTA-REPAIR-AND-VERIFICATION-REPORT-IMPORTANT-🔒.md).
 
 12. Thêm Chat ACP worker pool theo workspace/policy, giữ OMP session riêng từng chat; regression prewarm/fork/replay/approval namespace. Deploy/restart LaunchAgent ngày 2026-09-26 sau backup; kiểm chứng và giới hạn ở [15 — ACP worker pool: triển khai, kiểm chứng và lịch sử](15-ACP-WORKER-POOL-IMPLEMENTATION-AND-DEPLOYMENT-HISTORY-IMPORTANT-🔒.md).
+13. Ngày 2026-09-28, bỏ route legacy `/dashboard-live.js`; tách PNG dùng chung khỏi HTML Chat/Quota để giảm payload và cache theo hash. Source, product release và runtime được kiểm tra khớp 10/10 asset.
 
 Tài liệu flow tổng quan cũ vẫn được giữ tại `/Users/trannhattuan/Documents/CODE/OMP GEMINI Dashboad - Chat UI/SYSTEM-FLOW-IMPORTANT-DO-NOT-DELETE.md`. Bộ này là phần chi tiết, cập nhật theo runtime hiện tại.

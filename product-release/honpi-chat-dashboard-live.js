@@ -2182,7 +2182,11 @@
     let normalEnd = false;
     try {
       const response = await fetch(`${API}/chat/stream`, { method: 'POST', headers: { Accept: 'text/event-stream', 'content-type': 'application/json' }, signal: request.controller.signal, body: JSON.stringify({ sessionId, prompt, model, modelProvider, modelSource, requestId: request.requestId, thinking: settings.thinking, browserMode: settings.browserMode, approvalMode: settings.approvalMode, tools: settings.tools?.length ? settings.tools : undefined, attachments }) });
-      if (!response.ok || !response.body) throw new Error(`Stream HTTP ${response.status}`);
+      if (!response.ok || !response.body) {
+        let payload;
+        try { payload = await response.json(); } catch {}
+        throw new Error(payload?.error?.message || payload?.message || `Stream HTTP ${response.status}`);
+      }
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ''; let done = false;
       const setBodyLoadingStatus = (block) => {
         if (text(block?.status) !== 'running') return;
@@ -2650,7 +2654,7 @@
         : null;
       if ((firstLoad || sourceChanged) && source === 'omp') selected = state.models.find((item) => item.isDefault) || state.models[0] || null;
       else if ((firstLoad || sourceChanged || providerChanged) && source === 'quota' && account.canUse) {
-        selected = state.models.find((item) => item.id === 'gemini-3.8-flash') || state.models.find((item) => item.isDefault) || state.models[0] || null;
+        selected = state.models.find((item) => item.isDefault) || state.models[0] || null;
       }
       state.loadedModelSource = source;
       state.loadedModelProvider = source === 'quota' ? account.providerKey : null;

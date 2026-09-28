@@ -265,3 +265,35 @@ Files: `📚-OMP-DASHBOARD-TECHNICAL-REPORTS-IMPORTANT-🔒/02-API-AND-CAPABILIT
 - M2: OMP Settings Memory panel + isolated Ego Browser verification (1 source file; small).
 - M3: Capability contract, ADR, index, and feature matrix (4 documentation files; medium).
 
+---
+
+## Implementation Plan: Product-release parity — 2026-09-28
+
+### Overview
+
+Đồng bộ ba asset đã được runtime xác nhận vào `product-release/`, rồi sửa contract test để kiểm tra quota bundle hiện hành thay vì asset `dashboard-live.js` đã không còn trong package.
+
+### Architecture decisions
+
+- Source là nguồn chuẩn; sau bản vá, source/product-release là release candidate còn runtime giữ nguyên chờ deploy/restart riêng.
+- Chỉ mirror ba asset đã lệch; không chạm state, credential, session, LaunchAgent hoặc các file product-release đã trùng.
+- Test xác minh `/quota` có inline production client và endpoint quota switch; không khôi phục asset legacy không tồn tại.
+
+### Task list
+
+1. [x] Mirror `server.mjs`, `honpi-chat-dashboard-live.js`, `honpi-quota-dashboard-SKE.html` vào `product-release/`.
+   - Acceptance: cả ba cặp source/product trùng byte.
+   - Verify: `cmp` và checksum.
+   - Dependency: backup full `20260928-074730` (done).
+2. [x] Cập nhật quota contract assertion trong `test-session-actions.mjs`.
+   - Acceptance: không còn tham chiếu `dashboard-live.js`; kiểm tra quota SKE có endpoint `/api/v1/quota/switch`.
+   - Verify: `node test-session-actions.mjs` pass.
+3. [x] Chạy checkpoint package/runtime.
+   - Acceptance: syntax, security smoke, focused ACP/pin tests và source/product parity pass; không deploy/restart.
+
+### Risks and mitigations
+
+| Risk | Mitigation |
+|---|---|
+| Package cũ mất quota/auth fixes | Mirror exact source assets, then byte-compare. |
+| Test pass bằng asset sai | Assert route HTML contract trực tiếp, không fetch asset đã xoá. |
