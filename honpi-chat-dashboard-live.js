@@ -2277,6 +2277,8 @@
         state.sessionViews.set(sessionId, view);
       }
     };
+    mountChatTurn();
+    setStreamStatus('Đang gửi lên OMP…', 'waiting');
     let normalEnd = false;
     try {
       const response = await fetch(`${API}/chat/stream`, { method: 'POST', headers: { Accept: 'text/event-stream', 'content-type': 'application/json' }, signal: request.controller.signal, body: JSON.stringify({ sessionId, prompt, model, modelProvider, modelSource, requestId: request.requestId, thinking: settings.thinking, browserMode: settings.browserMode, approvalMode: settings.approvalMode, tools: settings.tools?.length ? settings.tools : undefined, attachments }) });
