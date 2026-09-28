@@ -3127,7 +3127,7 @@
       // ─── Fixed Vertical Rail of Chat Area Frame (from image-54, 55) ───
       // Purely visual frame indicator; always fixed to the chat frame without drag or hover triggers
 
-      // ─── Turn Ticks Navigator & Drag-to-Scrub Timeline (Menu cuộn phân đoạn lượt & kéo timeline - chuẩn DeepSeek harness từ image-53 & 54) ───
+      // ─── Turn Ticks Navigator & Drag-to-Scrub Timeline (Menu cuộn phân đoạn lượt & kéo timeline) ───
       const chatTurnNav = document.getElementById('chatTurnNav');
       const turnNavTicks = document.getElementById('turnNavTicks');
       let turnNavTimer = null;

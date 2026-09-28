@@ -2654,7 +2654,7 @@
     .chat-scroll-bottom-btn.visible { opacity: 1; pointer-events: auto; }
     .chat-scroll-bottom-btn:hover { background: var(--surface-hover); border-color: var(--accent); color: var(--accent); transform: translateX(-50%) translateY(-2px); }
 
-    /* ─── Turn Ticks Indicator & Scrubber (Menu cuộn phân đoạn lượt & kéo timeline - chuẩn DeepSeek harness từ image-53 & 54) ─── */
+    /* ─── Turn Ticks Indicator & Scrubber (Menu cuộn phân đoạn lượt & kéo timeline) ─── */
     .chat-turn-nav {
       position: absolute;
       right: 10px;
@@ -5825,7 +5825,7 @@
 
       </div>
 
-      <!-- Turn Ticks Navigator on Right Edge (Menu cuộn phân đoạn lượt & Kéo timeline - chuẩn DeepSeek harness từ image-53 & 54) -->
+        <!-- Turn Ticks Navigator on Right Edge (Menu cuộn phân đoạn lượt & Kéo timeline) -->
       <div class="chat-turn-nav" id="chatTurnNav" role="navigation" aria-label="Điều hướng các lượt trong cuộc trò chuyện">
         <div class="turn-nav-ticks" id="turnNavTicks"></div>
       </div>
@@ -13103,7 +13103,7 @@
       // ─── Fixed Vertical Rail of Chat Area Frame (from image-54, 55) ───
       // Purely visual frame indicator; always fixed to the chat frame without drag or hover triggers
 
-      // ─── Turn Ticks Navigator & Drag-to-Scrub Timeline (Menu cuộn phân đoạn lượt & kéo timeline - chuẩn DeepSeek harness từ image-53 & 54) ───
+      // ─── Turn Ticks Navigator & Drag-to-Scrub Timeline (Menu cuộn phân đoạn lượt & kéo timeline) ───
       const chatTurnNav = document.getElementById('chatTurnNav');
       const turnNavTicks = document.getElementById('turnNavTicks');
       let turnNavTimer = null;

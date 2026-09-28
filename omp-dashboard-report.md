@@ -270,7 +270,7 @@ Hai giao diện dùng chung OMP, credential và session storage nhưng không ph
 - `/api/omp/v1/capabilities` trả contract version `1`, transport HTTP/SSE và các feature sessions, streaming, commands, abort, ego-browser, slash-commands, file-references.
 - Web UI đã kiểm chứng đủ luồng `start context → ready → nhận model → stop context`.
 - Model live trả về là `google-antigravity/gemini-3.8-flash`.
-- Đã chạy thành công các smoke test: `console-smoke`, `omp-gateway-smoke`, `omp-client-smoke`, `dsh-omp-adapter-smoke`.
+- Đã chạy thành công các smoke test: `console-smoke`, `omp-gateway-smoke`.
 - Đã dừng context test sau khi kiểm tra; không gửi prompt test nên không tiêu quota.
 
 Tại lần kiểm tra live mới nhất, account ưu tiên là `quota-account-d@redacted.local`. Một số account khác đang gần giới hạn: `quota-account-e@redacted.local` còn khoảng 1.35% cửa sổ 5 giờ và `quota-account-c@redacted.local` còn khoảng 0.02% cửa sổ 5 giờ. Số liệu quota là snapshot và thay đổi theo request mới.
@@ -344,8 +344,6 @@ Core logic hiện hoạt động: quota API, console runtime, OMP gateway và sm
 - Syntax check cho server và frontend: đạt.
 - `console-smoke.mjs`: đạt.
 - `omp-gateway-smoke.mjs`: đạt.
-- `omp-client-smoke.mjs`: đạt.
-- `dsh-omp-adapter-smoke.mjs`: đạt.
 - `/healthz`: `ok: true`.
 - `/api/status`: `ok: true`, 6 account.
 - Web UI live: context đạt `ready`, nhận model `google-antigravity/gemini-3.8-flash`, nhận 11 event, sau đó dừng sạch.
@@ -577,7 +575,6 @@ Không coi tên task, nội dung chat tham chiếu, nhãn UI hoặc snapshot cũ
 ```text
 Repository source
   dashboard/*.mjs, *.js, *.html
-  integrations/deepseek-harness-omp/*
   tests/*
         │ đồng bộ thủ công
         ▼
@@ -705,13 +702,11 @@ Safety Guard áp dụng trước mọi generation command `prompt`, `steer`, `fo
 
 Guard có hai lớp: global guard trong bridge và `activeTurn/lastPromptAt` của từng context. Vì vậy một tab không thể né giới hạn bằng cách mở tab/context thứ hai.
 
-### 17.9. OMP Gateway, DeepSeek Harness và OpenDesign
+### 17.9. OMP Gateway và OpenDesign
 
 - Gateway là HTTP/SSE loopback tại `/api/omp/v1/*`, không expose credential.
-- Một Harness `sessionId` ánh xạ vào một `ConsoleContext`; mapping hiện giữ trong memory của process.
 - `prompt` hỗ trợ behavior `prompt`, `steer`, `follow_up`; `useEgoBrowser:true` thêm `/skill:ego-browser` nếu prompt chưa có.
 - `command` chỉ nhận command trong allowlist; prompt tối đa 900.000 ký tự.
-- DSH adapter đăng ký route `OMP · Gemini Pro` và `OMP · Gemini Pro · Ego`, chuẩn hoá raw OMP event thành text/tool/extension/finish/error.
 - OpenDesign dùng OMP thông qua wrapper/connector; browser mở được OpenDesign nhưng lượt E2E gửi prompt chưa được tính là pass vì bị notification permission làm gián đoạn kiểm tra.
 
 ## 18. Bảng API và hợp đồng dữ liệu
@@ -822,8 +817,6 @@ Không có bước nào tự chọn account mới khi request lỗi. Account pre
 | 16/09/2026 | `63fcf21 feat: add OMP dashboard platform` | Tạo Dashboard local, quota API, History, account preference |
 | 19/09/2026 | `db0cfc5 fix: trust local CA for OMP OAuth` | Cho runtime tin CA local, xử lý lỗi OAuth qua AdGuard |
 | 19/09/2026 | `213ff66 feat: add versioned OMP gateway` | Thêm contract Gateway HTTP/SSE loopback |
-| 19/09/2026 | `6750986 feat: add DeepSeek Harness OMP client` | Thêm client host-side cho DSH |
-| 19/09/2026 | `11e11d9`, `af1d3af`, `e212bf3`, `4ba1558` | Kết nối adapter, route Ego, context payload và optional ego-browser |
 | 20–21/09/2026 | Các thay đổi hiện còn trong working tree | Hoàn thiện Console UI, SSE, session paging, auth/generation health, Safety Guard, periods, colors và test |
 
 ### 21.2. Từ vấn đề đến root cause và fix
@@ -859,10 +852,7 @@ Không có bước nào tự chọn account mới khi request lỗi. Account pre
 | Bridge | `dashboard/console-bridge.mjs` | RPC/ACP child lifecycle, JSONL parser, redact, SSE, reconnect, idle cleanup, Safety Guard |
 | Dashboard UI | `dashboard/quota-dashboard.html`, `dashboard/dashboard-live.js` | Account card, quota, auth/generation labels, countdown, periods, color picker, History |
 | Console UI | `dashboard/console.html`, `dashboard/console-live.js` | Context, transcript, command surface, session paging/actions, raw frames, reconnect, safety |
-| Integration | `integrations/deepseek-harness-omp/client.mjs` | Gateway HTTP/SSE client và event normalization |
-| Integration | `integrations/deepseek-harness-omp/adapter.mjs` | DSH route/model registration |
-| Integration | `integrations/deepseek-harness-omp/ego-mode.mjs` | Optional `/skill:ego-browser` route |
-| Test | `tests/*.mjs` liên quan OMP/Console/Auth/Quota/DSH | Smoke contract và regression logic |
+| Test | `tests/*.mjs` liên quan OMP/Console/Auth/Quota | Smoke contract và regression logic |
 | Vận hành | LaunchAgent, `README.md`, `tasks/plan.md`, `tasks/todo.md` | Startup, migration, acceptance và lịch sử quyết định |
 
 Các file trên trong repository đã được đối chiếu với bản runtime tương ứng; sáu file dashboard chính đều khớp byte-for-byte tại lượt kiểm cuối.
@@ -880,11 +870,9 @@ node tests/quota-logic-smoke.mjs
 node tests/console-smoke.mjs
 node tests/auth-status-smoke.mjs
 node tests/omp-gateway-smoke.mjs
-node tests/omp-client-smoke.mjs
-node tests/dsh-omp-adapter-smoke.mjs
 ```
 
-Các smoke test bao phủ: normalize quota/auth, period summary, attribution theo credential pin, màu account, Safety Guard, Gateway capabilities/session/prompt/abort, client SSE normalization và DSH adapter route.
+Các smoke test bao phủ: normalize quota/auth, period summary, attribution theo credential pin, màu account, Safety Guard và Gateway capabilities/session/prompt/abort.
 
 ### 22.2. Runtime checks
 
