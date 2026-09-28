@@ -749,6 +749,10 @@ async function runContract() {
     passes.push("Quota falls back to the broker usage probe when omp usage is empty");
 
     const chatClient = await readFile(join(PROJECT_ROOT, "honpi-chat-dashboard-live.js"), "utf8");
+    const quotaDashboards = await Promise.all([
+      readFile(join(PROJECT_ROOT, "honpi-quota-dashboard-SKE.html"), "utf8"),
+      readFile(join(PROJECT_ROOT, "product-release", "honpi-quota-dashboard-SKE.html"), "utf8"),
+    ]);
     const acpAdapter = await readFile(join(PROJECT_ROOT, "acp-session-context.mjs"), "utf8");
     assert.match(chatClient, /const isServerQueuedTurn = \(queue\) => queue\?\.phase === 'paused' \|\| \(queue\?\.phase === 'fifo' && Number\(queue\.queueAhead\) > 0\);/);
     assert.match(chatClient, /if \(isServerQueuedTurn\(request\.queueState\) && !\['waiting', 'end', 'done', 'error'\]\.includes\(event\)\) return;/);
@@ -771,6 +775,10 @@ async function runContract() {
     assert.match(chatClient, /aria-pressed/);
     assert.match(acpAdapter, /isImageGenerationTool\(name\) \? imageAttachments\(output\) : \[\]/);
     passes.push("frontend exposes attachment, copy, prompt-revision, branch, markdown-table, and OMP file-change controls");
+    for (const quotaDashboard of quotaDashboards) {
+      assert.ok(quotaDashboard.includes("['blocked','error','auth_error','access_error','transient_error'].includes(raw.generationStatus)"));
+    }
+    passes.push("historical quota 429 uses warning styling instead of a critical account state");
 
     async function api(method, path, body) {
       const response = await fetch(`${baseUrl}${path}`, {
