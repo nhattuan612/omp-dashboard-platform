@@ -1979,7 +1979,7 @@ input, select { font: inherit; }
     const used5h = pct(raw.usage5hPct), usedWeek = pct(raw.usageWeekPct);
     const code = String(raw.statusCode || '');
     const authBad = raw.authStatus && raw.authStatus !== 'authenticated';
-    const blocked = ['blocked','chat_error','auth_error','access_error','quota_blocked','transient_error','entitlement_unverified'].includes(code) || ['blocked','error','auth_error','access_error','quota_blocked','transient_error'].includes(raw.generationStatus) || authBad;
+    const blocked = ['blocked','chat_error','auth_error','access_error','quota_blocked','transient_error','entitlement_unverified'].includes(code) || ['blocked','error','auth_error','access_error','transient_error'].includes(raw.generationStatus) || authBad;
     const category = code === 'exhausted' ? 'depleted' : blocked || code === 'danger' ? 'danger' : code === 'warning' || code === 'quota_unknown' || code === 'generation_unknown' ? 'warning' : used5h == null ? 'warning' : used5h >= 100 ? 'depleted' : used5h >= 90 ? 'danger' : used5h > 80 ? 'warning' : 'normal';
     const fallbackStatus = blocked ? [raw.availabilityLabel || 'Không thể chat','status-critical'] : category === 'depleted' ? ['Hết quota','status-exhausted'] : category === 'warning' ? [used5h == null ? 'Thiếu quota 5 giờ' : code === 'generation_unknown' ? 'Chưa xác minh' : 'Cảnh báo >80%','status-warning'] : category === 'danger' ? ['Tạm ngưng ≥90%','status-critical'] : ['Bình thường (OK)','status-ok'];
     const status = raw.statusLabel ? [raw.statusLabel, fallbackStatus[1]] : fallbackStatus;
