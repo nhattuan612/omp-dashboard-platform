@@ -99,6 +99,18 @@ try {
   assert.equal(terminalError?.message?.errorStatus, 429, "ACP terminal errors must preserve their upstream status");
   assert.equal(terminalError?.message?.errorMessage, "image quota exhausted", "ACP terminal errors must preserve their upstream message");
   passes.push("ACP terminal errors preserve upstream status and message");
+  assert.equal(bridge.safety().blocked, true, "429 must start Safety Guard cooldown while protection is on");
+  bridge.updateSafetyPolicy({ enabled: false, activeAccountProtected: true });
+  const disabledSafety = bridge.safety();
+  assert.equal(disabledSafety.blocked, false, "turning protection off must cancel the active cooldown");
+  assert.equal(disabledSafety.nextRequestAt, null, "turning protection off must cancel the request gap");
+  assert.equal(disabledSafety.consecutive429, 0, "turning protection off must reset 429 escalation");
+  assert.equal(bridge.get(second.id).summary().safety.nextRequestAt, null, "turning protection off must cancel per-session request pacing");
+  await bridge.send(second.id, { id: "prompt-after-safety-off", type: "prompt", message: "SAFETY_OFF" });
+  await wait(50);
+  assert.ok(bridge.get(second.id).frames.some((frame) => JSON.stringify(frame).includes("SAFETY_OFF")), "a cancelled cooldown must not block the next request while protection is off");
+  bridge.updateSafetyPolicy({ enabled: true, activeAccountProtected: true });
+  passes.push("Safety Guard off cancels cooldown and request pacing");
   const frameCountBeforeReplay = firstFrames.length;
   const writesBeforeReplay = liveA.chunks.length;
   const clientB = bridge.createClient();
