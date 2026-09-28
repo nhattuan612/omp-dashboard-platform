@@ -368,7 +368,7 @@ async function fakeOmp(args) {
           { id: "smoke-antigravity-claude", name: "Claude family fixture model", provider: "google-antigravity" },
           { id: "smoke-antigravity-gpt", name: "GPT family fixture model", provider: "google-antigravity" },
           { id: "smoke-cli-gemini", name: "Gemini CLI smoke model", provider: "google-gemini-cli" },
-          { id: "gemini-google-model", name: "Gemini generic Google provider model", provider: "google" },
+          { id: "smoke-model", name: "Generic Google provider Gemini smoke model", provider: "google" },
           { id: "smoke-openai-model", name: "Fixture OpenAI Model", provider: "openai-codex" },
           { id: "smoke-external-model", name: "Fixture external OMP model", provider: "anthropic" },
         ] } });
@@ -1475,13 +1475,13 @@ async function runContract() {
     const genericGoogleSend = await api("POST", "/api/v1/chat/send", {
       sessionId: parent.id,
       prompt: "QUOTA_MODEL_GUARD_CONTRACT generic Google provider model",
-      model: "gemini-google-model",
+      model: "smoke-model",
       modelProvider: "google",
       modelSource: "omp",
     });
     assert.equal(genericGoogleSend.status, 200, `OMP source should permit a generic Google catalog model: ${JSON.stringify(genericGoogleSend.payload)}`);
-    assert.ok((await readFakeFrames(home)).some((item) => item.frame.type === "set_model" && item.frame.provider === "google" && item.frame.modelId === "gemini-google-model"), "OMP should preserve the generic Google provider");
-    passes.push("Chat OMP source accepts Gemini models exposed by the generic Google provider");
+    assert.ok((await readFakeFrames(home)).some((item) => item.frame.type === "set_model" && item.frame.provider === "google-antigravity" && item.frame.modelId === "smoke-model"), "OMP should normalize a duplicate generic Google Gemini model to Antigravity");
+    passes.push("Chat OMP source normalizes duplicate generic Google Gemini models to Antigravity");
 
     const allCatalogStream = await openStream(
       parent.id,

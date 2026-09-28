@@ -1969,8 +1969,14 @@ async function validateChatModel(model, requestedProvider = null) {
   return { model: selected, models };
 }
 
+function normalizeChatModel(model, models, modelSource) {
+  if (modelSource !== "omp" || String(model.provider || "").toLowerCase() !== "google" || !isGeminiModel(model)) return model;
+  return models.find((item) => item.id === model.id && item.provider === LOGIN_PROVIDER) || model;
+}
+
 async function resolveChatModel(modelId, modelSource, modelProvider, sessionId, prompt = "") {
-  const { model, models } = await validateChatModel(modelId, modelProvider);
+  const { model: catalogModel, models } = await validateChatModel(modelId, modelProvider);
+  const model = normalizeChatModel(catalogModel, models, modelSource);
   const requestedModel = modelSource === "quota"
     ? await assertQuotaModelAllowed(modelId, models, modelProvider, sessionId)
     : await assertGoogleQuotaModelAllowed(model, models, modelProvider, sessionId);
@@ -1995,7 +2001,7 @@ async function assertGoogleQuotaModelAllowed(model, models, requestedProvider, s
   const { account, availability } = await selectedGeminiAccountState(sessionId);
   if (!availability.canUse) throw Object.assign(new Error(availability.reason), { code: "ACCOUNT_UNAVAILABLE", field: "accountId" });
   const selected = quotaProviderModels(account.provider, models)
-    .find((item) => item.id === model.id && (!requestedProvider || item.provider === requestedProvider));
+    .find((item) => item.id === model.id && item.provider === model.provider);
   if (!selected) {
     throw Object.assign(new Error(`Model "${model.id}" không thuộc danh mục Google Antigravity của account đang chọn.`), { code: "MODEL_NOT_ALLOWED_BY_QUOTA", field: "model" });
   }
