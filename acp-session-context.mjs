@@ -149,7 +149,7 @@ export class AcpSessionContext {
 
   summary() {
     const safety = this.guard.summary();
-    const contextNextRequestAt = this.lastPromptAt ? this.lastPromptAt + 1000 : 0;
+    const contextNextRequestAt = this.guard.isEnabled() && this.lastPromptAt ? this.lastPromptAt + 1000 : 0;
     return {
       id: this.id,
       cwd: this.cwd,
@@ -487,31 +487,34 @@ export class AcpSessionContext {
         this.#startAgentTurn();
       }
       this.messageCount += this.promptAgentInvoked ? 2 : 1;
+      const promptError = promptResultError(result);
+      let terminalMessage = {
+        role: "assistant",
+        stopReason: result?.stopReason === "error" ? "error" : "end_turn",
+        ...(promptError.message ? { errorMessage: promptError.message } : {}),
+        ...(promptError.status != null ? { errorStatus: promptError.status } : {}),
+      };
       if (this.promptAgentInvoked) {
         const usage = this.#normalizeUsage(result?.usage || this.lastUsage);
-        const promptError = promptResultError(result);
-        const message = {
-          role: "assistant",
+        terminalMessage = {
+          ...terminalMessage,
           content: this.assistantContent,
           model: modelId(this.currentModel) || null,
           provider: modelProvider(this.currentModel),
-          stopReason: result?.stopReason === "error" ? "error" : "end_turn",
-          ...(promptError.message ? { errorMessage: promptError.message } : {}),
-          ...(promptError.status != null ? { errorStatus: promptError.status } : {}),
           ...(usage ? { usage } : {}),
         };
-        this.#emit("omp", { type: "message_end", message });
-        this.#emit("omp", { type: "agent_end", message, isTerminal: true });
+        this.#emit("omp", { type: "message_end", message: terminalMessage });
+        this.#emit("omp", { type: "agent_end", message: terminalMessage, isTerminal: true });
       }
       this.#emit("omp", { type: "prompt_result", id: frame.id, agentInvoked: this.promptAgentInvoked });
       this.#respond(frame, true, { ...(result || {}), agentInvoked: this.promptAgentInvoked });
-      this.#finishTurn({
-        frame: {
-          type: this.promptAgentInvoked ? "agent_end" : "prompt_result",
-          message: { role: "assistant", stopReason: result?.stopReason || "end_turn" },
-          isTerminal: true,
-        },
-        isFollowUp,
+        this.#finishTurn({
+          frame: {
+            type: this.promptAgentInvoked ? "agent_end" : "prompt_result",
+            message: terminalMessage,
+            isTerminal: true,
+          },
+          isFollowUp,
       });
     } catch (error) {
       this.activeLocalCommand = null;

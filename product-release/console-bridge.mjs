@@ -122,9 +122,17 @@ class ProviderSafetyGuard {
   }
 
   setPolicy({ enabled = true, mode = "auto", activeAccountProtected = true } = {}) {
+    const wasEnabled = this.isEnabled();
     this.#enabled = Boolean(enabled);
     this.#policyMode = mode === "manual" ? "manual" : "auto";
     this.#activeAccountProtected = Boolean(activeAccountProtected);
+    if (wasEnabled && !this.isEnabled()) {
+      this.#blockedUntil = 0;
+      this.#consecutive429 = 0;
+      this.#recent429At = [];
+      this.#lastRequestAt = 0;
+      this.#lastDecision = { code: "disabled", at: Date.now(), message: "Safety Guard đã tắt" };
+    }
     this.#persist();
   }
 
@@ -146,13 +154,12 @@ class ProviderSafetyGuard {
   }
 
   startTurn() {
-    if (!this.isEnabled()) return;
     this.#activeTurns += 1;
+    if (!this.isEnabled()) return;
     this.#lastRequestAt = Date.now();
   }
 
   endTurn() {
-    if (!this.isEnabled()) return;
     this.#activeTurns = Math.max(0, this.#activeTurns - 1);
   }
 
@@ -185,6 +192,7 @@ class ProviderSafetyGuard {
 
   summary() {
     const now = Date.now();
+    const enabled = this.isEnabled();
     this.#recent429At = this.#recent429At.filter((at) => now - at < SAFETY_WINDOW_MS);
     return {
       mode: "protective",
@@ -196,11 +204,11 @@ class ProviderSafetyGuard {
       maxConcurrentTurns: null,
 
       activeTurns: this.#activeTurns,
-      minRequestGapMs: SAFETY_MIN_REQUEST_GAP_MS,
-      lastRequestAt: this.#lastRequestAt || null,
-      nextRequestAt: this.#lastRequestAt ? this.#lastRequestAt + SAFETY_MIN_REQUEST_GAP_MS : null,
-      blocked: this.#blockedUntil > now,
-      blockedUntil: this.#blockedUntil > now ? this.#blockedUntil : null,
+      minRequestGapMs: enabled ? SAFETY_MIN_REQUEST_GAP_MS : 0,
+      lastRequestAt: enabled && this.#lastRequestAt ? this.#lastRequestAt : null,
+      nextRequestAt: enabled && this.#lastRequestAt ? this.#lastRequestAt + SAFETY_MIN_REQUEST_GAP_MS : null,
+      blocked: enabled && this.#blockedUntil > now,
+      blockedUntil: enabled && this.#blockedUntil > now ? this.#blockedUntil : null,
       recent429Count: this.#recent429At.length,
       consecutive429: this.#consecutive429,
       lastDecision: this.#lastDecision,
@@ -346,7 +354,7 @@ class ConsoleContext {
 
   summary() {
     const safety = this.guard.summary();
-    const contextNextRequestAt = this.lastPromptAt ? this.lastPromptAt + SAFETY_MIN_REQUEST_GAP_MS : 0;
+    const contextNextRequestAt = this.guard.isEnabled() && this.lastPromptAt ? this.lastPromptAt + SAFETY_MIN_REQUEST_GAP_MS : 0;
     return {
       id: this.id,
       cwd: this.cwd,
