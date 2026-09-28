@@ -5,7 +5,7 @@
   const API = '/api/v1';
   const BROWSER_MODE_PREFERENCE_VERSION = 'manual-v1';
   const initialBrowserMode = localStorage.getItem('omp.browserModePreferenceVersion') === BROWSER_MODE_PREFERENCE_VERSION ? localStorage.getItem('omp.browserMode') : 'none';
-  const state = { sessions: [], nextCursor: null, activeId: null, generation: 0, messages: [], models: [], activeModel: null, controller: null, requestId: null, activeRequest: null, createPromise: null, menu: null, folderMenu: null, quota: null, accounts: [], attachments: [], workspaceFiles: [], workspaceMention: '@', capabilities: null, selectedTools: [], toolsUpdating: false, folderExpanded: new Set(), folderCollapsed: new Set(), thinking: localStorage.getItem('omp.thinking') || 'max', browserMode: initialBrowserMode === 'ego-browser' ? 'ego-browser' : 'none', shareMode: localStorage.getItem('omp.shareMode') || 'encrypted', approvalMode: localStorage.getItem('omp.approvalMode') || 'always-ask', enterBehavior: localStorage.getItem('omp.enterBehavior') || 'queue', conversationDisplay: localStorage.getItem('omp.conversationDisplay') || 'compact', pendingPrompts: [], queuePausedSessions: new Map(), editingQueueId: null, browserAction: null, browserStatus: null, media: { screenCapture: { status: 'unavailable', reason: 'Native screen capture is not provided by OMP dashboard.' }, camera: { status: 'unavailable' }, microphone: { status: 'unavailable' }, video: { status: 'unavailable' } } };
+  const state = { sessions: [], nextCursor: null, activeId: null, generation: 0, messages: [], models: [], activeModel: null, controller: null, requestId: null, activeRequest: null, createPromise: null, menu: null, folderMenu: null, quota: null, accounts: [], attachments: [], workspaceFiles: [], workspaceMention: '@', capabilities: null, selectedTools: [], toolsUpdating: false, folderExpanded: new Set(), folderCollapsed: new Set(), thinking: localStorage.getItem('omp.thinking') || 'max', browserMode: initialBrowserMode === 'ego-browser' ? 'ego-browser' : 'none', shareMode: localStorage.getItem('omp.shareMode') || 'encrypted', approvalMode: localStorage.getItem('omp.approvalMode') || 'always-ask', enterBehavior: localStorage.getItem('omp.enterBehavior') || 'queue', conversationDisplay: localStorage.getItem('omp.conversationDisplay') || 'compact', pendingPrompts: [], queuePausedSessions: new Map(), editingQueueId: null, draftPromptPreview: null, browserAction: null, browserStatus: null, media: { screenCapture: { status: 'unavailable', reason: 'Native screen capture is not provided by OMP dashboard.' }, camera: { status: 'unavailable' }, microphone: { status: 'unavailable' }, video: { status: 'unavailable' } } };
   state.enterBehavior = 'send';
   state.modelAccess = null;
   state.modelAccessInitialized = false;
@@ -199,10 +199,11 @@
     const previousId = state.activeId;
     if (previousId) rememberRetry(previousId);
     if (options.preserveActiveView !== false && previousId) cacheSessionView(previousId);
+    const draftPreview = options.preserveDraftPreview ? state.draftPromptPreview : null;
     state.activeId = null;
     state.nativeState = null;
     state.generation += 1;
-    state.messages = [];
+    state.messages = draftPreview ? [draftPreview] : [];
     state.workspaceFiles = [];
     state.workspaceMention = '@';
     state.attachments = [];
@@ -210,12 +211,14 @@
     retryPromptText = '';
     retryContext = null;
     clearPrototypeData();
+    if (draftPreview) { $('chatStream')?.append(messageNode(draftPreview)); hideGreeting(); }
     renderSessions();
     renderWorkspaceFiles();
     setSendState();
     if ($('ompMemoryStatus')) void loadOmpMemory(sessionGuard());
   }
   function beginLocalDraft() {
+    state.draftPromptPreview = null;
     state.draftWorkspaceCwd = '';
     prewarmDraftWorker();
     setNeutralSelection();
@@ -1366,9 +1369,9 @@
     notify('Đã nạp prompt vào ô nhập; gửi sẽ tạo lượt mới.');
   }
 
-  function replaceQueuedUserMessage(messages, queueId, user) {
+  function replaceQueuedUserMessage(messages, queueId, user, draftId = null) {
     const next = Array.isArray(messages) ? [...messages] : [];
-    const index = queueId ? next.findIndex((message) => message.queueId === queueId) : -1;
+    const index = queueId ? next.findIndex((message) => message.queueId === queueId) : draftId ? next.findIndex((message) => message.draftId === draftId) : -1;
     if (index >= 0) next[index] = user;
     else if (!next.some((message) => message.requestId === user.requestId)) {
       const firstQueued = next.findIndex((message) => message.queueId && !message.requestId);
@@ -1390,6 +1393,7 @@
       const wrap = document.createElement('div'); wrap.className = 'user-msg-wrap';
       if (message.requestId) wrap.dataset.requestId = message.requestId;
       if (message.queueId && !message.requestId) wrap.dataset.queuePreviewId = message.queueId;
+      if (message.draftId) wrap.dataset.draftPreviewId = message.draftId;
       renderMessageAttachments(wrap, message.attachments);
       if (text(message.content).trim()) { const bubble = document.createElement('div'); bubble.className = 'user-msg-bubble'; bubble.textContent = text(message.content); wrap.append(bubble); }
       const footer = document.createElement('div'); footer.className = 'user-msg-footer'; const time = document.createElement('span'); time.className = 'user-msg-time'; time.textContent = new Date(message.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -1564,7 +1568,7 @@
     if (state.createPromise) return state.createPromise;
     const title = options.title || DEFAULT_SESSION_TITLE;
     const cwd = options.cwd || (!options.folderId ? state.draftWorkspaceCwd : '');
-    setNeutralSelection();
+    setNeutralSelection({ preserveDraftPreview: Boolean(state.draftPromptPreview) });
     state.createPromise = (async () => {
       try {
         const { payload } = await readJson(`${API}/sessions`, { method: 'POST', body: JSON.stringify({ title, ...(options.folderId ? { folderId: options.folderId } : {}), ...(cwd ? { cwd } : {}), browserMode: state.browserMode, approvalMode: state.approvalMode, ...(state.selectedTools.length ? { tools: state.selectedTools } : {}) }) });
@@ -2026,6 +2030,23 @@
     item.previewRendered = true;
     syncGreeting();
   }
+  function renderDraftPromptPreview(prompt, attachments, draftId) {
+    const message = { role: 'user', content: prompt, createdAt: new Date().toISOString(), attachments: cloneSnapshot(attachments), draftId };
+    state.draftPromptPreview = message;
+    state.messages = [message];
+    const stream = $('chatStream');
+    stream?.replaceChildren(messageNode(message));
+    hideGreeting();
+    syncGreeting();
+  }
+  function removeDraftPromptPreview() {
+    const draftId = state.draftPromptPreview?.draftId;
+    if (!draftId) return;
+    [...($('chatStream')?.children || [])].filter((node) => node.dataset.draftPreviewId === draftId).forEach((node) => node.remove());
+    state.messages = state.messages.filter((message) => message.draftId !== draftId);
+    state.draftPromptPreview = null;
+    syncGreeting();
+  }
   function renderSessionQueuePreviews(sessionId) {
     if (state.activeId !== sessionId) return;
     state.pendingPrompts.filter((item) => item.sessionId === sessionId).forEach(renderQueuedPreview);
@@ -2116,9 +2137,10 @@
     void drainQueue(created.id);
     return true;
   }
-  async function startInitialPrompt(prompt, settings, attachments) {
+  async function startInitialPrompt(prompt, settings, attachments, draftId) {
     const created = await createSession({ title: deriveSessionTitle(prompt) || DEFAULT_SESSION_TITLE });
     if (!created?.id) {
+      removeDraftPromptPreview();
       state.pendingPrompts.forEach((item) => { if (!item.sessionId) item.status = 'paused'; });
       if (state.pendingPrompts.some((item) => !item.sessionId)) pauseQueue(null, 'session_create_failed');
       renderQueueTray();
@@ -2129,7 +2151,7 @@
     const queued = attachUnboundPrompts(created.id);
     resumeQueue(created.id);
     renderQueueTray();
-    void startPrompt(prompt, created.id, settings, attachments);
+    void startPrompt(prompt, created.id, settings, attachments, { draftId });
     queued.forEach(renderQueuedPreview);
     return true;
   }
@@ -2172,9 +2194,9 @@
     const modelSource = settings.modelSource || state.modelSource;
     const modelProvider = settings.modelProvider || (model === state.activeModel ? state.activeModelProvider : null);
     const accessError = modelAccessError(model, modelSource, modelProvider);
-    if (accessError) { notify(accessError, true); return false; }
+    if (accessError) { if (options.draftId) removeDraftPromptPreview(); notify(accessError, true); return false; }
     const capabilityError = imageGenerationModelError(prompt, model, modelProvider);
-    if (capabilityError) { notify(capabilityError, true); return false; }
+    if (capabilityError) { if (options.draftId) removeDraftPromptPreview(); notify(capabilityError, true); return false; }
     const guard = sessionGuard(sessionId, state.generation);
     const request = { sessionId, requestId: nextRequestId(), controller: new AbortController(), status: 'running', guard, settings: cloneSnapshot({ ...settings, model, modelProvider, modelSource }), prompt, attachments: cloneSnapshot(attachments), createdAt: new Date().toISOString(), mounted: false, queueState: { phase: 'fifo', queueAhead: 0, queuedTurns: 0, retryAfterSeconds: 0 }, queueStateReceived: false, dom: null };
     if (options.item) options.item.lastRequestId = request.requestId;
@@ -2233,11 +2255,13 @@
       if (request.mounted) return;
       request.mounted = true;
       const stream = visibleStream();
-      const preview = queueItem && [...(stream?.children || [])].find((node) => node.dataset.queuePreviewId === queueItem.id);
+      const preview = queueItem
+        ? [...(stream?.children || [])].find((node) => node.dataset.queuePreviewId === queueItem.id)
+        : options.draftId ? [...(stream?.children || [])].find((node) => node.dataset.draftPreviewId === options.draftId) : null;
       const user = { role: 'user', content: prompt, requestId: request.requestId, createdAt: request.createdAt, attachments: cloneSnapshot(attachments), ...(queueItem ? { queueId: queueItem.id } : {}) };
-      if (preview) delete preview.dataset.queuePreviewId;
       if (isCurrentSession(guard)) {
-        state.messages = replaceQueuedUserMessage(state.messages, queueItem?.id, user);
+        state.messages = replaceQueuedUserMessage(state.messages, queueItem?.id, user, options.draftId);
+        if (options.draftId && state.draftPromptPreview?.draftId === options.draftId) state.draftPromptPreview = null;
         const userNode = messageNode(user);
         if (preview) {
           preview.replaceWith(userNode);
@@ -2248,7 +2272,7 @@
         userNode.after(wrap);
       } else {
         const view = state.sessionViews.get(sessionId) || { messages: [], transientNodes: [], volatile: true, scrollTop: 0 };
-        view.messages = replaceQueuedUserMessage(view.messages, queueItem?.id, user);
+        view.messages = replaceQueuedUserMessage(view.messages, queueItem?.id, user, options.draftId);
         view.volatile = true;
         state.sessionViews.set(sessionId, view);
       }
@@ -2474,7 +2498,9 @@
         enqueuePrompt(prompt, null, { settings, attachments });
         return;
       }
-      firstPromptPromise = startInitialPrompt(prompt, settings, attachments).finally(() => { firstPromptPromise = null; });
+      const draftId = nextRequestId('draft');
+      renderDraftPromptPreview(prompt, attachments, draftId);
+      firstPromptPromise = startInitialPrompt(prompt, settings, attachments, draftId).finally(() => { firstPromptPromise = null; });
       return;
     }
     const sessionId = state.activeId;
