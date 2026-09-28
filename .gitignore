@@ -16,3 +16,6 @@ protect-config.json
 auth-events.json
 account-colors.json
 chat-metadata.json
+*.db
+*.db-shm
+*.db-wal
