@@ -3981,7 +3981,7 @@ function isGeminiModel(model) {
 function isQuotaGoogleChatModel(model) {
   const provider = String(model?.provider || "").toLowerCase();
   return provider === LOGIN_PROVIDER
-    || ((GEMINI_PROVIDER_KEYS.has(provider) || provider === "google") && isGeminiModel(model));
+    || (GEMINI_PROVIDER_KEYS.has(provider) && isGeminiModel(model));
 }
 
 function quotaSessionId(value) {
