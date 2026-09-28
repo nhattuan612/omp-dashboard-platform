@@ -13,7 +13,7 @@ LAUNCH_DOMAIN="gui/$USER_ID"
 PLIST="$LAUNCH_DIR/$LABEL.plist"
 PLIST_BACKUP=LaunchAgent.plist
 BACKUP_ROOT="$TARGET_DIR/backups/deploy"
-APP_FILES='server.mjs console-bridge.mjs acp-worker.mjs acp-session-context.mjs gemini-account-pin-extension.mjs honpi-chat-dashboard-SKE.html honpi-quota-dashboard-SKE.html honpi-chat-dashboard-live.js honpi-chat-dashboard-legacy.js'
+APP_FILES='server.mjs console-bridge.mjs acp-worker.mjs acp-session-context.mjs gemini-account-pin-extension.mjs honpi-dashboard-mark-8138753b.png honpi-chat-dashboard-SKE.html honpi-quota-dashboard-SKE.html honpi-chat-dashboard-live.js honpi-chat-dashboard-legacy.js'
 
 fail() {
   printf '%s\n' "$*" >&2

@@ -9,7 +9,7 @@ launch_domain="gui/$(/usr/bin/id -u)"
 launch_agent=${OMP_DASHBOARD_LAUNCH_AGENT:-/Users/trannhattuan/Library/LaunchAgents/$agent_label.plist}
 plist_backup=LaunchAgent.plist
 backup_root="$runtime_dir/backups/deploy"
-app_files='server.mjs console-bridge.mjs acp-worker.mjs acp-session-context.mjs gemini-account-pin-extension.mjs honpi-chat-dashboard-SKE.html honpi-quota-dashboard-SKE.html honpi-chat-dashboard-live.js honpi-chat-dashboard-legacy.js'
+app_files='server.mjs console-bridge.mjs acp-worker.mjs acp-session-context.mjs gemini-account-pin-extension.mjs honpi-dashboard-mark-8138753b.png honpi-chat-dashboard-SKE.html honpi-quota-dashboard-SKE.html honpi-chat-dashboard-live.js honpi-chat-dashboard-legacy.js'
 command=${1:-}
 
 fail() {
