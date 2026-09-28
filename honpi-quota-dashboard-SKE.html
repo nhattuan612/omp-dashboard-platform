@@ -438,8 +438,9 @@ input, select { font: inherit; }
 .safety-copy { min-width: 0; display: grid; gap: 3px; }
 .safety-eyebrow, .safety-scope-label, .safety-logic-kicker, .safety-policy-card span, .safety-rotation-meta span { color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
 .safety-subtitle { margin: 0; color: var(--fg-2); font-size: 10px; line-height: 1.45; }
-.safety-status-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .safety-state-badge {
+  display: inline-flex;
+  align-items: center;
   font-size: 11px;
   font-weight: 500;
   color: var(--success);
@@ -447,7 +448,13 @@ input, select { font: inherit; }
   padding: 2px 8px;
   border-radius: var(--radius-pill);
   border: 1px solid color-mix(in oklab, var(--success), transparent 75%);
+  animation: safetyStatusGlow 2.4s ease-in-out infinite;
 }
+@keyframes safetyStatusGlow {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--success), transparent 84%); }
+  50% { box-shadow: 0 0 0 4px color-mix(in oklab, var(--success), transparent 92%); }
+}
+@media (prefers-reduced-motion: reduce) { .safety-state-badge { animation: none; } }
 .safety-scope { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 14px; padding: 10px 16px; border-bottom: 1px solid var(--border-soft); background: color-mix(in oklab, var(--surface-warm), transparent 14%); }
 .safety-scope-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; min-width: 0; }
 .safety-logic { margin: 16px 16px 0; padding: 12px; border: 1px solid color-mix(in oklab, var(--success), var(--border) 65%); border-radius: var(--radius-md); background: color-mix(in oklab, var(--success), transparent 96%); }
@@ -1714,7 +1721,6 @@ input, select { font: inherit; }
             <span class="safety-eyebrow">Account safety</span>
             <h2 class="safety-title">Google Protect</h2>
             <p class="safety-subtitle">Chính sách quota và phiên cho Google Antigravity.</p>
-            <div class="safety-status-row"><span class="safety-state-badge" id="safety-state">● Đang bảo vệ 429</span></div>
           </div>
         </div>
         <div class="safety-controls">
@@ -1726,6 +1732,7 @@ input, select { font: inherit; }
       <div class="safety-scope">
         <span class="safety-scope-label">Phạm vi áp dụng</span>
         <div class="safety-scope-actions">
+          <span class="safety-state-badge" id="safety-state">● Đang bảo vệ 429</span>
           <select class="select-input safety-mode-select" id="safetyMode" aria-label="Phạm vi Safety Guard">
             <option value="auto">Tự động mọi Google</option>
             <option value="manual">Chọn tài khoản</option>
