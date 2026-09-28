@@ -4,8 +4,8 @@ Dashboard local để theo dõi quota Gemini của OMP, chọn account ưu tiên
 
 ## Thành phần
 
-- `dashboard/`: server Node.js, giao diện quota và History token.
-- `dashboard/console-bridge.mjs`: cầu nối OMP RPC dùng chung cho gateway và các luồng backend.
+- `server.mjs`, `console-bridge.mjs`: runtime production, API local, gateway và cầu nối OMP RPC.
+- `dashboard/`: tài sản quota legacy, không phải entrypoint production.
 - `integrations/deepseek-harness-omp/`: host-side client để DeepSeek Harness dùng OMP Gateway, giữ Google auth/quota/skill ở OMP.
 - `omp/agent/extensions/omp-account-preference.js`: extension OMP tự pin account được chọn khi mở session.
 - `integrations/open-design-pi-omp`: wrapper tùy chọn cho app gọi OMP; không chứa logic account.
@@ -16,7 +16,7 @@ Platform không sửa mã nguồn lõi OMP và không chứa credential Google.
 ## Cài trên máy mới
 
 1. Cài OMP bản mới nhất và Node.js. OMP cần chạy được tại `~/.bun/bin/omp`.
-2. Chép `dashboard/*` vào `~/.omp/usage-dashboard/`.
+2. Dùng `deploy-local-dashboard.sh` để đồng bộ runtime production vào `~/.omp/usage-dashboard/`.
 3. Chép extension vào `~/.omp/agent/extensions/`.
 4. Nếu cần wrapper, chép `integrations/open-design-pi-omp` vào thư mục executable và cấp quyền chạy.
 5. Đăng nhập lại từng tài khoản Google bằng nút `Thêm tài khoản` trên dashboard.
@@ -40,7 +40,7 @@ Token OAuth, database OMP, session log, account đang chọn, state cache và lo
 
 ## OMP Gateway cho DeepSeek Harness
 
-Gateway version `1` dùng chung với Dashboard, chỉ bind loopback và không mở credential/token cho Harness:
+Gateway version `1` dùng chung với Dashboard, chỉ bind loopback, kiểm tra Host/Origin và allowlist command; gateway host-side không cần cookie dashboard:
 
 - `GET /api/omp/v1/capabilities`: contract và feature flags.
 - `POST /api/omp/v1/sessions`: tạo hoặc lấy OMP context theo `sessionId` của Harness.
