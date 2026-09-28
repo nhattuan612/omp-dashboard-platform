@@ -7,7 +7,7 @@ import { OmpGatewayClient, normalizeOmpEvent } from "../integrations/deepseek-ha
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const port = 4189;
-const server = spawn(process.execPath, ["dashboard/server.mjs"], {
+const server = spawn(process.execPath, ["server.mjs"], {
   cwd: root,
   env: { ...process.env, OMP_DASHBOARD_PORT: String(port) },
   stdio: ["ignore", "ignore", "pipe"],

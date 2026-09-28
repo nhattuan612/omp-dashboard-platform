@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const port = 4188;
-const server = spawn(process.execPath, ["dashboard/server.mjs"], {
+const server = spawn(process.execPath, ["server.mjs"], {
   cwd: root,
   env: { ...process.env, OMP_DASHBOARD_PORT: String(port) },
   stdio: ["ignore", "ignore", "pipe"],
@@ -38,8 +38,8 @@ async function readChunk(reader, timeoutMs = 5000) {
 try {
   const capabilities = await json("/api/omp/v1/capabilities");
   assert.equal(capabilities.contractVersion, "1");
-  assert.equal(capabilities.transport.events, "sse");
-  assert.equal(capabilities.features.includes("ego-browser"), true);
+  assert.equal(capabilities.transport.stream, "sse");
+  assert.equal(capabilities.features.includes("browser-control"), true);
 
   const largeRequest = await request("/api/omp/v1/sessions", {
     method: "POST",

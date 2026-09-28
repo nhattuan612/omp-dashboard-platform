@@ -22,6 +22,8 @@ assert_status 401 /usr/bin/curl -sS -o "$tmp_dir/unauth.json" -w '%{http_code}' 
 assert_status 200 /usr/bin/curl -sS -b "$tmp_dir/cookies" -o "$tmp_dir/state.json" -w '%{http_code}' "$base_url/api/console/state"
 ! /usr/bin/grep -q '"cwd"' "$tmp_dir/state.json"
 ! /usr/bin/grep -q 'OMP context có lỗi nội bộ; chi tiết không được gửi tới browser' "$tmp_dir/state.json"
+assert_status 200 /usr/bin/curl -sS -o "$tmp_dir/gateway-capabilities.json" -w '%{http_code}' "$base_url/api/omp/v1/capabilities"
+assert_status 403 /usr/bin/curl -sS -H 'Origin: https://evil.example' -o "$tmp_dir/gateway-origin.json" -w '%{http_code}' "$base_url/api/omp/v1/capabilities"
 assert_status 403 /usr/bin/curl -sS -H 'Host: evil.example' -o "$tmp_dir/host.json" -w '%{http_code}' "$base_url/healthz"
 
 assert_status 403 /usr/bin/curl -sS -b "$tmp_dir/cookies" -H 'Origin: https://evil.example' -o "$tmp_dir/origin.json" -w '%{http_code}' "$base_url/api/console/state"

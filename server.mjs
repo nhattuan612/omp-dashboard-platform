@@ -138,11 +138,16 @@ function requiresApiAuth(pathname) {
   return pathname === "/api" || pathname.startsWith("/api/");
 }
 
+function requiresDashboardSession(pathname) {
+  return requiresApiAuth(pathname) && !pathname.startsWith("/api/omp/v1/");
+}
+
 function authorizeApiRequest(req, pathname) {
   if (!requiresApiAuth(pathname)) return null;
-  if (!isAllowedHost(req)) return { status: 403, code: "FORBIDDEN_HOST", message: "Host không được phép." };
   if (!isAllowedOrigin(req)) return { status: 403, code: "FORBIDDEN_ORIGIN", message: "Origin không được phép." };
-  if (!tokenMatches(readCookie(req, DASHBOARD_SESSION_COOKIE))) return { status: 401, code: "UNAUTHORIZED", message: "Phiên dashboard không hợp lệ hoặc đã hết hạn." };
+  if (requiresDashboardSession(pathname) && !tokenMatches(readCookie(req, DASHBOARD_SESSION_COOKIE))) {
+    return { status: 401, code: "UNAUTHORIZED", message: "Phiên dashboard không hợp lệ hoặc đã hết hạn." };
+  }
   return null;
 }
 
@@ -195,7 +200,7 @@ function safeErrorPayload(res, payload) {
 }
 
 function errorStatus(code) {
-  if (["BAD_REQUEST", "MODEL_NOT_FOUND", "IMAGE_GENERATION_MODEL_REQUIRED"].includes(code)) return 400;
+  if (["BAD_REQUEST", "UNSUPPORTED_ACTION", "MODEL_NOT_FOUND", "IMAGE_GENERATION_MODEL_REQUIRED"].includes(code)) return 400;
   if (["NOT_FOUND", "ACCOUNT_NOT_FOUND"].includes(code)) return 404;
   if (["CONFLICT", "ACCOUNT_UNAVAILABLE", "ACCOUNT_SELECTION_REQUIRED", "MODEL_NOT_ALLOWED_BY_QUOTA"].includes(code)) return 409;
   if (code === "RATE_LIMITED") return 429;
