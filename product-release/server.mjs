@@ -867,6 +867,7 @@ function normalizeProtectConfig(value) {
     enabled: source.enabled !== false,
     mode: source.mode === "manual" ? "manual" : "auto",
     accountIds: [...new Set(Array.isArray(source.accountIds) ? source.accountIds.filter((id) => typeof id === "string" && id.trim()).map((id) => id.trim()).slice(0, 100) : [])],
+    rotation: { enabled: source.rotation?.enabled === true },
   };
 }
 
@@ -1003,6 +1004,7 @@ async function refresh() {
     snapshot.preferredAccountEmail = selected?.email || null;
     await checkThresholds(snapshot);
     latest = { ok: true, error: null, updatedAt: Date.now(), ...snapshot };
+    await evaluateQuotaRotation().catch(() => {});
     broadcastStatus();
     return latest;
   }).catch((error) => {
@@ -1394,6 +1396,8 @@ let chatMetadataWrite = Promise.resolve();
 let chatMediaWrite = Promise.resolve();
 let availableModelsCache = { loadedAt: 0, items: [] };
 let protectConfigCache = null;
+let quotaRotationWrite = Promise.resolve();
+let quotaRotationState = { lastCheckedAt: null, lastRotation: null, reason: "Chưa đánh giá xoay account" };
 const GATEWAY_COMMANDS = new Set([
   "abort", "abort_retry", "bash", "branch", "compact", "export_html", "get_available_commands",
   "get_available_models", "get_login_providers", "get_messages", "get_messages_page", "get_session_stats", "get_state",
@@ -4221,7 +4225,7 @@ function quotaAccountAvailability(account, quotas = quotaAccountWindows(account)
   const primaryPct = Number(primary.usedFraction || 0) * 100;
   const weeklyPct = Number(weekly?.usedFraction || 0) * 100;
   const usedPct = Math.max(primaryPct, weeklyPct);
-  if (usedPct >= QUOTA_SUSPEND_THRESHOLD * 100) return { canUse: false, status: "quota_suspended", label: "Tạm ngưng · chọn thủ công", reason: `GoogleProtect tạm ngưng vì quota ${quotaRound(usedPct)}% (≥90%); hệ thống không tự chuyển account, hãy chọn Gemini thủ công` };
+  if (usedPct >= QUOTA_SUSPEND_THRESHOLD * 100) return { canUse: false, status: "quota_suspended", label: "Tạm ngưng · quota ≥90%", reason: `Google Protect tạm ngưng vì quota ${quotaRound(usedPct)}% (≥90%); có thể xoay account mặc định nếu bật xoay tự động` };
   if (usedPct > QUOTA_WARNING_THRESHOLD * 100) return { canUse: true, status: "quota_warning", label: "Cảnh báo >80%", reason: `Quota cao ${quotaRound(usedPct)}%; vẫn dùng được dưới 90%` };
   return { canUse: true, status: "available", label: "Có thể sử dụng", reason: `Quota ${primaryLabel} đang ở ${quotaRound(usedPct)}%` };
 }
@@ -4497,6 +4501,45 @@ async function syncOmpAccountControl(account) {
   if ((await readOmpAccountControl()).enabled) await saveOmpAccountControl(ompControlForAccount(account));
 }
 
+function quotaRotationCandidates(config, selectedId) {
+  const pool = config.mode === "auto"
+    ? eligibleGeminiQuotaAccounts()
+    : eligibleGeminiQuotaAccounts().filter((account) => config.accountIds.includes(quotaAccountId(account)));
+  return pool
+    .filter((account) => quotaAccountId(account) !== selectedId && quotaAccountAvailability(account).canUse)
+    .sort((left, right) => {
+      const leftUsed = Math.max(...Object.values(quotaAccountWindows(left)).map((limit) => Number(limit?.usedFraction || 0)));
+      const rightUsed = Math.max(...Object.values(quotaAccountWindows(right)).map((limit) => Number(limit?.usedFraction || 0)));
+      return leftUsed - rightUsed || String(left.email).localeCompare(String(right.email));
+    });
+}
+
+async function evaluateQuotaRotation() {
+  const operation = quotaRotationWrite.then(async () => {
+    const policy = await syncSafetyPolicy();
+    const checkedAt = new Date().toISOString();
+    const selected = policy.selectedId ? geminiQuotaAccounts().find((account) => quotaAccountId(account) === policy.selectedId) : null;
+    if (!policy.config.rotation.enabled) return quotaRotationState = { ...quotaRotationState, lastCheckedAt: checkedAt, reason: "Tự động xoay đang tắt" };
+    if (!selected || !policy.activeAccountProtected) return quotaRotationState = { ...quotaRotationState, lastCheckedAt: checkedAt, reason: "Account mặc định chưa nằm trong phạm vi Google Protect" };
+    const availability = quotaAccountAvailability(selected);
+    if (availability.status !== "quota_suspended") return quotaRotationState = { ...quotaRotationState, lastCheckedAt: checkedAt, reason: availability.canUse ? "Giữ account hiện tại: quota live còn dùng được" : `Không xoay tự động: ${availability.label}` };
+    const safety = consoleBridge.safety();
+    if (Number(safety.activeTurns || 0) > 0) return quotaRotationState = { ...quotaRotationState, lastCheckedAt: checkedAt, reason: "Đợi các turn đang chạy kết thúc trước khi xoay" };
+    const next = quotaRotationCandidates(policy.config, policy.selectedId)[0];
+    if (!next) return quotaRotationState = { ...quotaRotationState, lastCheckedAt: checkedAt, reason: "Không có account đủ quota trong phạm vi Google Protect" };
+    await updateGeminiDefaultAccount(next);
+    await syncOmpAccountControl(next);
+    await syncSafetyPolicy();
+    return quotaRotationState = {
+      lastCheckedAt: checkedAt,
+      lastRotation: { at: checkedAt, fromAccountId: quotaAccountId(selected), fromEmail: selected.email, toAccountId: quotaAccountId(next), toEmail: next.email, reason: availability.reason },
+      reason: `Đã xoay vì ${availability.label}`,
+    };
+  });
+  quotaRotationWrite = operation.catch((error) => { quotaRotationState = { ...quotaRotationState, lastCheckedAt: new Date().toISOString(), reason: `Không xoay: ${error.message}` }; });
+  return operation;
+}
+
 async function quotaProtectPayload() {
   await ensureQuotaLatest();
   const policy = await syncSafetyPolicy();
@@ -4514,6 +4557,8 @@ async function quotaProtectPayload() {
   const maxConcurrent = Number.isFinite(safety.maxConcurrentTurns) ? Number(safety.maxConcurrentTurns) : null;
   const concurrencyAllowed = maxConcurrent == null || Number(safety.activeTurns || 0) < maxConcurrent;
   const nextRequestAllowed = activeAvailability.canUse && (!policy.config.enabled || !policy.activeAccountProtected || (!safety.blocked && concurrencyAllowed && (!safety.nextRequestAt || Number(safety.nextRequestAt) <= now)));
+  const rotationCandidates = quotaRotationCandidates(policy.config, policy.selectedId);
+  const checkedAt = Date.parse(quotaRotationState.lastCheckedAt || "");
   return {
     enabled: policy.config.enabled,
     mode: policy.config.mode,
@@ -4530,7 +4575,21 @@ async function quotaProtectPayload() {
     errors429Count: Number(safety.recent429Count || 0),
     nextRequestAllowed,
     activeAccountAvailability: activeAvailability,
-    checkIntervalSec: 30,
+    checkIntervalSec: 60,
+    rotation: {
+      enabled: policy.config.rotation.enabled,
+      scope: policy.config.mode,
+      trigger: "quota_live_suspended",
+      historical429: "Giữ account; chỉ áp dụng cooldown, không xoay",
+      activeTurn: "Đợi turn kết thúc; không đổi account giữa turn",
+      candidateCount: rotationCandidates.length,
+      candidateEmails: rotationCandidates.map((account) => account.email),
+      lastCheckedAt: quotaRotationState.lastCheckedAt,
+      nextEvaluationAt: Number.isFinite(checkedAt) ? new Date(checkedAt + 60_000).toISOString() : null,
+      lastRotation: quotaRotationState.lastRotation,
+      reason: quotaRotationState.reason,
+      status: !policy.config.rotation.enabled ? "● Xoay tự động đang tắt" : quotaRotationState.reason,
+    },
   };
 }
 
@@ -4543,9 +4602,12 @@ async function quotaProtectConfig(req) {
   if (body.enabled !== undefined && typeof body.enabled !== "boolean") throw Object.assign(new Error("enabled phải là boolean."), { code: "BAD_REQUEST", field: "enabled" });
   if (body.mode !== undefined && body.mode !== "auto" && body.mode !== "manual") throw Object.assign(new Error("mode phải là auto hoặc manual."), { code: "BAD_REQUEST", field: "mode" });
   if (body.accountIds !== undefined && (!Array.isArray(body.accountIds) || body.accountIds.some((id) => typeof id !== "string"))) throw Object.assign(new Error("accountIds phải là mảng chuỗi."), { code: "BAD_REQUEST", field: "accountIds" });
+  if (body.rotation !== undefined && (!body.rotation || typeof body.rotation !== "object" || Array.isArray(body.rotation) || (body.rotation.enabled !== undefined && typeof body.rotation.enabled !== "boolean"))) throw Object.assign(new Error("rotation.enabled phải là boolean."), { code: "BAD_REQUEST", field: "rotation" });
   const knownIds = new Set(eligibleGeminiQuotaAccounts().map(quotaAccountId));
   const accountIds = body.accountIds === undefined ? current.accountIds : [...new Set(body.accountIds.map((id) => id.trim()).filter((id) => knownIds.has(id)))];
-  await saveProtectConfig({ enabled: body.enabled === undefined ? current.enabled : body.enabled, mode: body.mode === undefined ? current.mode : body.mode, accountIds });
+  const rotation = body.rotation === undefined ? current.rotation : { enabled: body.rotation.enabled === undefined ? current.rotation.enabled : body.rotation.enabled };
+  await saveProtectConfig({ enabled: body.enabled === undefined ? current.enabled : body.enabled, mode: body.mode === undefined ? current.mode : body.mode, accountIds, rotation });
+  await evaluateQuotaRotation().catch(() => {});
   return quotaProtectPayload();
 }
 

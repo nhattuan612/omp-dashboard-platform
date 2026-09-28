@@ -221,10 +221,15 @@ async function fakeOmp(args) {
       const fixture = JSON.parse(await readFile(homePath(process.env.HOME || "", "usage-dashboard", "test-disabled-credentials.json"), "utf8"));
       if (Array.isArray(fixture)) disabledCredentials = fixture;
     } catch { /* optional fixture */ }
+    let primaryQuotaFraction = 0.1;
+    try {
+      const value = Number((await readFile(homePath(process.env.HOME || "", "usage-dashboard", "test-rotation-primary-quota.txt"), "utf8")).trim());
+      if (value >= 0 && value <= 1) primaryQuotaFraction = value;
+    } catch { /* optional fixture */ }
     process.stdout.write(`${JSON.stringify({ reports: [
       { provider: "google-antigravity", metadata: { email: "smoke-google@example.test" }, limits: [
-        { id: "gemini-smoke-5h", label: "Gemini 5h", window: { id: "5h", label: "5h", durationMs: 18000000 }, amount: { used: 10, usedFraction: 0.1, remaining: 90, limit: 100 } },
-        { id: "gemini-smoke-weekly", label: "Gemini Weekly", window: { id: "weekly", label: "weekly", durationMs: 604800000 }, amount: { used: 15, usedFraction: 0.15, remaining: 85, limit: 100 } },
+        { id: "gemini-smoke-5h", label: "Gemini 5h", window: { id: "5h", label: "5h", durationMs: 18000000 }, amount: { used: primaryQuotaFraction * 100, usedFraction: primaryQuotaFraction, remaining: (1 - primaryQuotaFraction) * 100, limit: 100 } },
+        { id: "gemini-smoke-weekly", label: "Gemini Weekly", window: { id: "weekly", label: "weekly", durationMs: 604800000 }, amount: { used: primaryQuotaFraction * 100, usedFraction: primaryQuotaFraction, remaining: (1 - primaryQuotaFraction) * 100, limit: 100 } },
         { id: "shared-smoke-5h", label: "Claude & GPT (shared) 5h", window: { id: "5h", label: "5h", durationMs: 18000000 }, amount: { used: 25, usedFraction: 0.25, remaining: 75, limit: 100 } },
         { id: "shared-smoke-weekly", label: "Claude & GPT (shared) Weekly", window: { id: "weekly", label: "weekly", durationMs: 604800000 }, amount: { used: 35, usedFraction: 0.35, remaining: 65, limit: 100 } },
       ] },
@@ -779,6 +784,8 @@ async function runContract() {
       assert.ok(quotaDashboard.includes("['blocked','error','auth_error','access_error','transient_error'].includes(raw.generationStatus)"));
       assert.ok(quotaDashboard.includes("id=\"ompAccountControl\""));
       assert.ok(quotaDashboard.includes("ompControl: '/api/v1/quota/omp-control'"));
+      assert.ok(quotaDashboard.includes('id="safetyRotationEnabled"'));
+      assert.ok(quotaDashboard.includes('id="rotationReason"'));
     }
     passes.push("Quota UI keeps historical 429 as warning and exposes the external OMP account control");
 
@@ -1122,6 +1129,25 @@ async function runContract() {
     assert.equal(restoredControlledDefault.status, 200);
     assert.equal(await readFile(ompSelectionPath, "utf8"), ompSelectionSentinel, "OMP control must not reuse the legacy terminal-global preference file");
     passes.push("OMP account control locks new external OMP sessions to the selected Quota account without changing legacy preference state");
+
+    const protectRotationOff = await api("GET", "/api/v1/quota/protect-status");
+    assert.equal(protectRotationOff.payload.rotation?.enabled, false);
+    const protectRotationOn = await api("POST", "/api/v1/quota/protect-config", { rotation: { enabled: true } });
+    assert.equal(protectRotationOn.status, 200);
+    assert.equal(protectRotationOn.payload.rotation?.enabled, true);
+    const rotationQuotaFixture = homePath(home, "usage-dashboard", "test-rotation-primary-quota.txt");
+    await writeFile(rotationQuotaFixture, "0.95\n", { mode: 0o600 });
+    const rotationSync = await api("POST", "/api/v1/quota/sync", {});
+    assert.equal(rotationSync.status, 200);
+    assert.equal((await api("GET", "/api/v1/quota/models")).payload.account.id, dailyFullAccount.id, "rotation must select the eligible account with the most live quota remaining");
+    const rotatedProtect = await api("GET", "/api/v1/quota/protect-status");
+    assert.equal(rotatedProtect.payload.rotation?.lastRotation?.fromAccountId, googleAccount.id);
+    assert.equal(rotatedProtect.payload.rotation?.lastRotation?.toAccountId, dailyFullAccount.id);
+    await api("POST", "/api/v1/quota/protect-config", { rotation: { enabled: false } });
+    await rm(rotationQuotaFixture, { force: true });
+    await api("POST", "/api/v1/quota/sync", {});
+    await api("POST", "/api/v1/quota/switch", { accountId: googleAccount.id });
+    passes.push("Google Protect rotates only future defaults after live quota suspension and exposes the decision");
 
     const autoImageTurn = await api("POST", "/api/v1/chat/send", {
       sessionId: parent.id,
