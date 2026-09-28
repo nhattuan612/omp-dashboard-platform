@@ -1662,6 +1662,23 @@ async function runContract() {
     const geminiPromptIndex = parentContextFrames.findIndex((frame, index) => index > geminiModelIndex && frame.type === "prompt" && String(frame.message || "").includes("first Gemini turn pins before generation"));
     assert.ok(parentPinIndex >= 0 && geminiModelIndex > parentPinIndex && geminiPromptIndex > geminiModelIndex, "the exact local Gemini pin must precede model selection and generation");
     passes.push("a Gemini session is pinned before its first model selection and generation");
+    const hydrationSession = await createFixture("Gemini pin hydration during active turn");
+    const hydrationMetadata = JSON.parse(await readFile(localChatMetadataPath, "utf8"));
+    hydrationMetadata.sessions[hydrationSession.id] = {
+      ...(hydrationMetadata.sessions[hydrationSession.id] || {}),
+      geminiAccountId: googleAccount.id,
+      geminiProvider: googleAccount.providerKey,
+      geminiAccountSelectedAt: Date.now(),
+    };
+    await writeFile(localChatMetadataPath, `${JSON.stringify(hydrationMetadata)}\n`, { mode: 0o600 });
+    const hydrationBlocker = await openStream(hydrationSession.id, "CONCURRENT_SLOW_GEMINI_HYDRATION_BLOCKER", `gemini-hydration-blocker-${randomUUID()}`, [], "smoke-external-model", "omp");
+    await hydrationBlocker.reader.waitFor((event) => event.event === "lifecycle" && event.data.type === "turn_start", "Gemini hydration blocker start");
+    const hydrationGemini = await openStream(hydrationSession.id, "CONCURRENT_GEMINI_METADATA_HYDRATION", `gemini-hydration-${randomUUID()}`);
+    await Promise.all([
+      hydrationBlocker.reader.waitFor((event) => event.event === "end", "Gemini hydration blocker end"),
+      hydrationGemini.reader.waitFor((event) => event.event === "end", "Gemini hydration queued end"),
+    ]);
+    passes.push("persisted Gemini pin is restored before checking an active session turn");
     const concurrentA = await createFixture("Concurrent session A");
     const concurrentB = await createFixture("Concurrent session B");
     const concurrentFirst = await openStream(concurrentA.id, "CONCURRENT_SLOW", `concurrent-a-${randomUUID()}`);
