@@ -1,6 +1,6 @@
 {
   "name": "hon-pi-omp-dashboard-product",
-  "version": "2026.09.26",
+  "version": "2026.09.28",
   "entrypoints": {
     "chat": "/chat",
     "quota": "/quota",
@@ -12,6 +12,7 @@
     "acp-worker.mjs",
     "acp-session-context.mjs",
     "gemini-account-pin-extension.mjs",
+    "omp-account-preference.js",
     "honpi-dashboard-mark-8138753b.png",
     "honpi-chat-dashboard-SKE.html",
     "honpi-quota-dashboard-SKE.html",

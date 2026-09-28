@@ -777,8 +777,10 @@ async function runContract() {
     passes.push("frontend exposes attachment, copy, prompt-revision, branch, markdown-table, and OMP file-change controls");
     for (const quotaDashboard of quotaDashboards) {
       assert.ok(quotaDashboard.includes("['blocked','error','auth_error','access_error','transient_error'].includes(raw.generationStatus)"));
+      assert.ok(quotaDashboard.includes("id=\"ompAccountControl\""));
+      assert.ok(quotaDashboard.includes("ompControl: '/api/v1/quota/omp-control'"));
     }
-    passes.push("historical quota 429 uses warning styling instead of a critical account state");
+    passes.push("Quota UI keeps historical 429 as warning and exposes the external OMP account control");
 
     async function api(method, path, body) {
       const response = await fetch(`${baseUrl}${path}`, {
@@ -1101,6 +1103,25 @@ async function runContract() {
     assert.equal(googleModelAccess.payload.models.find((model) => model.id === "smoke-model")?.isDefault, true);
     assert.equal(await readFile(ompSelectionPath, "utf8"), ompSelectionSentinel, "quota selection must not rewrite OMP's terminal-global selected account");
     passes.push("Google Antigravity quota lists its full provider catalog and requires explicit selection without changing OMP global state");
+
+    const ompControlOff = await api("GET", "/api/v1/quota/omp-control");
+    assert.equal(ompControlOff.status, 200);
+    assert.equal(ompControlOff.payload.enabled, false);
+    const ompControlOn = await api("POST", "/api/v1/quota/omp-control", { enabled: true });
+    assert.equal(ompControlOn.status, 200, `OMP account control enable failed: ${JSON.stringify(ompControlOn.payload)}`);
+    assert.equal(ompControlOn.payload.enabled, true);
+    assert.equal(ompControlOn.payload.accountId, googleAccount.id);
+    const controlledDefault = await api("POST", "/api/v1/quota/switch", { accountId: googleAltAccount.id });
+    assert.equal(controlledDefault.status, 200);
+    const ompControlMoved = await api("GET", "/api/v1/quota/omp-control");
+    assert.equal(ompControlMoved.payload.accountId, googleAltAccount.id, "active OMP control must follow the manually selected Quota account");
+    const ompControlOffAgain = await api("POST", "/api/v1/quota/omp-control", { enabled: false });
+    assert.equal(ompControlOffAgain.status, 200);
+    assert.equal(ompControlOffAgain.payload.enabled, false);
+    const restoredControlledDefault = await api("POST", "/api/v1/quota/switch", { accountId: googleAccount.id });
+    assert.equal(restoredControlledDefault.status, 200);
+    assert.equal(await readFile(ompSelectionPath, "utf8"), ompSelectionSentinel, "OMP control must not reuse the legacy terminal-global preference file");
+    passes.push("OMP account control locks new external OMP sessions to the selected Quota account without changing legacy preference state");
 
     const autoImageTurn = await api("POST", "/api/v1/chat/send", {
       sessionId: parent.id,

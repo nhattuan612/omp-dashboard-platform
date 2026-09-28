@@ -24,6 +24,7 @@ const OMP_ENV = {
 const STATE_FILE = `${ROOT}/state.json`;
 const SELECTED_ACCOUNT_FILE = `${ROOT}/selected-account.json`;
 const PROTECT_CONFIG_FILE = `${ROOT}/protect-config.json`;
+const OMP_ACCOUNT_CONTROL_FILE = `${ROOT}/omp-account-control.json`;
 const ACCOUNT_COLORS_FILE = `${ROOT}/account-colors.json`;
 const CHAT_METADATA_FILE = `${ROOT}/chat-metadata.json`;
 const CHAT_MEDIA_ROOT = join(ROOT, "chat-media");
@@ -827,6 +828,37 @@ function tokenSummary(items) {
 async function selectedAccount() {
   try { return JSON.parse(await readFile(SELECTED_ACCOUNT_FILE, "utf8")); }
   catch { return null; }
+}
+
+function normalizeOmpAccountControl(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const accountId = typeof source.accountId === "string" ? source.accountId.trim() : "";
+  const provider = typeof source.provider === "string" ? source.provider.trim().toLowerCase() : "";
+  return {
+    enabled: source.enabled === true && /^acc-[a-f0-9]{12}$/.test(accountId) && provider === LOGIN_PROVIDER,
+    accountId,
+    provider,
+    email: typeof source.email === "string" ? source.email.trim().toLowerCase() : "",
+  };
+}
+
+async function readOmpAccountControl() {
+  try { return normalizeOmpAccountControl(JSON.parse(await readFile(OMP_ACCOUNT_CONTROL_FILE, "utf8"))); }
+  catch { return normalizeOmpAccountControl(null); }
+}
+
+async function saveOmpAccountControl(value) {
+  const control = normalizeOmpAccountControl(value);
+  const temporaryFile = `${OMP_ACCOUNT_CONTROL_FILE}.${randomUUID()}.tmp`;
+  try {
+    await mkdir(ROOT, { recursive: true, mode: 0o700 });
+    await writeFile(temporaryFile, `${JSON.stringify(control, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+    await rename(temporaryFile, OMP_ACCOUNT_CONTROL_FILE);
+    return control;
+  } catch {
+    await rm(temporaryFile, { force: true }).catch(() => {});
+    throw Object.assign(new Error("Không thể lưu KHỐNG CHẾ OMP."), { code: "INTERNAL_SERVER_ERROR" });
+  }
 }
 
 function normalizeProtectConfig(value) {
@@ -4427,6 +4459,44 @@ async function quotaOverviewPayload() {
   };
 }
 
+function ompControlForAccount(account) {
+  return { enabled: true, accountId: quotaAccountId(account), provider: account.provider, email: account.email };
+}
+
+async function quotaOmpControlPayload() {
+  await ensureQuotaLatest();
+  const control = await readOmpAccountControl();
+  const selection = await readGeminiSelection();
+  const selected = geminiQuotaAccounts().find((account) => quotaAccountId(account) === selection.accountId) || null;
+  const enforced = control.enabled ? geminiQuotaAccounts().find((account) => quotaAccountId(account) === control.accountId) || null : null;
+  return {
+    enabled: control.enabled,
+    accountId: control.enabled ? control.accountId : null,
+    email: control.enabled ? control.email : null,
+    selectedAccountId: selected ? quotaAccountId(selected) : null,
+    selectedEmail: selected?.email || null,
+    status: !control.enabled ? "● Đã tắt KHỐNG CHẾ OMP" : enforced ? `● Đang khóa ${enforced.email}` : "● Account đã khóa không còn khả dụng",
+  };
+}
+
+async function quotaOmpControl(req) {
+  if (req.method === "GET") return quotaOmpControlPayload();
+  const body = await jsonBody(req);
+  if (!body || Array.isArray(body) || typeof body.enabled !== "boolean") throw Object.assign(new Error("enabled phải là boolean."), { code: "BAD_REQUEST", field: "enabled" });
+  if (!body.enabled) {
+    await saveOmpAccountControl({ enabled: false });
+    return quotaOmpControlPayload();
+  }
+  const { account, availability } = await selectedGeminiAccountState();
+  if (!availability.canUse) throw Object.assign(new Error(availability.reason), { code: "ACCOUNT_UNAVAILABLE", field: "accountId" });
+  await saveOmpAccountControl(ompControlForAccount(account));
+  return quotaOmpControlPayload();
+}
+
+async function syncOmpAccountControl(account) {
+  if ((await readOmpAccountControl()).enabled) await saveOmpAccountControl(ompControlForAccount(account));
+}
+
 async function quotaProtectPayload() {
   await ensureQuotaLatest();
   const policy = await syncSafetyPolicy();
@@ -4552,6 +4622,8 @@ async function deleteQuotaAccount(accountId) {
   await clearGeminiDefaultAccount(quotaAccountId(account));
   const protectConfig = await readProtectConfig();
   await saveProtectConfig({ ...protectConfig, accountIds: protectConfig.accountIds.filter((id) => id !== String(accountId)) });
+  const ompControl = await readOmpAccountControl();
+  if (ompControl.enabled && ompControl.accountId === quotaAccountId(account)) await saveOmpAccountControl({ enabled: false });
   historyCache = { loadedAt: 0, items: [] };
   await refresh();
   await syncSafetyPolicy();
@@ -4579,6 +4651,7 @@ async function quotaSwitchAccount(req) {
     await pinGeminiSession(record, sessionId, account);
   } else {
     await updateGeminiDefaultAccount(account);
+    await syncOmpAccountControl(account);
   }
   await syncSafetyPolicy();
   broadcastStatus();
@@ -4644,6 +4717,7 @@ const server = http.createServer(async (req, res) => {
       "/api/v1/quota/overview",
       "/api/v1/quota/protect-status",
       "/api/v1/quota/protect-config",
+      "/api/v1/quota/omp-control",
       "/api/v1/quota/history",
       "/api/v1/quota/quick-check",
       "/api/v1/quota/models",
@@ -4658,6 +4732,7 @@ const server = http.createServer(async (req, res) => {
       if (route === "/api/v1/quota/overview" && req.method === "GET") return json(res, 200, await quotaOverviewPayload());
       if (route === "/api/v1/quota/protect-status" && req.method === "GET") return json(res, 200, await quotaProtectPayload());
       if (route === "/api/v1/quota/protect-config" && (req.method === "GET" || req.method === "POST")) return json(res, 200, await quotaProtectConfig(req));
+      if (route === "/api/v1/quota/omp-control" && (req.method === "GET" || req.method === "POST")) return json(res, 200, await quotaOmpControl(req));
       if (route === "/api/v1/quota/history" && req.method === "GET") return json(res, 200, await quotaHistoryPayload(requestUrl.searchParams.get("scope")));
       if (route === "/api/v1/quota/quick-check" && req.method === "GET") return json(res, 200, await quotaQuickCheckPayload());
       if (route === "/api/v1/quota/switch" && req.method === "POST") return json(res, 200, await quotaSwitchAccount(req));
