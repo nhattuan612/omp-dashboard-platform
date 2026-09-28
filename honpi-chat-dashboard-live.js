@@ -5,7 +5,7 @@
   const API = '/api/v1';
   const BROWSER_MODE_PREFERENCE_VERSION = 'manual-v1';
   const initialBrowserMode = localStorage.getItem('omp.browserModePreferenceVersion') === BROWSER_MODE_PREFERENCE_VERSION ? localStorage.getItem('omp.browserMode') : 'none';
-  const state = { sessions: [], nextCursor: null, activeId: null, generation: 0, messages: [], models: [], activeModel: null, controller: null, requestId: null, activeRequest: null, createPromise: null, menu: null, folderMenu: null, quota: null, accounts: [], attachments: [], workspaceFiles: [], workspaceMention: '@', capabilities: null, selectedTools: [], toolsUpdating: false, folderExpanded: new Set(), folderCollapsed: new Set(), thinking: localStorage.getItem('omp.thinking') || 'max', browserMode: initialBrowserMode === 'ego-browser' ? 'ego-browser' : 'none', shareMode: localStorage.getItem('omp.shareMode') || 'encrypted', approvalMode: localStorage.getItem('omp.approvalMode') || 'always-ask', enterBehavior: localStorage.getItem('omp.enterBehavior') || 'queue', conversationDisplay: localStorage.getItem('omp.conversationDisplay') || 'compact', pendingPrompts: [], queuePaused: false, queueDraining: false, browserAction: null, browserStatus: null, media: { screenCapture: { status: 'unavailable', reason: 'Native screen capture is not provided by OMP dashboard.' }, camera: { status: 'unavailable' }, microphone: { status: 'unavailable' }, video: { status: 'unavailable' } } };
+  const state = { sessions: [], nextCursor: null, activeId: null, generation: 0, messages: [], models: [], activeModel: null, controller: null, requestId: null, activeRequest: null, createPromise: null, menu: null, folderMenu: null, quota: null, accounts: [], attachments: [], workspaceFiles: [], workspaceMention: '@', capabilities: null, selectedTools: [], toolsUpdating: false, folderExpanded: new Set(), folderCollapsed: new Set(), thinking: localStorage.getItem('omp.thinking') || 'max', browserMode: initialBrowserMode === 'ego-browser' ? 'ego-browser' : 'none', shareMode: localStorage.getItem('omp.shareMode') || 'encrypted', approvalMode: localStorage.getItem('omp.approvalMode') || 'always-ask', enterBehavior: localStorage.getItem('omp.enterBehavior') || 'queue', conversationDisplay: localStorage.getItem('omp.conversationDisplay') || 'compact', pendingPrompts: [], queuePausedSessions: new Map(), editingQueueId: null, browserAction: null, browserStatus: null, media: { screenCapture: { status: 'unavailable', reason: 'Native screen capture is not provided by OMP dashboard.' }, camera: { status: 'unavailable' }, microphone: { status: 'unavailable' }, video: { status: 'unavailable' } } };
   state.enterBehavior = 'send';
   state.modelAccess = null;
   state.modelAccessInitialized = false;
@@ -53,6 +53,11 @@
   }
   state.optimisticTitles = new Map();
   const DEFAULT_SESSION_TITLE = 'Phiên làm việc mới';
+  const MAX_WEB_PENDING_PROMPTS = 32;
+  const queueKey = (sessionId) => sessionId || '__draft__';
+  const queueIsPaused = (sessionId) => state.queuePausedSessions.has(queueKey(sessionId));
+  const pauseQueue = (sessionId, reason = 'previous_turn_failed') => { state.queuePausedSessions.set(queueKey(sessionId), reason); renderQueueTray(); };
+  const resumeQueue = (sessionId) => { state.queuePausedSessions.delete(queueKey(sessionId)); renderQueueTray(); };
   const sessionHasQueuedPrompt = (sessionId) => state.pendingPrompts.some((item) => item.sessionId === sessionId);
   const setGreetingVisible = (visible) => {
     const greeting = $('greetingSection');
@@ -1365,7 +1370,10 @@
     const next = Array.isArray(messages) ? [...messages] : [];
     const index = queueId ? next.findIndex((message) => message.queueId === queueId) : -1;
     if (index >= 0) next[index] = user;
-    else if (!next.some((message) => message.requestId === user.requestId)) next.push(user);
+    else if (!next.some((message) => message.requestId === user.requestId)) {
+      const firstQueued = next.findIndex((message) => message.queueId && !message.requestId);
+      if (firstQueued >= 0) next.splice(firstQueued, 0, user); else next.push(user);
+    }
     return next;
   }
   function upsertAssistantMessage(messages, requestId, assistant) {
@@ -1385,6 +1393,7 @@
       renderMessageAttachments(wrap, message.attachments);
       if (text(message.content).trim()) { const bubble = document.createElement('div'); bubble.className = 'user-msg-bubble'; bubble.textContent = text(message.content); wrap.append(bubble); }
       const footer = document.createElement('div'); footer.className = 'user-msg-footer'; const time = document.createElement('span'); time.className = 'user-msg-time'; time.textContent = new Date(message.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      if (message.queueId && !message.requestId) { const queueStatus = document.createElement('span'); queueStatus.className = 'user-msg-queue-status'; queueStatus.textContent = 'Đang chờ web gửi'; queueStatus.setAttribute('aria-label', 'Đang chờ web gửi'); footer.append(queueStatus); }
       const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'user-msg-act-btn'; copy.textContent = '⧉'; copy.title = 'Sao chép prompt'; copy.setAttribute('aria-label', 'Sao chép prompt'); copy.addEventListener('click', () => void copyText(message.content, 'prompt'));
       const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'user-msg-act-btn'; edit.textContent = '✎'; edit.title = 'Chỉnh prompt trong ô nhập'; edit.setAttribute('aria-label', edit.title); edit.addEventListener('click', () => editUserPrompt(message));
       footer.append(time, copy, edit); wrap.append(footer); return wrap;
@@ -1474,6 +1483,7 @@
   async function selectSession(id, quiet = false, options = {}) {
     const session = state.sessions.find((item) => item.id === id);
     if (!session) { if (!quiet) notify('Không tìm thấy cuộc trò chuyện được chọn.', true); return false; }
+    if (state.editingQueueId && state.activeId !== id) cancelQueueEdit(true);
     const previousId = state.activeId;
     if (previousId && previousId !== id) {
       rememberRetry(previousId);
@@ -1608,9 +1618,14 @@
     let item = context.queueId ? state.pendingPrompts.find((candidate) => candidate.id === context.queueId) : null;
     if (!item) {
       item = enqueuePrompt(prompt, context.sessionId, { settings: context.settings, attachments: context.attachments });
-      state.pendingPrompts = [item, ...state.pendingPrompts.filter((candidate) => candidate.id !== item.id)];
     }
-    state.queuePaused = false;
+    if (!item) return;
+    item.prompt = prompt;
+    item.settings = cloneSnapshot(context.settings);
+    item.attachments = cloneSnapshot(context.attachments);
+    item.status = 'priority';
+    state.pendingPrompts = [item, ...state.pendingPrompts.filter((candidate) => candidate.id !== item.id)];
+    resumeQueue(context.sessionId);
     renderQueueTray();
     void drainQueue(context.sessionId);
   }
@@ -1914,13 +1929,15 @@
     const serverItems = serverQueueItems();
     const localItems = state.pendingPrompts.filter((item) => item.sessionId === state.activeId || (!state.activeId && !item.sessionId));
     const serverPaused = serverItems.some((request) => request.queueState?.phase === 'paused');
-    const visible = serverItems.length > 0 || localItems.length > 0 || state.queuePaused;
+    const localPaused = queueIsPaused(state.activeId) || localItems.some((item) => item.status === 'paused');
+    const localRequest = activeRequest();
+    const visible = serverItems.length > 0 || localItems.length > 0 || localPaused;
     tray.hidden = !visible; tray.style.display = visible ? '' : 'none'; list.replaceChildren();
     const banner = $('queueStatusBanner');
     if (banner) {
       const bannerText = document.createElement('span');
       bannerText.className = 'queue-status-banner-text';
-      bannerText.textContent = serverPaused ? 'Hàng chờ tạm dừng sau lỗi/lượt bị dừng' : state.queuePaused ? 'Hàng chờ đang tạm dừng sau khi lượt trước dừng/lỗi' : 'Hàng chờ server FIFO của chat này';
+      bannerText.textContent = serverPaused ? 'Hàng chờ server tạm dừng sau lỗi/lượt bị dừng' : localPaused ? 'Hàng chờ web tạm dừng sau lỗi/lượt bị dừng' : localRequest && localItems.length ? `Đang gửi lên OMP · ${localItems.length} lượt đang chờ web` : localItems.length ? 'Hàng chờ web' : 'Hàng chờ server FIFO của chat này';
       const bannerLeft = document.createElement('div');
       bannerLeft.className = 'queue-status-banner-left';
       bannerLeft.append(bannerText);
@@ -1950,7 +1967,7 @@
     localItems.forEach((item, index) => {
       const settings = item.settings || {};
       const attachments = item.attachments || [];
-      const statusLabel = { queued: 'Đang chờ', paused: 'Tạm dừng', running: 'Đang gửi' }[item.status] || item.status || 'Đang chờ';
+      const statusLabel = { queued: 'Đang chờ web', priority: 'Đang được ưu tiên', paused: 'Tạm dừng sau lỗi', editing: 'Đang chỉnh sửa', running: 'Đang gửi lên OMP' }[item.status] || item.status || 'Đang chờ web';
       const sessionLabel = item.sessionId || 'đang tạo session…';
       const technicalMeta = `Session ${sessionLabel} · ${item.status || 'queued'} · ${settings.model || 'model mặc định'} · ${settings.thinking || 'mặc định'} · browser ${settings.browserMode || 'mặc định'} · approval ${settings.approvalMode || 'mặc định'} · tools ${(settings.tools || []).length} · tệp: ${queueAttachmentSummary(attachments)}`;
       const row = document.createElement('div');
@@ -1968,16 +1985,46 @@
       });
       content.append(prompt, meta); if (attachments.length) content.append(previews);
       const actions = document.createElement('div'); actions.className = 'queue-turn-actions';
-      const firstForSession = state.pendingPrompts.find((candidate) => candidate.sessionId === item.sessionId);
       const order = serverItems.length + index + 1;
       const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'btn-queue-inline-save'; edit.textContent = 'Sửa'; edit.setAttribute('aria-label', `Sửa order ${order}`); edit.addEventListener('click', () => editQueuedPrompt(item));
-      const send = document.createElement('button'); send.type = 'button'; send.className = 'btn-queue-steer'; send.textContent = 'Gửi ngay'; send.disabled = Boolean(activeRequest()) || Boolean(item.sessionId && firstForSession?.id !== item.id); send.addEventListener('click', () => void sendQueuedPrompt(item));
+      const send = document.createElement('button'); send.type = 'button'; send.className = 'btn-queue-steer'; send.textContent = item.status === 'priority' ? 'Đã ưu tiên' : 'Gửi ngay'; send.disabled = item.status === 'editing' || item.status === 'priority'; send.addEventListener('click', () => void sendQueuedPrompt(item));
       const discard = document.createElement('button'); discard.type = 'button'; discard.className = 'btn-queue-icon-action btn-queue-trash'; discard.textContent = '×'; discard.title = 'Bỏ order'; discard.setAttribute('aria-label', `Bỏ order ${order}`); discard.addEventListener('click', () => discardQueuedPrompt(item.id));
       actions.append(edit, send, discard); row.append(content, actions); list.append(row);
     });
   }
   function renderQueuedPreview(item) {
-    item.previewRendered = false;
+    if (!item?.sessionId) return;
+    const message = { role: 'user', content: item.prompt, createdAt: item.createdAt, attachments: cloneSnapshot(item.attachments), queueId: item.id };
+    const append = (messages) => (messages || []).some((candidate) => candidate.queueId === item.id) ? messages : [...(messages || []), message];
+    if (state.activeId === item.sessionId) {
+      if (!state.messages.some((candidate) => candidate.queueId === item.id)) state.messages = append(state.messages);
+      const stream = $('chatStream');
+      if (stream && ![...(stream.children || [])].some((node) => node.dataset.queuePreviewId === item.id)) stream.append(messageNode(message));
+    } else {
+      const view = state.sessionViews.get(item.sessionId) || { messages: [], transientNodes: [], volatile: true, scrollTop: 0 };
+      view.messages = append(view.messages);
+      view.volatile = true;
+      state.sessionViews.set(item.sessionId, view);
+    }
+    item.previewRendered = true;
+    syncGreeting();
+  }
+  function updateQueuedPreview(item) {
+    const message = { role: 'user', content: item.prompt, createdAt: item.createdAt, attachments: cloneSnapshot(item.attachments), queueId: item.id };
+    if (state.activeId === item.sessionId) {
+      state.messages = state.messages.map((candidate) => candidate.queueId === item.id ? message : candidate);
+      const stream = $('chatStream');
+      const node = [...(stream?.children || [])].find((candidate) => candidate.dataset.queuePreviewId === item.id);
+      if (node) node.replaceWith(messageNode(message));
+      else renderQueuedPreview(item);
+    } else if (item.sessionId) {
+      const view = state.sessionViews.get(item.sessionId) || { messages: [], transientNodes: [], volatile: true, scrollTop: 0 };
+      view.messages = (view.messages || []).map((candidate) => candidate.queueId === item.id ? message : candidate);
+      view.volatile = true;
+      state.sessionViews.set(item.sessionId, view);
+    }
+    item.previewRendered = true;
+    syncGreeting();
   }
   function renderSessionQueuePreviews(sessionId) {
     if (state.activeId !== sessionId) return;
@@ -1988,7 +2035,7 @@
       if (!item.sessionId) return;
       const view = state.sessionViews.get(item.sessionId);
       if (!view) return;
-      view.messages = (view.messages || []).filter((message) => message.queueId !== item.id);
+      view.messages = (view.messages || []).filter((message) => message.queueId !== item.id && message.requestId !== item.lastRequestId);
       view.volatile = Boolean(
         requestsForSession(item.sessionId).length
         || state.startedSessions.has(item.sessionId)
@@ -2003,18 +2050,19 @@
       return;
     }
     const stream = $('chatStream');
-    [...(stream?.children || [])].find((node) => node.dataset.queuePreviewId === item.id)?.remove();
-    state.messages = state.messages.filter((message) => message.queueId !== item.id);
+    [...(stream?.children || [])].filter((node) => node.dataset.queuePreviewId === item.id || node.dataset.requestId === item.lastRequestId).forEach((node) => node.remove());
+    state.messages = state.messages.filter((message) => message.queueId !== item.id && message.requestId !== item.lastRequestId);
     clearCachedPreview();
     item.previewRendered = false;
     syncGreeting();
   }
   function enqueuePrompt(prompt, sessionId = null, options = {}) {
+    if (state.pendingPrompts.filter((item) => item.sessionId === sessionId).length >= MAX_WEB_PENDING_PROMPTS) { notify(`Hàng chờ tối đa ${MAX_WEB_PENDING_PROMPTS} order cho chat này.`, true); return null; }
     const item = { id: nextRequestId('queue'), prompt, sessionId, status: 'queued', createdAt: new Date().toISOString(), attachments: cloneSnapshot(options.attachments ?? state.attachments), settings: cloneSnapshot(options.settings ?? snapshotSettings()), previewRendered: false };
     state.pendingPrompts.push(item);
     if (!options.deferPreview) renderQueuedPreview(item);
     renderQueueTray();
-    notify(`Đã nhận lượt thứ ${state.pendingPrompts.length} vào hàng chờ`);
+    notify(`Đã nhận lượt thứ ${state.pendingPrompts.filter((candidate) => candidate.sessionId === sessionId).length} vào hàng chờ web`);
     return item;
   }
   function discardQueuedPrompt(id) {
@@ -2026,10 +2074,27 @@
   function editQueuedPrompt(item) {
     if (item.sessionId && state.activeId !== item.sessionId) { notify('Không sửa order sang session khác; hãy chọn đúng session trước.', true); return; }
     const input = $('chatInput'); if (!input) return;
-    input.value = item.prompt; input.focus();
-    removeQueuedPreview(item);
-    state.pendingPrompts = state.pendingPrompts.filter((candidate) => candidate.id !== item.id);
-    renderQueueTray(); notify('Đã đưa order về ô nhập để sửa; chưa gửi lại.');
+    state.editingQueueId = item.id;
+    item.status = 'editing';
+    input.value = item.prompt;
+    state.attachments = cloneSnapshot(item.attachments || []);
+    renderAttachmentStrip();
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.focus();
+    renderQueueTray(); notify('Đang sửa order; gửi lại sẽ giữ nguyên vị trí. Nhấn Esc để hủy.');
+  }
+  function cancelQueueEdit(silent = false) {
+    if (!state.editingQueueId) return false;
+    const item = state.pendingPrompts.find((candidate) => candidate.id === state.editingQueueId);
+    if (item) item.status = 'queued';
+    state.editingQueueId = null;
+    const input = $('chatInput');
+    if (input) input.value = '';
+    state.attachments = [];
+    renderAttachmentStrip();
+    renderQueueTray();
+    if (!silent) notify('Đã hủy sửa order.');
+    return true;
   }
   function attachUnboundPrompts(sessionId) {
     const items = state.pendingPrompts.filter((candidate) => !candidate.sessionId);
@@ -2045,7 +2110,8 @@
     const created = await createSession({ title: deriveSessionTitle(item.prompt) || DEFAULT_SESSION_TITLE });
     if (!created?.id) return false;
     attachUnboundPrompts(created.id);
-    state.queuePaused = false;
+    resumeQueue(created.id);
+    state.pendingPrompts.filter((candidate) => candidate.sessionId === created.id).forEach(renderQueuedPreview);
     renderQueueTray();
     void drainQueue(created.id);
     return true;
@@ -2054,14 +2120,14 @@
     const created = await createSession({ title: deriveSessionTitle(prompt) || DEFAULT_SESSION_TITLE });
     if (!created?.id) {
       state.pendingPrompts.forEach((item) => { if (!item.sessionId) item.status = 'paused'; });
-      state.queuePaused = state.pendingPrompts.length > 0;
+      if (state.pendingPrompts.some((item) => !item.sessionId)) pauseQueue(null, 'session_create_failed');
       renderQueueTray();
       const input = $('chatInput');
       if (input && !input.value) { input.value = prompt; input.focus(); }
       return false;
     }
     const queued = attachUnboundPrompts(created.id);
-    state.queuePaused = false;
+    resumeQueue(created.id);
     renderQueueTray();
     void startPrompt(prompt, created.id, settings, attachments);
     queued.forEach(renderQueuedPreview);
@@ -2069,22 +2135,21 @@
   }
   async function sendQueuedPrompt(item) {
     if (!item.sessionId) { void ensureQueuedSession(item); return; }
-    if (activeRequest()) { notify('Đang có lượt khác; order vẫn giữ nguyên trong hàng chờ.', true); return; }
-    if (state.activeId !== item.sessionId) { notify('Không gửi order sang session khác; hãy chọn đúng session trước.', true); return; }
-    const firstForSession = state.pendingPrompts.find((candidate) => candidate.sessionId === item.sessionId);
-    if (firstForSession?.id !== item.id) { notify('Giữ đúng thứ tự FIFO: hãy chờ lượt trước.', true); return; }
-    const originalIndex = state.pendingPrompts.indexOf(item);
-    state.pendingPrompts = state.pendingPrompts.filter((candidate) => candidate.id !== item.id);
-    state.queuePaused = false; renderQueueTray();
-    const normal = await startPrompt(item.prompt, item.sessionId, item.settings, item.attachments, { fromQueue: true, item });
-    if (!normal && !state.pendingPrompts.some((candidate) => candidate.id === item.id)) {
-      item.status = 'paused';
-      state.pendingPrompts.splice(Math.min(originalIndex, state.pendingPrompts.length), 0, item);
-      renderQueueTray();
+    const sessionItems = state.pendingPrompts.filter((candidate) => candidate.sessionId === item.sessionId);
+    const itemIndex = state.pendingPrompts.indexOf(item);
+    const sessionFirstIndex = state.pendingPrompts.findIndex((candidate) => candidate.sessionId === item.sessionId);
+    if (itemIndex >= 0 && itemIndex !== sessionFirstIndex) {
+      state.pendingPrompts.splice(itemIndex, 1);
+      state.pendingPrompts.splice(sessionFirstIndex < 0 ? state.pendingPrompts.length : sessionFirstIndex, 0, item);
     }
+    item.status = 'priority';
+    resumeQueue(item.sessionId);
+    renderQueueTray();
+    notify(sessionItems.length > 1 ? 'Đã ưu tiên order; sẽ gửi ngay sau lượt đang chạy.' : 'Đã ưu tiên order.');
+    void drainQueue(item.sessionId);
   }
   async function drainQueue(sessionId) {
-    if (state.queueDrainingSessions.has(sessionId) || state.queuePaused || requestsForSession(sessionId).length) return;
+    if (state.queueDrainingSessions.has(sessionId) || queueIsPaused(sessionId) || requestsForSession(sessionId).length) return;
     const item = state.pendingPrompts.find((candidate) => candidate.sessionId === sessionId);
     if (!item) { renderQueueTray(); return; }
     state.queueDrainingSessions.add(sessionId);
@@ -2097,8 +2162,9 @@
     if (!normal) {
       item.status = 'paused';
       if (!state.pendingPrompts.some((candidate) => candidate.id === item.id)) state.pendingPrompts.splice(Math.min(originalIndex, state.pendingPrompts.length), 0, item);
+      pauseQueue(sessionId, 'previous_turn_failed');
     }
-    if (normal && !state.queuePaused) void drainQueue(sessionId);
+    if (normal && !queueIsPaused(sessionId)) void drainQueue(sessionId);
     else renderQueueTray();
   }
   async function startPrompt(prompt, sessionId, settings = snapshotSettings(), attachments = [], options = {}) {
@@ -2110,7 +2176,8 @@
     const capabilityError = imageGenerationModelError(prompt, model, modelProvider);
     if (capabilityError) { notify(capabilityError, true); return false; }
     const guard = sessionGuard(sessionId, state.generation);
-    const request = { sessionId, requestId: nextRequestId(), controller: new AbortController(), status: 'running', guard, settings: cloneSnapshot({ ...settings, model, modelProvider, modelSource }), prompt, attachments: cloneSnapshot(attachments), createdAt: new Date().toISOString(), mounted: false, queueState: { phase: 'fifo', queueAhead: 1, queuedTurns: 0, retryAfterSeconds: 0 }, queueStateReceived: false, dom: null };
+    const request = { sessionId, requestId: nextRequestId(), controller: new AbortController(), status: 'running', guard, settings: cloneSnapshot({ ...settings, model, modelProvider, modelSource }), prompt, attachments: cloneSnapshot(attachments), createdAt: new Date().toISOString(), mounted: false, queueState: { phase: 'fifo', queueAhead: 0, queuedTurns: 0, retryAfterSeconds: 0 }, queueStateReceived: false, dom: null };
+    if (options.item) options.item.lastRequestId = request.requestId;
     const visibleStream = () => isCurrentSession(guard) ? $('chatStream') : null;
     state.requests.set(request.requestId, request);
     syncRequestAliases();
@@ -2171,8 +2238,14 @@
       if (preview) delete preview.dataset.queuePreviewId;
       if (isCurrentSession(guard)) {
         state.messages = replaceQueuedUserMessage(state.messages, queueItem?.id, user);
-        if (!preview) stream?.append(messageNode(user));
-        stream?.append(wrap);
+        const userNode = messageNode(user);
+        if (preview) {
+          preview.replaceWith(userNode);
+        } else {
+          const firstQueuedPreview = [...(stream?.children || [])].find((node) => node.dataset.queuePreviewId);
+          if (firstQueuedPreview) firstQueuedPreview.before(userNode); else stream?.append(userNode);
+        }
+        userNode.after(wrap);
       } else {
         const view = state.sessionViews.get(sessionId) || { messages: [], transientNodes: [], volatile: true, scrollTop: 0 };
         view.messages = replaceQueuedUserMessage(view.messages, queueItem?.id, user);
@@ -2355,11 +2428,13 @@
       syncRequestAliases();
       if (!requestsForSession(sessionId).length) {
         state.startedSessions.delete(sessionId);
-        if (normalEnd) state.sessionViews.delete(sessionId);
+        if (normalEnd && !sessionHasQueuedPrompt(sessionId)) state.sessionViews.delete(sessionId);
       }
       if (normalEnd && retryQueued && retryPromptText && retryContext && !activeRequest()) { retryQueued = false; setTimeout(() => void retryLastPrompt(), 0); }
+      if (!normalEnd && sessionHasQueuedPrompt(sessionId)) pauseQueue(sessionId, request.controller.signal.aborted ? 'previous_turn_stopped' : 'previous_turn_failed');
       renderQueueTray();
       setSendState();
+      if (normalEnd && !state.queueDrainingSessions.has(sessionId)) queueMicrotask(() => void drainQueue(sessionId));
     }
     return normalEnd;
   }
@@ -2373,23 +2448,42 @@
       const capabilityError = imageGenerationModelError(prompt, promptSettings.model, promptSettings.modelProvider);
       if (capabilityError) { notify(capabilityError, true); return; }
     }
+    const editingQueueId = state.editingQueueId;
     clearRetry(state.activeId);
     const attachments = state.attachments.splice(0);
     const settings = snapshotSettings();
     input.value = '';
     renderAttachmentStrip();
+    if (editingQueueId) {
+      const item = state.pendingPrompts.find((candidate) => candidate.id === editingQueueId);
+      state.editingQueueId = null;
+      if (item) {
+        item.prompt = prompt;
+        item.attachments = cloneSnapshot(attachments);
+        item.settings = cloneSnapshot(settings);
+        item.status = 'queued';
+        updateQueuedPreview(item);
+        renderQueueTray();
+        notify('Đã cập nhật order trong hàng chờ.');
+        if (item.sessionId && !requestsForSession(item.sessionId).length && !queueIsPaused(item.sessionId)) void drainQueue(item.sessionId);
+        return;
+      }
+    }
     if (!state.activeId) {
       if (firstPromptPromise) {
-        firstPromptPromise = firstPromptPromise.then(() => {
-          const sessionId = state.activeId;
-          return sessionId ? startPrompt(prompt, sessionId, settings, attachments) : false;
-        }).catch((error) => { notify(`Không tạo được session OMP: ${error.message}`, true); return false; });
+        enqueuePrompt(prompt, null, { settings, attachments });
         return;
       }
       firstPromptPromise = startInitialPrompt(prompt, settings, attachments).finally(() => { firstPromptPromise = null; });
       return;
     }
-    void startPrompt(prompt, state.activeId, settings, attachments);
+    const sessionId = state.activeId;
+    if (requestsForSession(sessionId).length || state.queueDrainingSessions.has(sessionId) || sessionHasQueuedPrompt(sessionId) || queueIsPaused(sessionId)) {
+      const item = enqueuePrompt(prompt, sessionId, { settings, attachments });
+      if (item && !requestsForSession(sessionId).length && !queueIsPaused(sessionId)) void drainQueue(sessionId);
+      return;
+    }
+    void startPrompt(prompt, sessionId, settings, attachments);
   }
 
   function updateHeaderQuota(overview, accounts) {
@@ -3348,7 +3442,7 @@
       notify(state.draftWorkspaceCwd ? `Workspace chat mới: ${workspaceName(state.draftWorkspaceCwd)}` : 'Chat mới dùng General workspace.');
     }, true);
     $('sendBtn')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); if (event.altKey && visibleRequest()) void stopStream(); else void sendPrompt(); }, true);
-    $('chatInput')?.addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.stopImmediatePropagation(); void sendPrompt(); } }, true);
+    $('chatInput')?.addEventListener('keydown', (event) => { if (event.key === 'Escape' && state.editingQueueId) { event.preventDefault(); event.stopImmediatePropagation(); cancelQueueEdit(); return; } if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.stopImmediatePropagation(); void sendPrompt(); } }, true);
     ['sidebarSearchInput', 'sessionSearchInput'].forEach((id) => $(id)?.addEventListener('input', renderSessions, true));
     $('connectionStatusPill')?.addEventListener('click', async (event) => {
       event.preventDefault(); event.stopImmediatePropagation(); setConnectionStatus('Đang kiểm tra…', 'syncing');
