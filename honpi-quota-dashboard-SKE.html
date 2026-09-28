@@ -387,7 +387,7 @@ input, select { font: inherit; }
 }
 .safety-header {
   display: grid;
-  grid-template-columns: minmax(220px, .8fr) minmax(0, 1.7fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 3fr);
   gap: 16px;
   align-items: stretch;
   padding: 16px;
@@ -412,6 +412,10 @@ input, select { font: inherit; }
   min-width: 0;
   align-items: flex-start;
   gap: 10px;
+  padding: 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--surface-warm);
 }
 .safety-icon-box {
   width: 32px;
@@ -453,12 +457,12 @@ input, select { font: inherit; }
 .safety-policy-card, .safety-rotation-meta > div { min-width: 0; display: grid; gap: 4px; padding: 9px 10px; border: 1px solid var(--border-soft); border-radius: 9px; background: var(--surface); }
 .safety-policy-card strong, .safety-rotation-meta strong { overflow-wrap: anywhere; color: var(--fg); font: 600 10.5px/1.45 var(--font-mono); }
 .safety-policy-card.is-decision { border-color: color-mix(in oklab, var(--success), transparent 50%); background: color-mix(in oklab, var(--success), transparent 93%); }
-.safety-rotation-meta { display: grid; grid-template-columns: 1.5fr 1fr 1fr; gap: 8px; margin-top: 8px; }
+.safety-rotation-meta { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 8px; margin-top: 8px; }
 .safety-metrics-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
-  align-items: center;
+  align-items: stretch;
   padding: 16px;
   font-size: 11.5px;
   width: 100%;
@@ -1747,7 +1751,7 @@ input, select { font: inherit; }
       <div class="safety-metrics-grid">
         <div class="safety-metric-item">
           <span class="safety-metric-label">Request chạy</span>
-          <span class="mono" style="font-weight: 600;"><strong id="safety-active">0 / ∞</strong> <span class="text-muted text-xs">(FIFO theo từng session)</span></span>
+          <span class="mono" style="font-weight: 600;"><strong id="safety-active">0 / ∞</strong> <span class="text-muted text-xs">(FIFO/session)</span></span>
         </div>
         <div class="safety-metric-item">
           <span class="safety-metric-label">Cooldown 429</span>
