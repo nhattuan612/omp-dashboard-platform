@@ -779,6 +779,7 @@ async function runContract() {
     assert.match(chatClient, /const firstQueued = next\.findIndex\(\(message\) => message\.queueId && !message\.requestId\)/);
     assert.match(chatClient, /Đang chờ web gửi/);
     assert.match(chatClient, /Đang gửi lên OMP/);
+    assert.match(chatClient, /\n    \};\n    mountChatTurn\(\);\n    setStreamStatus\('Đang gửi lên OMP…', 'waiting'\);\n    let normalEnd = false;/);
     assert.match(chatClient, /Đã ưu tiên order/);
     assert.ok(chatClient.includes("if (previousId !== id) { void loadQuota(); await loadModels(); }"));
     assert.ok(chatClient.includes("if (state.activeId) {\n      const promptSettings = snapshotSettings();"));
