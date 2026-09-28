@@ -6,6 +6,8 @@
 
 > **Cách đọc báo cáo:** Các phần 4, 5, 7, 11 và một phần 13 giữ lại snapshot/lịch sử tại thời điểm chúng được ghi để truy vết. Phần 14 và các phần 15 trở đi là bản kiểm tra logic và trạng thái mới nhất. Khi số liệu khác nhau, ưu tiên snapshot mới nhất có timestamp và endpoint kiểm chứng.
 
+> **Lưu ý hiện hành — 2026-09-28:** Đây là báo cáo archive 20–21/09. Tất cả email account đã được pseudonym hóa; các đường dẫn `quota-dashboard.html` và `dashboard-live.js` bên dưới chỉ còn giá trị lịch sử. Runtime hiện dùng `/chat`, `/quota`, `honpi-*-SKE.html` và `honpi-chat-dashboard-live.js`; xem `📚-OMP-DASHBOARD-TECHNICAL-REPORTS-IMPORTANT-🔒/00-INDEX-IMPORTANT-🔒.md` để vận hành.
+
 ## 1. Tóm tắt điều hành
 
 OMP Dashboard là bảng điều khiển local dùng để:
@@ -16,7 +18,7 @@ OMP Dashboard là bảng điều khiển local dùng để:
 - Ghi nhận lịch sử sử dụng token theo account, model và thời gian.
 - Làm lớp kết nối cho Gemini CLI/Open Design thông qua OMP Gateway.
 
-Trạng thái hiện tại: dashboard và API đang hoạt động tại `http://127.0.0.1:4177/`; API trả `ok: true`. Tài khoản ưu tiên hiện tại là `bancuachungta123@gmail.com`.
+Trạng thái hiện tại: dashboard và API đang hoạt động tại `http://127.0.0.1:4177/`; API trả `ok: true`. Tài khoản ưu tiên hiện tại là `quota-account-b@redacted.local`.
 
 ## 2. Các địa chỉ và thành phần chính
 
@@ -78,12 +80,12 @@ API hiện nhận diện **6 account**. Các phần trăm dưới đây là số
 
 | Account | Gemini 5 giờ | Gemini tuần | Ghi chú |
 |---|---:|---:|---|
-| `bancuachungta123@gmail.com` | Còn 61.01% | Còn 63.43% | Bình thường |
-| `tuantuoitan006@gmail.com` | Chưa trả về cửa sổ 5 giờ | Còn 24.33% | Tuần đã dùng cao |
-| `tuantuoitan004@gmail.com` | Còn 14.54% | Còn 13.04% | Đang là account ưu tiên, gần quota |
-| `kuayay@gmail.com` | Còn 0.02% | Còn 83.33% | Cửa sổ 5 giờ gần cạn |
-| `tai.mobile081@gmail.com` | Còn 100% | Còn 100% | Dư địa tốt |
-| `aiaprompt00@gmail.com` | Còn 100% | Còn 71.10% | Dư địa tốt |
+| `quota-account-b@redacted.local` | Còn 61.01% | Còn 63.43% | Bình thường |
+| `quota-account-f@redacted.local` | Chưa trả về cửa sổ 5 giờ | Còn 24.33% | Tuần đã dùng cao |
+| `quota-account-e@redacted.local` | Còn 14.54% | Còn 13.04% | Đang là account ưu tiên, gần quota |
+| `quota-account-c@redacted.local` | Còn 0.02% | Còn 83.33% | Cửa sổ 5 giờ gần cạn |
+| `quota-account-d@redacted.local` | Còn 100% | Còn 100% | Dư địa tốt |
+| `quota-account-a@redacted.local` | Còn 100% | Còn 71.10% | Dư địa tốt |
 
 Capacity tổng hợp từ API:
 
@@ -93,7 +95,7 @@ Capacity tổng hợp từ API:
 
 ### Đánh giá vận hành
 
-Account đang ưu tiên `tuantuoitan004@gmail.com` chỉ còn khoảng 14.54% quota 5 giờ và 13.04% quota tuần. Đây là rủi ro vận hành rõ ràng: test Gemini/Open Design tiếp tục trên account này có thể sớm gặp quota error. Khi cần chạy ổn định, nên chuyển sang `tai.mobile081@gmail.com` hoặc `aiaprompt00@gmail.com`, sau đó chạy một prompt test ngắn.
+Account đang ưu tiên `quota-account-e@redacted.local` chỉ còn khoảng 14.54% quota 5 giờ và 13.04% quota tuần. Đây là rủi ro vận hành rõ ràng: test Gemini/Open Design tiếp tục trên account này có thể sớm gặp quota error. Khi cần chạy ổn định, nên chuyển sang `quota-account-d@redacted.local` hoặc `quota-account-a@redacted.local`, sau đó chạy một prompt test ngắn.
 
 ## 5. Snapshot Token History lịch sử
 
@@ -110,7 +112,7 @@ Kết quả kiểm tra trực tiếp từ `/api/history?limit=3`:
 | Reasoning token | 1.553.227 |
 | Tổng token | 512.989.517 |
 
-Ba lượt mới nhất đều dùng account `tuantuoitan004@gmail.com`, model `gemini-3.8-flash`, provider `google-antigravity`. Mỗi lượt có tổng khoảng 195k–197k token, phần lớn là cache read. Điều này giải thích vì sao tổng token history tăng nhanh dù input/output trực tiếp nhỏ hơn nhiều.
+Ba lượt mới nhất đều dùng account `quota-account-e@redacted.local`, model `gemini-3.8-flash`, provider `google-antigravity`. Mỗi lượt có tổng khoảng 195k–197k token, phần lớn là cache read. Điều này giải thích vì sao tổng token history tăng nhanh dù input/output trực tiếp nhỏ hơn nhiều.
 
 History hiện hỗ trợ:
 
@@ -171,7 +173,7 @@ Cách phân biệt nhanh:
 
 - Dashboard API đang trả `ok: true`.
 - Có 6 account được nhận diện.
-- Preference hiện tại trả đúng `tuantuoitan004@gmail.com`.
+- Preference hiện tại trả đúng `quota-account-e@redacted.local`.
 - Quota được trả theo cửa sổ 5 giờ và 7 ngày.
 - History API trả dữ liệu thật, không phải dữ liệu mẫu.
 - History đã tăng lên 8.643 bản ghi tại lần kiểm tra mới nhất.
@@ -183,15 +185,15 @@ Cách phân biệt nhanh:
 ### Rủi ro hiện tại
 
 1. Account ưu tiên đang gần cạn quota cả 5 giờ lẫn tuần.
-2. `tuantuoitan006@gmail.com` chỉ còn khoảng 24.33% quota tuần.
-3. `kuayay@gmail.com` gần hết quota 5 giờ.
+2. `quota-account-f@redacted.local` chỉ còn khoảng 24.33% quota tuần.
+3. `quota-account-c@redacted.local` gần hết quota 5 giờ.
 4. Quota thay đổi theo thời gian; số liệu trên dashboard cần có timestamp rõ ràng.
 5. CA AdGuard là dependency ngoài OMP; thay đổi CA có thể làm OAuth hỏng lại.
 6. History quét session log nên cần tránh đọc nội dung message khi mở rộng tính năng.
 
 ### Khuyến nghị ưu tiên
 
-**P0 — ngay:** chuyển account ưu tiên khỏi `tuantuoitan004@gmail.com` sang account còn nhiều quota trước khi test Gemini/Open Design dài.
+**P0 — ngay:** chuyển account ưu tiên khỏi `quota-account-e@redacted.local` sang account còn nhiều quota trước khi test Gemini/Open Design dài.
 
 **P1 — nên làm:** thêm cảnh báo khi quota 5 giờ hoặc tuần xuống dưới 20%; hiển thị thời điểm reset và account đề xuất kế tiếp.
 
@@ -216,7 +218,7 @@ Cách phân biệt nhanh:
 
 OMP Dashboard hiện là lớp quản trị tập trung cho account, quota, session và token history của Gemini CLI/Open Design. Phần dashboard đang hoạt động và có dữ liệu thật. Sự cố nghiêm trọng trước đây đã được xác định là lỗi tin cậy CA trong OAuth refresh, không phải lỗi thiếu API key trực tiếp.
 
-Việc cần ưu tiên tiếp theo là đổi account mặc định khỏi `tuantuoitan004@gmail.com` vì quota hiện tại thấp, sau đó chạy prompt test xác nhận. Tính năng đáng làm tiếp theo là cảnh báo quota thấp và bộ lọc History.
+Việc cần ưu tiên tiếp theo là đổi account mặc định khỏi `quota-account-e@redacted.local` vì quota hiện tại thấp, sau đó chạy prompt test xác nhận. Tính năng đáng làm tiếp theo là cảnh báo quota thấp và bộ lọc History.
 
 > Báo cáo không chứa access token, refresh token, mật khẩu, cookie hoặc nội dung prompt.
 
@@ -271,7 +273,7 @@ Hai giao diện dùng chung OMP, credential và session storage nhưng không ph
 - Đã chạy thành công các smoke test: `console-smoke`, `omp-gateway-smoke`, `omp-client-smoke`, `dsh-omp-adapter-smoke`.
 - Đã dừng context test sau khi kiểm tra; không gửi prompt test nên không tiêu quota.
 
-Tại lần kiểm tra live mới nhất, account ưu tiên là `tai.mobile081@gmail.com`. Một số account khác đang gần giới hạn: `tuantuoitan004@gmail.com` còn khoảng 1.35% cửa sổ 5 giờ và `kuayay@gmail.com` còn khoảng 0.02% cửa sổ 5 giờ. Số liệu quota là snapshot và thay đổi theo request mới.
+Tại lần kiểm tra live mới nhất, account ưu tiên là `quota-account-d@redacted.local`. Một số account khác đang gần giới hạn: `quota-account-e@redacted.local` còn khoảng 1.35% cửa sổ 5 giờ và `quota-account-c@redacted.local` còn khoảng 0.02% cửa sổ 5 giờ. Số liệu quota là snapshot và thay đổi theo request mới.
 
 ### 11.3. Vấn đề logic cần xử lý
 
@@ -505,9 +507,9 @@ History trả thêm `item.color`; text email trong bảng History dùng đúng m
 
 | Account | Kết quả live | Model |
 |---|---|---|
-| `kuayay@gmail.com` | Trả `OK` | `gemini-3.8-flash` |
-| `tai.mobile081@gmail.com` | Trả `OK` | `gemini-3.8-flash` |
-| `aiaprompt00@gmail.com` | Trả `OK` | `gemini-3.8-flash` |
+| `quota-account-c@redacted.local` | Trả `OK` | `gemini-3.8-flash` |
+| `quota-account-d@redacted.local` | Trả `OK` | `gemini-3.8-flash` |
+| `quota-account-a@redacted.local` | Trả `OK` | `gemini-3.8-flash` |
 
 Safety Guard sau kiểm tra:
 
@@ -519,7 +521,7 @@ consecutive429: 0
 lastDecision: healthy
 ```
 
-Account ưu tiên hiện tại: `bancuachungta123@gmail.com`.
+Account ưu tiên hiện tại: `quota-account-b@redacted.local`.
 
 Lưu ý: nếu một account hiện `⚠ 429 gần nhất` nhưng `generationCheckedAt` cũ, đó là trạng thái lỗi lịch sử gần nhất, không phải kết luận account đang bị Google ban. Cần ping thật hoặc chờ generation mới để cập nhật trạng thái.
 
@@ -898,11 +900,11 @@ Các smoke test bao phủ: normalize quota/auth, period summary, attribution the
 
 Đã gửi tuần tự prompt nhẹ `Trả lời đúng một từ: OK` cho:
 
-- `kuayay@gmail.com` → `OK`, `gemini-3.8-flash`.
-- `tai.mobile081@gmail.com` → `OK`, `gemini-3.8-flash`.
-- `aiaprompt00@gmail.com` → `OK`, `gemini-3.8-flash`.
+- `quota-account-c@redacted.local` → `OK`, `gemini-3.8-flash`.
+- `quota-account-d@redacted.local` → `OK`, `gemini-3.8-flash`.
+- `quota-account-a@redacted.local` → `OK`, `gemini-3.8-flash`.
 
-Sau ping, Guard không cooldown và account ưu tiên được khôi phục về `bancuachungta123@gmail.com`.
+Sau ping, Guard không cooldown và account ưu tiên được khôi phục về `quota-account-b@redacted.local`.
 
 ## 23. Nguồn sự thật hiện tại — snapshot 21/09/2026
 
@@ -910,12 +912,12 @@ Sau ping, Guard không cooldown và account ưu tiên được khôi phục về
 
 | Account | Auth | Generation gần nhất | Gemini 5 giờ còn | Gemini tuần còn | Diễn giải |
 |---|---|---|---:|---:|---|
-| `bancuachungta123@gmail.com` | authenticated | live | 29.57% | 35.64% | Account ưu tiên hiện tại |
-| `tuantuoitan006@gmail.com` | authenticated | blocked lịch sử | chưa có | 24.33% | 429 gần nhất, chưa phải kết luận ban hiện tại |
-| `tuantuoitan004@gmail.com` | authenticated | blocked lịch sử | 100.00% | 11.65% | Tuần gần quota, không nên dùng test dài |
-| `kuayay@gmail.com` | authenticated | live | 99.56% | 66.57% | Ping thật đạt |
-| `tai.mobile081@gmail.com` | authenticated | live | 99.91% | 76.25% | Ping thật đạt |
-| `aiaprompt00@gmail.com` | authenticated | live | 99.88% | 54.31% | Ping thật đạt |
+| `quota-account-b@redacted.local` | authenticated | live | 29.57% | 35.64% | Account ưu tiên hiện tại |
+| `quota-account-f@redacted.local` | authenticated | blocked lịch sử | chưa có | 24.33% | 429 gần nhất, chưa phải kết luận ban hiện tại |
+| `quota-account-e@redacted.local` | authenticated | blocked lịch sử | 100.00% | 11.65% | Tuần gần quota, không nên dùng test dài |
+| `quota-account-c@redacted.local` | authenticated | live | 99.56% | 66.57% | Ping thật đạt |
+| `quota-account-d@redacted.local` | authenticated | live | 99.91% | 76.25% | Ping thật đạt |
+| `quota-account-a@redacted.local` | authenticated | live | 99.88% | 54.31% | Ping thật đạt |
 
 History runtime tại snapshot:
 

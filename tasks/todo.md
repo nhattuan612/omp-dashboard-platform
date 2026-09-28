@@ -44,6 +44,12 @@
 - [ ] Repo GitHub đích + public/private trước khi push.
 - [ ] Một prompt thật `Trả lời đúng một từ: OK` cho nghiệm thu OMP/Google (tiêu thụ quota).
 
+## Product-release parity — 2026-09-28
+
+- [x] Mirror 3 asset lệch: server, Chat live client, Quota SKE.
+- [x] Sửa contract test quota không còn phụ thuộc `dashboard-live.js` đã xoá.
+- [x] Checkpoint: parity, syntax, security smoke, ACP/pin/session contract pass; không deploy/restart.
+
 ## Kế hoạch triển khai riêng `/quota`
 
 - [x] Q0: tạo manifest và backup timestamp trước khi sửa.
@@ -84,4 +90,3 @@
 ### Checkpoint — before implementation
 
 - [ ] Síp reviews and approves `tasks/plan.md`; no code changes before approval.
-

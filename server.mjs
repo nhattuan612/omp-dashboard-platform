@@ -24,7 +24,6 @@ const OMP_ENV = {
 const STATE_FILE = `${ROOT}/state.json`;
 const SELECTED_ACCOUNT_FILE = `${ROOT}/selected-account.json`;
 const PROTECT_CONFIG_FILE = `${ROOT}/protect-config.json`;
-const AUTH_EVENTS_FILE = `${ROOT}/auth-events.json`;
 const ACCOUNT_COLORS_FILE = `${ROOT}/account-colors.json`;
 const CHAT_METADATA_FILE = `${ROOT}/chat-metadata.json`;
 const CHAT_MEDIA_ROOT = join(ROOT, "chat-media");
@@ -60,6 +59,7 @@ const DASHBOARD_HOSTNAMES = new Set(["127.0.0.1", "localhost"]);
 const rawChatRateLimit = process.env.OMP_CHAT_RATE_LIMIT;
 const configuredChatRateLimit = rawChatRateLimit == null || rawChatRateLimit.trim() === "" ? 30 : Number(rawChatRateLimit);
 const CHAT_RATE_LIMIT = Number.isSafeInteger(configuredChatRateLimit) && configuredChatRateLimit >= 0 ? configuredChatRateLimit : 30;
+const DASHBOARD_MARK_ASSET = "honpi-dashboard-mark-8138753b.png";
 const CSP_HEADER = "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' __NONCE__; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self'; font-src 'self' data:; form-action 'self'";
 const PUBLIC_ERROR_CODES = new Set([
   "BAD_REQUEST", "MODEL_NOT_FOUND", "MODEL_NOT_ALLOWED_BY_QUOTA", "IMAGE_GENERATION_MODEL_REQUIRED", "NOT_FOUND", "CONFLICT", "ACCOUNT_NOT_FOUND", "ACCOUNT_UNAVAILABLE", "ACCOUNT_SELECTION_REQUIRED",
@@ -76,12 +76,14 @@ const APPROVAL_TIMEOUT_MS = Number.isSafeInteger(testApprovalTimeout) && testApp
 const QUOTA_WARNING_THRESHOLD = 0.8;
 const QUOTA_SUSPEND_THRESHOLD = 0.9;
 const GENERATION_HEALTH_WINDOW_MS = 24 * 60 * 60 * 1000;
+const BROKER_USAGE_CACHE_MS = 60_000;
 const ACCOUNT_COLOR_PALETTE = ["#1a73e8", "#188038", "#b06000", "#d93025", "#7b1fa2", "#00838f", "#c2185b", "#5f6368"];
 const LOGIN_PROVIDER = "google-antigravity";
 const GEMINI_PROVIDER_KEYS = new Set(["google-gemini-cli", "google-antigravity"]);
 const LOGIN_PROVIDER_LABEL = "Google Cloud OAuth · OMP";
 let latest = { ok: false, error: "Đang tải dữ liệu…", updatedAt: null, accounts: [], authAccounts: [], accountsWithoutUsage: [], disabledCredentials: [], capacity: {}, preferredAccountEmail: null };
 let refreshing = null;
+let brokerUsageCache = null;
 let loginProcess = null;
 let login = { state: "idle", provider: null, url: null, message: null };
 let historyCache = { loadedAt: 0, items: [] };
@@ -215,7 +217,7 @@ function errorResponse(res, error, fallback = "Yêu cầu không thành công.")
   });
 }
 
-function runUsage() {
+function runOmpUsage() {
   return new Promise((resolve, reject) => {
     const child = spawn(OMP_BIN, ["usage", "--json"], { env: OMP_ENV });
     const pid = child.pid;
@@ -238,6 +240,57 @@ function runUsage() {
   });
 }
 
+function brokerUsageRaw(value) {
+  const credentials = Array.isArray(value?.credentials) ? value.credentials : [];
+  return {
+    generatedAt: Date.now(),
+    reports: credentials.flatMap((item) => item?.ok === true && item.report ? [item.report] : []),
+    accountsWithoutUsage: credentials.flatMap((item) => item?.report ? [] : [{
+      provider: item?.provider,
+      email: item?.email || item?.credential?.email,
+      reason: item?.reason || item?.error || "OMP usage probe returned no data for this credential",
+    }]),
+    disabledCredentials: Array.isArray(value?.disabledCredentials) ? value.disabledCredentials : [],
+    capacity: {},
+  };
+}
+
+function runBrokerUsage() {
+  const now = Date.now();
+  if (brokerUsageCache && now - brokerUsageCache.loadedAt < BROKER_USAGE_CACHE_MS) return Promise.resolve(brokerUsageCache.result);
+  return new Promise((resolve, reject) => {
+    const child = spawn(OMP_BIN, ["auth-gateway", "check", "--json"], { env: OMP_ENV });
+    const pid = child.pid;
+    let out = "";
+    let err = "";
+    const timer = setTimeout(() => child.kill("SIGTERM"), 30000);
+    child.stdout.on("data", (chunk) => { out += chunk; });
+    child.stderr.on("data", (chunk) => { err += chunk; });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code !== 0) return reject(new Error(err.trim() || `OMP auth-gateway exited with ${code}`));
+      try {
+        const start = out.indexOf("{");
+        const result = { raw: brokerUsageRaw(JSON.parse(out.slice(start))), pid };
+        brokerUsageCache = result.raw.reports.length ? { loadedAt: Date.now(), result } : null;
+        resolve(result);
+      } catch {
+        reject(new Error("OMP auth-gateway trả về dữ liệu không hợp lệ"));
+      }
+    });
+  });
+}
+
+async function runUsage() {
+  try {
+    const primary = await runOmpUsage();
+    return Array.isArray(primary.raw?.reports) && primary.raw.reports.length ? primary : await runBrokerUsage().catch(() => primary);
+  } catch (error) {
+    return runBrokerUsage().catch(() => { throw error; });
+  }
+}
+
 function runOmpShare(sessionPath) {
   return new Promise((resolve, reject) => {
     const child = spawn(OMP_BIN, ["share", sessionPath], { env: OMP_ENV, stdio: ["ignore", "pipe", "pipe"] });
@@ -256,9 +309,9 @@ function runOmpShare(sessionPath) {
   });
 }
 
-function readCredentialAuthTimes() {
+function readOmpAuthorizedAt() {
   return new Promise((resolve) => {
-    const child = spawn("/usr/bin/sqlite3", [AGENT_DB_FILE, "SELECT lower(substr(identity_key, 7)) || char(9) || coalesce(json_extract(data, '$.authorizedAt'), '') || char(9) || created_at || char(9) || updated_at FROM auth_credentials WHERE credential_type = 'oauth' AND identity_key LIKE 'email:%' AND provider IN ('google-antigravity', 'google-gemini-cli');"], { stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawn("/usr/bin/sqlite3", [AGENT_DB_FILE, "SELECT lower(substr(identity_key, 7)) || char(9) || coalesce(json_extract(data, '$.authorizedAt'), '') FROM auth_credentials WHERE credential_type = 'oauth' AND identity_key LIKE 'email:%' AND provider IN ('google-antigravity', 'google-gemini-cli');"], { stdio: ["ignore", "pipe", "ignore"] });
     let output = "";
     const timer = setTimeout(() => { child.kill("SIGTERM"); resolve(new Map()); }, 5000);
     child.stdout.on("data", (chunk) => { output += chunk; });
@@ -268,8 +321,8 @@ function readCredentialAuthTimes() {
       if (code !== 0) return resolve(new Map());
       const updates = new Map();
       for (const line of output.trim().split("\n")) {
-        const [email, authorizedAt, createdAt, updatedAt] = line.split("\t");
-        const timestamp = Number(authorizedAt) || Number(createdAt) * 1000 || Number(updatedAt) * 1000;
+        const [email, authorizedAt] = line.split("\t");
+        const timestamp = Number(authorizedAt);
         if (email && Number.isFinite(timestamp) && timestamp > 0) updates.set(email, timestamp);
       }
       resolve(updates);
@@ -672,7 +725,12 @@ async function readGenerationHealth(accounts, now = Date.now()) {
       if (!outcome) continue;
       const nearestPin = priorCredentialPin(pins, checkedAt, order);
       const accountId = accountByPin.get(nearestPin?.record.hash);
-      if (!accountId || checkedAt < cutoff) continue;
+      const account = accounts.find((item) => quotaAccountId(item) === accountId);
+      const provider = String(message?.provider || "").toLowerCase();
+      const model = String(message?.model || "").toLowerCase();
+      const isGeminiHealth = provider === String(account?.provider || "").toLowerCase()
+        && !/claude|gpt|openai|anthropic/.test(model);
+      if (!accountId || !isGeminiHealth || checkedAt < cutoff) continue;
       const previous = health.get(accountId);
       if (!previous || checkedAt >= previous.checkedAt) health.set(accountId, {
         ...outcome,
@@ -791,21 +849,6 @@ async function saveProtectConfig(value) {
   protectConfigCache = normalizeProtectConfig(value);
   await writeFile(PROTECT_CONFIG_FILE, `${JSON.stringify(protectConfigCache, null, 2)}\n`, { mode: 0o600 });
   return protectConfigCache;
-}
-
-async function readAuthEvents() {
-  try {
-    const value = JSON.parse(await readFile(AUTH_EVENTS_FILE, "utf8"));
-    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
-  } catch { return {}; }
-}
-
-async function recordAuthEvent(email) {
-  const normalized = String(email || "").trim().toLowerCase();
-  if (!normalized || !normalized.includes("@")) return;
-  const events = await readAuthEvents();
-  events[normalized] = { timestamp: Date.now() };
-  await writeFile(AUTH_EVENTS_FILE, `${JSON.stringify(events, null, 2)}\n`, { mode: 0o600 });
 }
 
 async function findSessionPath(sessionId) {
@@ -1058,9 +1101,21 @@ async function historyPayload(limit = 50) {
   };
 }
 
-function startLogin() {
+function loginTargetEmail(value) {
+  const email = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (!email) return null;
+  if (email.length > 320 || !/^[^\s@]+@[^\s@]+$/.test(email)) throw Object.assign(new Error("Email OAuth không hợp lệ."), { code: "BAD_REQUEST", field: "email" });
+  return email;
+}
+
+function loginErrorMessage(value, fallback) {
+  const message = String(value || "").split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !/^(?:https?:\/\/|at\s)/i.test(line)).at(-1)?.replace(/https?:\/\/\S+/gi, "").replace(/\$bunfs\S*/g, "").trim();
+  return message?.slice(0, 300) || fallback;
+}
+
+function startLogin(targetEmail = null) {
   if (loginProcess) throw Object.assign(new Error("Đang có một phiên đăng nhập OAuth khác"), { code: "CONFLICT" });
-  const loginAccountEmail = latest.preferredAccountEmail || null;
+  const loginAccountEmail = targetEmail || latest.preferredAccountEmail || null;
   login = { state: "starting", provider: LOGIN_PROVIDER, accountEmail: loginAccountEmail, url: null, message: `Đang tạo phiên ${LOGIN_PROVIDER_LABEL}…` };
   const child = spawn(OMP_BIN, ["auth-broker", "login", LOGIN_PROVIDER], { env: OMP_ENV });
   loginProcess = child;
@@ -1081,16 +1136,35 @@ function startLogin() {
   child.stdout.on("data", read);
   child.stderr.on("data", read);
   child.on("error", (error) => {
-    login = { state: "error", provider: LOGIN_PROVIDER, accountEmail: loginAccountEmail, url: null, message: error.message };
+    login = { state: "error", provider: LOGIN_PROVIDER, accountEmail: loginAccountEmail, url: null, message: loginErrorMessage(error.message, "Không thể khởi chạy OAuth.") };
     loginProcess = null;
   });
   child.on("close", (code) => {
-    login = code === 0
-      ? { state: "complete", provider: LOGIN_PROVIDER, accountEmail: loginAccountEmail, url: null, message: `${LOGIN_PROVIDER_LABEL} đã đăng nhập; quota đang được cập nhật.` }
-      : { state: "error", provider: LOGIN_PROVIDER, accountEmail: loginAccountEmail, url: null, message: output.trim().split("\n").at(-1) || `OMP login exited with ${code}` };
     loginProcess = null;
-    if (code === 0 && loginAccountEmail) recordAuthEvent(loginAccountEmail).catch(() => {});
-    refresh().then(() => syncSafetyPolicy()).catch(() => {});
+    if (code !== 0) {
+      login = { state: "error", provider: LOGIN_PROVIDER, accountEmail: loginAccountEmail, url: null, message: loginErrorMessage(output, `OMP login exited with ${code}`) };
+      return;
+    }
+    void refresh().then(async (snapshot) => {
+      const expectedEmail = String(loginAccountEmail || "").trim().toLowerCase();
+      const accounts = Array.isArray(snapshot.accounts) ? snapshot.accounts : [];
+      const account = accounts.find((item) => item.provider === LOGIN_PROVIDER && (!expectedEmail || item.email?.toLowerCase() === expectedEmail));
+      if (!snapshot.ok || !account) {
+        const message = !snapshot.ok
+          ? "OAuth hoàn tất nhưng OMP không đọc được quota. Hãy thử đồng bộ lại."
+          : expectedEmail && accounts.some((item) => item.provider === LOGIN_PROVIDER)
+            ? "OAuth hoàn tất nhưng OMP không nhận đúng account đã chọn."
+            : "OAuth hoàn tất nhưng OMP chưa nhận account quota; dashboard không đánh dấu Google từ chối quyền.";
+        login = { state: "error", provider: LOGIN_PROVIDER, accountEmail: loginAccountEmail, url: null, message };
+      } else {
+        login = { state: "complete", provider: LOGIN_PROVIDER, accountEmail: account.email, url: null, message: `${LOGIN_PROVIDER_LABEL} đã đăng nhập; quota đang được cập nhật.` };
+      }
+      await syncSafetyPolicy();
+      broadcastStatus();
+    }).catch((error) => {
+      login = { state: "error", provider: LOGIN_PROVIDER, accountEmail: loginAccountEmail, url: null, message: error.message };
+      broadcastStatus();
+    });
   });
 }
 
@@ -1099,7 +1173,7 @@ const consoleBridge = new ConsoleBridge({ env: OMP_ENV, onGenerationFinished: ()
 async function syncSafetyPolicy() {
   const config = await readProtectConfig();
   const metadata = await readChatMetadata();
-  const selected = geminiQuotaAccounts().find((account) => quotaAccountId(account) === metadata.geminiDefaultAccountId) || null;
+  const selected = eligibleGeminiQuotaAccounts().find((account) => quotaAccountId(account) === metadata.geminiDefaultAccountId) || null;
   const selectedId = selected ? quotaAccountId(selected) : null;
   const activeAccountProtected = Boolean(selected) && (config.mode === "auto" || config.accountIds.includes(selectedId));
   consoleBridge.updateSafetyPolicy({ enabled: config.enabled, mode: config.mode, activeAccountProtected });
@@ -1852,6 +1926,14 @@ async function validateChatModel(model, requestedProvider = null) {
   const selected = models.find((item) => item.id === model && (!provider || item.provider === provider));
   if (!selected) throw Object.assign(new Error(`Model không tồn tại trong OMP: ${model}`), { code: "MODEL_NOT_FOUND", field: "model" });
   return { model: selected, models };
+}
+
+async function resolveChatModel(modelId, modelSource, modelProvider, sessionId, prompt = "") {
+  const { model, models } = await validateChatModel(modelId, modelProvider);
+  const requestedModel = modelSource === "quota"
+    ? await assertQuotaModelAllowed(modelId, models, modelProvider, sessionId)
+    : await assertGoogleQuotaModelAllowed(model, models, modelProvider, sessionId);
+  return { requestedModel, model: imageGenerationModelForPrompt(prompt, requestedModel, models) };
 }
 
 async function assertQuotaModelAllowed(modelId, models = null, requestedProvider = null, sessionId = null) {
@@ -3462,13 +3544,9 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
   const selectedBrowserMode = browserMode(value("browserMode"));
   const selectedApprovalMode = approvalMode(value("approvalMode"));
   const modelValidationStartedAt = Date.now();
-  const { model, models } = await validateChatModel(requestedModel, modelProvider);
-  const imageModel = imageGenerationModelForPrompt(prompt, model, models);
+  const { requestedModel: model, model: selectedModel } = await resolveChatModel(requestedModel, modelSource, modelProvider, sessionId, prompt);
   const modelValidationMs = Date.now() - modelValidationStartedAt;
   const quotaCheckStartedAt = Date.now();
-  const selectedModel = modelSource === "quota"
-    ? await assertQuotaModelAllowed(imageModel.id, models, imageModel.provider, sessionId)
-    : await assertGoogleQuotaModelAllowed(imageModel, models, imageModel.provider, sessionId);
   const quotaCheckMs = Date.now() - quotaCheckStartedAt;
   const attachments = normalizeChatAttachments(input?.attachments, { rejectInvalid: true });
   if (activeChatRequests.has(requestId)) throw Object.assign(new Error("requestId đang được xử lý"), { code: "CONFLICT" });
@@ -3796,6 +3874,14 @@ async function readDashboardAsset(name, nonce = "") {
   }
 }
 
+async function readDashboardBinary(name) {
+  try { return await readFile(join(SOURCE_ROOT, name)); }
+  catch (error) {
+    if (ROOT === SOURCE_ROOT) throw error;
+    return readFile(join(ROOT, name));
+  }
+}
+
 async function jsonBody(req) {
   try { return await readJsonBody(req); }
   catch (error) { throw Object.assign(new Error(`JSON không hợp lệ: ${error.message}`), { code: "BAD_REQUEST" }); }
@@ -3823,6 +3909,28 @@ function isGeminiQuotaAccount(account) {
 
 function geminiQuotaAccounts() {
   return (latest.accounts || []).filter(isGeminiQuotaAccount);
+}
+
+function quotaAccountEntitlement(account) {
+  const limits = account.limits || [];
+  const hasGoogle = limits.some(isGoogleQuotaLimit);
+  const hasShared = limits.some((limit) => Boolean(limit.shared) || /claude.*gpt|gpt.*claude|shared/i.test(`${limit?.id || ""} ${limit?.label || ""}`));
+  const hasClaude = limits.some((limit) => /claude|anthropic/i.test(`${limit?.id || ""} ${limit?.label || ""}`));
+  const hasGpt = limits.some((limit) => /gpt|openai/i.test(`${limit?.id || ""} ${limit?.label || ""}`));
+  const missing = [
+    !hasGoogle ? "quota Google/Gemini" : null,
+    !(hasShared || (hasClaude && hasGpt)) ? "quota Claude và GPT" : null,
+  ].filter(Boolean);
+  return {
+    eligible: isGeminiQuotaAccount(account) && !missing.length,
+    reason: missing.length
+      ? `OMP chưa trả ${missing.join(", ")}; chưa đủ capability để dùng đầy đủ model Google, Claude và GPT`
+      : "Đủ capability OMP cho Google, Claude và GPT",
+  };
+}
+
+function eligibleGeminiQuotaAccounts() {
+  return geminiQuotaAccounts().filter((account) => quotaAccountEntitlement(account).eligible);
 }
 
 function isGeminiModel(model) {
@@ -3858,7 +3966,7 @@ async function readGeminiSelection(sessionId = null) {
   const sessionAccountId = typeof session.geminiAccountId === "string" ? session.geminiAccountId.trim() : "";
   const snapshotAccountId = typeof session.geminiDefaultAccountIdAtCreation === "string" ? session.geminiDefaultAccountIdAtCreation.trim() : "";
   const isSessionPinned = Boolean(sessionAccountId);
-  const inheritCurrentDefault = !isSessionPinned && (!hasExistingSession || (hasStoredSession && !snapshotAccountId));
+  const inheritCurrentDefault = !isSessionPinned && !hasExistingSession;
   const accountId = isSessionPinned
     ? sessionAccountId
     : snapshotAccountId || (inheritCurrentDefault && typeof metadata.geminiDefaultAccountId === "string" ? metadata.geminiDefaultAccountId.trim() : "");
@@ -3988,7 +4096,7 @@ function isGoogleQuotaLimit(limit) {
 }
 
 function isGeminiQuotaLimit(limit) {
-  return /gemini/i.test(`${limit?.id || ""} ${limit?.label || ""}`);
+  return isGoogleQuotaLimit(limit);
 }
 
 function isWeeklyLimit(limit) {
@@ -3997,6 +4105,10 @@ function isWeeklyLimit(limit) {
 
 function isFiveHourLimit(limit) {
   return /5h|5 hour|five hour/i.test(`${limit?.id || ""} ${limit?.window || ""}`);
+}
+
+function isDailyLimit(limit) {
+  return /daily|day|24h/i.test(`${limit?.id || ""} ${limit?.window || ""}`);
 }
 
 function isSharedLimit(limit) {
@@ -4009,8 +4121,10 @@ function quotaWindowLimit(account, kind) {
     const shared = isSharedLimit(limit);
     if (kind === "gemini5h") return gemini && isFiveHourLimit(limit);
     if (kind === "geminiWeek") return gemini && isWeeklyLimit(limit);
+    if (kind === "geminiDaily") return gemini && isDailyLimit(limit);
     if (kind === "claude5h") return shared && isFiveHourLimit(limit);
     if (kind === "claudeWeek") return shared && isWeeklyLimit(limit);
+    if (kind === "claudeDaily") return shared && isDailyLimit(limit);
     return false;
   });
   return limits.sort((a, b) => Number(b.usedFraction || 0) - Number(a.usedFraction || 0))[0] || null;
@@ -4027,54 +4141,57 @@ function quotaAccountWindows(account) {
   return {
     fiveHour: quotaWindowLimit(account, "gemini5h"),
     weekly: quotaWindowLimit(account, "geminiWeek"),
+    daily: quotaWindowLimit(account, "geminiDaily"),
   };
 }
 
 function quotaAccountStatus(account, quotas = quotaAccountWindows(account)) {
-  const { fiveHour, weekly } = quotas;
+  const { fiveHour, weekly, daily } = quotas;
+  const primary = fiveHour || daily || weekly;
+  const primaryLabel = daily && !fiveHour ? "quota ngày" : fiveHour ? "quota 5 giờ" : "quota tuần";
+  const entitlement = quotaAccountEntitlement(account);
+  if (!entitlement.eligible) return { code: "entitlement_unverified", label: "Thiếu capability model", reason: entitlement.reason };
   if (account.authStatus && account.authStatus !== "authenticated") {
     const accessDenied = account.authStatus === "access_denied";
     return { code: accessDenied ? "access_error" : "auth_error", label: accessDenied ? "Google từ chối quyền" : "OAuth lỗi", reason: account.authReason || (accessDenied ? "Google từ chối quyền, policy, API hoặc license" : "OAuth cần đăng nhập lại") };
-  }
-  if (["blocked", "quota_blocked"].includes(account.generationStatus)) {
-    return { code: "quota_blocked", label: "Bị giới hạn quota", reason: account.generationReason || "Google giới hạn quota/rate limit khi sinh nội dung" };
   }
   if (["auth_error", "access_error"].includes(account.generationStatus)) return { code: account.generationStatus, label: account.generationStatus === "access_error" ? "Google từ chối quyền" : "OAuth lỗi", reason: account.generationReason || "Google từ chối yêu cầu" };
   if (account.generationStatus === "error") {
     return { code: "chat_error", label: "Không thể chat", reason: account.generationReason || "Lần chat gần nhất không sinh được nội dung" };
   }
-  if (!fiveHour || !weekly) {
-    const missing = [
-      !fiveHour ? "Gemini quota 5 giờ" : null,
-      !weekly ? "Gemini quota tuần" : null,
-    ].filter(Boolean).join(" và ");
-    return { code: "quota_unknown", label: `Thiếu ${missing}`, reason: `Tài khoản cần đủ Gemini quota 5 giờ và tuần; thiếu ${missing}` };
-  }
+  if (!primary) return { code: "quota_unknown", label: "Thiếu quota Google", reason: "OMP chưa trả quota Google/Gemini có cửa sổ sử dụng" };
   if (account.generationStatus === "transient_error") return { code: "transient_error", label: "Lỗi tạm thời", reason: account.generationReason || "Google/service hoặc mạng lỗi tạm thời" };
-  const fiveHourPct = Number(fiveHour.usedFraction || 0) * 100;
-  const weeklyPct = Number(weekly.usedFraction || 0) * 100;
-  const usedPct = Math.max(fiveHourPct, weeklyPct);
-  const windowLabel = weeklyPct > fiveHourPct ? "quota tuần" : "quota 5 giờ";
+  const primaryPct = Number(primary.usedFraction || 0) * 100;
+  const weeklyPct = Number(weekly?.usedFraction || 0) * 100;
+  const usedPct = Math.max(primaryPct, weeklyPct);
+  const windowLabel = weeklyPct > primaryPct ? "quota tuần" : primaryLabel;
   if (usedPct >= 100) return { code: "exhausted", label: "Hết quota", reason: `${windowLabel} đã dùng hết` };
   if (usedPct >= QUOTA_SUSPEND_THRESHOLD * 100) return { code: "danger", label: "Tạm ngưng ≥90%", reason: `${windowLabel} đã dùng ${quotaRound(usedPct)}%; cần chọn account Gemini thủ công khác` };
+  if (["blocked", "quota_blocked"].includes(account.generationStatus)) {
+    return { code: "warning", label: "429 trước đó · quota live OK", reason: `${account.generationReason || "Google từng giới hạn quota/rate limit"} · quota live hiện ${quotaRound(usedPct)}%; không có Safety Guard cooldown` };
+  }
   if (usedPct > QUOTA_WARNING_THRESHOLD * 100) return { code: "warning", label: "Cảnh báo >80%", reason: `${windowLabel} đã dùng ${quotaRound(usedPct)}%` };
   if (account.generationStatus === "unknown") return { code: "generation_unknown", label: "Chưa xác minh", reason: "Chưa có lượt sinh nội dung gần đây để xác minh trạng thái chat" };
-  return { code: "normal", label: "Bình thường (OK)", reason: `Quota 5 giờ đang ở ${quotaRound(fiveHourPct)}% · quota tuần ${quotaRound(weeklyPct)}%` };
+  return { code: "normal", label: "Bình thường (OK)", reason: `${primaryLabel} đang ở ${quotaRound(primaryPct)}%${weekly ? ` · quota tuần ${quotaRound(weeklyPct)}%` : ""}` };
 }
 
 function quotaAccountAvailability(account, quotas = quotaAccountWindows(account)) {
   if (!isGeminiQuotaAccount(account)) return { canUse: false, status: "provider_unsupported", label: "Provider không được Quota hỗ trợ", reason: "Quota chỉ cho phép tài khoản Google Antigravity." };
-  const { fiveHour, weekly } = quotas;
+  const entitlement = quotaAccountEntitlement(account);
+  if (!entitlement.eligible) return { canUse: false, status: "entitlement_unverified", label: "Thiếu capability model", reason: entitlement.reason };
+  const { fiveHour, weekly, daily } = quotas;
+  const primary = fiveHour || daily || weekly;
+  const primaryLabel = daily && !fiveHour ? "ngày" : fiveHour ? "5 giờ" : "tuần";
   const status = quotaAccountStatus(account, quotas);
   if (["auth_error", "access_error", "quota_blocked", "chat_error"].includes(status.code)) return { canUse: false, status: status.code, label: status.label, reason: status.reason };
-  if (!fiveHour || !weekly) return { canUse: false, status: "quota_unknown", label: status.label, reason: status.reason };
+  if (!primary) return { canUse: false, status: "quota_unknown", label: status.label, reason: status.reason };
   if (status.code === "transient_error") return { canUse: true, status: status.code, label: "Lỗi tạm thời · có thể thử lại", reason: `${status.reason} · có thể thử lại ngay` };
-  const fiveHourPct = Number(fiveHour.usedFraction || 0) * 100;
-  const weeklyPct = Number(weekly.usedFraction || 0) * 100;
-  const usedPct = Math.max(fiveHourPct, weeklyPct);
+  const primaryPct = Number(primary.usedFraction || 0) * 100;
+  const weeklyPct = Number(weekly?.usedFraction || 0) * 100;
+  const usedPct = Math.max(primaryPct, weeklyPct);
   if (usedPct >= QUOTA_SUSPEND_THRESHOLD * 100) return { canUse: false, status: "quota_suspended", label: "Tạm ngưng · chọn thủ công", reason: `GoogleProtect tạm ngưng vì quota ${quotaRound(usedPct)}% (≥90%); hệ thống không tự chuyển account, hãy chọn Gemini thủ công` };
   if (usedPct > QUOTA_WARNING_THRESHOLD * 100) return { canUse: true, status: "quota_warning", label: "Cảnh báo >80%", reason: `Quota cao ${quotaRound(usedPct)}%; vẫn dùng được dưới 90%` };
-  return { canUse: true, status: "available", label: "Có thể sử dụng", reason: `Quota đang ở ${quotaRound(usedPct)}%` };
+  return { canUse: true, status: "available", label: "Có thể sử dụng", reason: `Quota ${primaryLabel} đang ở ${quotaRound(usedPct)}%` };
 }
 
 async function activeQuotaAccountState(sessionId = null) {
@@ -4116,10 +4233,7 @@ async function authorizeChatCommand(command, record = null, sessionId = null) {
   let selectedModel = record?.selectedChatModel || null;
   if (command.type === "set_model") {
     const modelProvider = chatModelProvider(command.provider);
-    const { model, models } = await validateChatModel(chatModel(command.modelId), modelProvider);
-    selectedModel = modelSource === "quota"
-      ? await assertQuotaModelAllowed(model.id, models, modelProvider, id)
-      : await assertGoogleQuotaModelAllowed(model, models, modelProvider, id);
+    ({ model: selectedModel } = await resolveChatModel(chatModel(command.modelId), modelSource, modelProvider, id));
     command.modelId = selectedModel.id;
     command.provider = selectedModel.provider;
     if (record) record.selectedChatModel = selectedModel;
@@ -4141,7 +4255,7 @@ async function authorizeChatCommand(command, record = null, sessionId = null) {
       }
     }
   } else if (modelSource === "quota" && isQuotaGuardedCommand(command.type)) {
-    throw Object.assign(new Error("Nguồn Quota chỉ cho phép model Gemini"), { code: "MODEL_NOT_ALLOWED_BY_QUOTA", field: "model" });
+    throw Object.assign(new Error("Nguồn Quota chỉ cho phép model thuộc account đang chọn"), { code: "MODEL_NOT_ALLOWED_BY_QUOTA", field: "model" });
   }
   if (modelSource === "quota" && isQuotaGuardedCommand(command.type)) await assertActiveQuotaAvailable(id);
   return command;
@@ -4168,23 +4282,20 @@ async function quotaAccountsPayload(sessionId = null) {
   const selection = await readGeminiSelection(sessionId);
   const selectedId = selection.accountId || null;
   const now = Date.now();
-  const [authEvents, credentialUpdates] = await Promise.all([readAuthEvents(), readCredentialAuthTimes()]);
+  const ompAuthorizedAt = await readOmpAuthorizedAt();
   const accounts = geminiQuotaAccounts().map((account) => {
     const quotas = quotaAccountWindows(account);
-    const { fiveHour, weekly } = quotas;
+    const { fiveHour, weekly, daily } = quotas;
+    const primary = fiveHour || daily || weekly;
+    const primaryQuotaLabel = daily && !fiveHour ? "Ngày" : fiveHour ? "5g" : weekly ? "Tuần" : "--";
+    const entitlement = quotaAccountEntitlement(account);
     const resetAt = (account.limits || []).map((limit) => Number(limit.resetsAt)).filter((value) => Number.isFinite(value) && value > now).sort((a, b) => a - b)[0] || null;
-    const isActive = quotaAccountId(account) === selectedId;
+    const isActive = entitlement.eligible && quotaAccountId(account) === selectedId;
     const sessionDuration = isActive && Number.isFinite(Number(selection.selectedAt))
       ? quotaDuration(now - Number(selection.selectedAt))
       : "0p";
     const emailKey = String(account.email || "").toLowerCase();
-    const authEvent = authEvents[emailKey];
-    const eventTimestamp = Number(authEvent?.timestamp);
-    const credentialTimestamp = Number(credentialUpdates.get(emailKey));
-    const tokenTimestamp = Math.max(
-      Number.isFinite(eventTimestamp) ? eventTimestamp : 0,
-      Number.isFinite(credentialTimestamp) ? credentialTimestamp : 0,
-    ) || null;
+    const tokenTimestamp = Number(ompAuthorizedAt.get(emailKey)) || null;
     const accountStatus = quotaAccountStatus(account, quotas);
     const availability = quotaAccountAvailability(account, quotas);
     return {
@@ -4196,10 +4307,14 @@ async function quotaAccountsPayload(sessionId = null) {
       endpoint: account.endpoint || null,
       hasGoogleQuota: (account.limits || []).some(isGoogleQuotaLimit),
       isGoogleProtect: (account.limits || []).some(isGoogleQuotaLimit),
-      usage5hPct: fiveHour ? quotaRound(Number(fiveHour.usedFraction || 0) * 100) : null,
+      planEligible: entitlement.eligible,
+      planReason: entitlement.reason,
+      primaryQuotaLabel,
+      primaryQuotaWindow: primary?.window || "--",
+      usage5hPct: primary ? quotaRound(Number(primary.usedFraction || 0) * 100) : null,
       usageWeekPct: weekly ? quotaRound(Number(weekly.usedFraction || 0) * 100) : null,
-      resetIn5h: fiveHour?.resetsAt ? quotaDuration(Number(fiveHour.resetsAt) - now) : "--",
-      reset5hSec: fiveHour?.resetsAt ? Math.max(0, Math.ceil((Number(fiveHour.resetsAt) - now) / 1000)) : null,
+      resetIn5h: primary?.resetsAt ? quotaDuration(Number(primary.resetsAt) - now) : "--",
+      reset5hSec: primary?.resetsAt ? Math.max(0, Math.ceil((Number(primary.resetsAt) - now) / 1000)) : null,
       resetInWeek: weekly?.resetsAt ? quotaDuration(Number(weekly.resetsAt) - now) : null,
       tokenLoginTime: Number.isFinite(tokenTimestamp) ? new Date(tokenTimestamp).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" }) : "--",
       tokenLoginAgo: Number.isFinite(tokenTimestamp) ? quotaTokenAge(tokenTimestamp, now) : "--",
@@ -4209,7 +4324,7 @@ async function quotaAccountsPayload(sessionId = null) {
       tokenLoginIso: Number.isFinite(tokenTimestamp) ? new Date(tokenTimestamp).toISOString() : null,
       resetSec: resetAt ? Math.max(0, (resetAt - now) / 1000) : null,
       resetIn: resetAt ? quotaDuration(resetAt - now) : "--",
-      weekMetricNote: weekly ? "Hạn mức tuần" : "Thiếu data",
+      weekMetricNote: weekly ? "Hạn mức tuần" : daily ? "Quota ngày" : "Thiếu data",
       quotaLimits: [...(account.limits || []).reduce((map, limit) => {
         const key = `${limit.label || "Quota"}|${limit.window || "--"}|${Boolean(limit.shared)}`;
         const current = map.get(key);
@@ -4272,7 +4387,7 @@ function quotaWindowPayload(rawAccounts, kind, title, type, now) {
 
 async function quotaOverviewPayload() {
   await ensureQuotaLatest();
-  const rawAccounts = geminiQuotaAccounts();
+  const rawAccounts = eligibleGeminiQuotaAccounts();
   const accounts = await quotaAccountsPayload();
   const now = Date.now();
   const windows = {
@@ -4288,10 +4403,10 @@ async function quotaOverviewPayload() {
     remainingPct: quotaRound(Math.max(0, 1 - Number(limit.usedFraction || 0)) * 100),
     window: limit.window || "Quota",
   }))).filter((item) => Number.isFinite(item.at) && item.at > now).sort((a, b) => a.at - b.at);
-  const statusCounts = accounts.reduce((counts, account) => {
+  const statusCounts = accounts.filter((account) => account.planEligible).reduce((counts, account) => {
     const key = account.statusCode === "exhausted"
       ? "exhausted"
-      : account.statusCode === "danger"
+      : ["danger", "auth_error", "access_error", "quota_blocked", "chat_error"].includes(account.statusCode)
         ? "danger"
       : ["warning", "quota_unknown", "generation_unknown"].includes(account.statusCode)
           ? "warn"
@@ -4299,9 +4414,9 @@ async function quotaOverviewPayload() {
     counts[key] += 1;
     return counts;
   }, { ok: 0, warn: 0, danger: 0, exhausted: 0 });
-  const active = accounts.find((account) => account.isActive) || null;
+  const active = accounts.find((account) => account.isActive && account.planEligible) || null;
   return {
-    totalAccounts: accounts.length,
+    totalAccounts: rawAccounts.length,
     activeAccountId: active?.id || "",
     earliestReset: resetCandidates[0] ? `${quotaDuration(resetCandidates[0].at - now)} (${resetCandidates[0].email})` : "--",
     earliestResetStatus: resetCandidates[0] ? quotaStatusForPercent(resetCandidates[0].usedPct) : "ok",
@@ -4316,7 +4431,7 @@ async function quotaProtectPayload() {
   await ensureQuotaLatest();
   const policy = await syncSafetyPolicy();
   const safety = consoleBridge.safety();
-  const googleAccounts = geminiQuotaAccounts();
+  const googleAccounts = eligibleGeminiQuotaAccounts();
   const protectedAccounts = policy.config.mode === "auto"
     ? googleAccounts
     : googleAccounts.filter((account) => policy.config.accountIds.includes(quotaAccountId(account)));
@@ -4358,7 +4473,7 @@ async function quotaProtectConfig(req) {
   if (body.enabled !== undefined && typeof body.enabled !== "boolean") throw Object.assign(new Error("enabled phải là boolean."), { code: "BAD_REQUEST", field: "enabled" });
   if (body.mode !== undefined && body.mode !== "auto" && body.mode !== "manual") throw Object.assign(new Error("mode phải là auto hoặc manual."), { code: "BAD_REQUEST", field: "mode" });
   if (body.accountIds !== undefined && (!Array.isArray(body.accountIds) || body.accountIds.some((id) => typeof id !== "string"))) throw Object.assign(new Error("accountIds phải là mảng chuỗi."), { code: "BAD_REQUEST", field: "accountIds" });
-  const knownIds = new Set(geminiQuotaAccounts().map(quotaAccountId));
+  const knownIds = new Set(eligibleGeminiQuotaAccounts().map(quotaAccountId));
   const accountIds = body.accountIds === undefined ? current.accountIds : [...new Set(body.accountIds.map((id) => id.trim()).filter((id) => knownIds.has(id)))];
   await saveProtectConfig({ enabled: body.enabled === undefined ? current.enabled : body.enabled, mode: body.mode === undefined ? current.mode : body.mode, accountIds });
   return quotaProtectPayload();
@@ -4371,7 +4486,7 @@ async function quotaHistoryPayload(scope) {
   const allItems = await readTokenHistory();
   const now = Date.now();
   const since = selectedScope === "all" ? 0 : now - QUOTA_HISTORY_SCOPES.get(selectedScope);
-  const importedAccounts = new Map(geminiQuotaAccounts().map((account) => [quotaAccountId(account), account]));
+  const importedAccounts = new Map(eligibleGeminiQuotaAccounts().map((account) => [quotaAccountId(account), account]));
   const findImportedAccount = (item) => importedAccounts.get(String(item.accountId || "")) || null;
   const items = allItems.filter((item) => {
     const account = findImportedAccount(item);
@@ -4703,11 +4818,7 @@ const server = http.createServer(async (req, res) => {
       const sessionId = typeof body.sessionId === "string" && body.sessionId.trim() ? gatewaySessionId(body.sessionId.trim()) : randomUUID();
       const requestId = chatRequestId(body.requestId);
       if (activeChatRequests.has(requestId)) throw Object.assign(new Error("requestId đang được xử lý"), { code: "CONFLICT" });
-      const { model, models } = await validateChatModel(chatModel(body.model), modelProvider);
-      const imageModel = imageGenerationModelForPrompt(prompt, model, models);
-      const selectedModel = modelSource === "quota"
-        ? await assertQuotaModelAllowed(imageModel.id, models, imageModel.provider, sessionId)
-        : await assertGoogleQuotaModelAllowed(imageModel, models, imageModel.provider, sessionId);
+      const { model: selectedModel } = await resolveChatModel(chatModel(body.model), modelSource, modelProvider, sessionId, prompt);
       const record = await ensureChatSession(sessionId, { ...body, approvalMode: selectedApprovalMode, browserMode: selectedBrowserMode });
       record.selectedChatModel = selectedModel;
       if (isQuotaGoogleChatModel(selectedModel)) {
@@ -4770,6 +4881,15 @@ const server = http.createServer(async (req, res) => {
     const script = await readDashboardAsset("honpi-chat-dashboard-live.js");
     res.writeHead(200, { "content-type": "application/javascript; charset=utf-8", "cache-control": "no-store" });
     return res.end(script);
+  }
+  if (requestUrl.pathname === `/${DASHBOARD_MARK_ASSET}` && req.method === "GET") {
+    const image = await readDashboardBinary(DASHBOARD_MARK_ASSET);
+    res.writeHead(200, {
+      "content-type": "image/png",
+      "content-length": image.byteLength,
+      "cache-control": "public, max-age=31536000, immutable",
+    });
+    return res.end(image);
   }
   if (requestUrl.pathname === "/honpi-chat-dashboard-legacy.js" && req.method === "GET") {
     const script = await readDashboardAsset("honpi-chat-dashboard-legacy.js");
@@ -4985,11 +5105,6 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, context: context.publicSummary });
     } catch (error) { return errorResponse(res, error); }
   }
-  if (requestUrl.pathname === "/dashboard-live.js" && req.method === "GET") {
-    const script = await readDashboardAsset("dashboard-live.js");
-    res.writeHead(200, { "content-type": "application/javascript; charset=utf-8" });
-    return res.end(script);
-  }
   if (req.url === "/" && req.method === "GET") {
     res.writeHead(302, { location: "/quota", "cache-control": "no-store" });
     return res.end();
@@ -5032,8 +5147,9 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.url === "/api/login" && req.method === "POST") {
     try {
-      await jsonBody(req);
-      startLogin();
+      const body = await jsonBody(req);
+      if (!body || Array.isArray(body) || typeof body !== "object") throw Object.assign(new Error("Payload phải là object JSON."), { code: "BAD_REQUEST" });
+      startLogin(loginTargetEmail(body.email));
       return json(res, 202, { ok: true, ...login });
     } catch (error) {
       return errorResponse(res, error);

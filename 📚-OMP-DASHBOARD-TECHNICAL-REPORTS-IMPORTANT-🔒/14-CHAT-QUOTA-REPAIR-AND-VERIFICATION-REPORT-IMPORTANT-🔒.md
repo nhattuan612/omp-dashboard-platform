@@ -2,7 +2,15 @@
 
 ## Mục tiêu và phạm vi
 
-Báo cáo gồm kết quả sửa Quota account attribution và Chat/UI queue trước đó, cùng phần tiếp nối ở cuối tài liệu về fix CSP Quota. Phần tiếp nối cập nhật source và HTML của local runtime; không đổi CSP policy, restart service hay deploy remote.
+Báo cáo gồm kết quả sửa Quota account attribution và Chat/UI queue trước đó, cùng phần tiếp nối ở cuối tài liệu về fix CSP Quota. Phần tiếp nối cập nhật source/HTML của local runtime, restart service local; không đổi CSP policy hay deploy remote.
+
+## Tiếp nối: Affinity, entitlement và model-family — 2026-09-27
+
+- Session đã tồn tại nhưng thiếu pin/snapshot không còn kế thừa default mới; mọi request quota phải được ghim thủ công vào credential account chính xác, nếu không fail-closed.
+- Health Gemini chỉ nhận telemetry cùng provider Google và không mang family Claude/GPT; lỗi provider/model khác không thể đổi trạng thái account thành `Google từ chối quyền`.
+- Quota chỉ cho phép account có đủ 4 bucket Gemini và Claude/GPT shared ở 5 giờ/tuần. Đây là capability gate cho Pro/Ultra vì OMP không trả tier subscription trực tiếp.
+- Dashboard hiển thị đủ 4 cửa sổ Gemini/Claude-GPT và chọn model theo catalog account, không ép `gemini-3.8-flash`.
+- Regression tích hợp cuối: `test-session-actions.mjs` pass 98/98 scenario, gồm pin chính xác, legacy fail-closed, Claude/GPT của account đã chọn và không auto-switch.
 
 ## Backup trước sửa
 
