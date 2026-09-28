@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OMP Web Console · Port 4177</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b0e13; --panel:#11161e; --panel-2:#171e28; --line:#283241; --text:#e8edf5; --muted:#8b98aa; --accent:#72a7ff; --good:#4ed29a; --warn:#f4c95d; --bad:#ff7575; --mono:"SFMono-Regular",Consolas,"Liberation Mono",monospace; --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; background:radial-gradient(circle at 75% -10%,#1a2d4b 0,#0b0e13 42%); color:var(--text); font:14px/1.45 var(--sans); }
+    button,input,textarea,select { font:inherit; }
+    button { border:1px solid var(--line); border-radius:7px; background:var(--panel-2); color:var(--text); padding:8px 11px; cursor:pointer; }
+    button:hover:not(:disabled) { border-color:var(--accent); background:#1d2b3d; }
+    button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .app { display:grid; grid-template-columns:280px minmax(0,1fr) 340px; height:100vh; min-height:100vh; overflow:hidden; }
+    .sidebar,.inspector { background:rgba(17,22,30,.94); border-color:var(--line); }
+    .sidebar { border-right:1px solid var(--line); padding:18px 14px; overflow:auto; }
+    .inspector { border-left:1px solid var(--line); padding:18px 14px; overflow:auto; }
+    .brand { display:flex; align-items:center; gap:10px; margin-bottom:20px; }
+    .brand-mark { width:30px; height:30px; display:grid; place-items:center; border-radius:9px; color:#06101e; background:linear-gradient(135deg,#95c3ff,#4ed29a); font-weight:800; }
+    h1,h2,h3,p { margin:0; } h1 { font-size:17px; } h2 { font-size:14px; } h3 { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); }
+    .eyebrow { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.1em; }
+    .status { display:flex; align-items:center; gap:7px; padding:8px 9px; border:1px solid var(--line); border-radius:8px; color:var(--muted); margin-bottom:16px; }
+    .dot { width:8px; height:8px; background:var(--muted); border-radius:50%; } .dot.good { background:var(--good); box-shadow:0 0 10px var(--good); } .dot.bad { background:var(--bad); }
+    .stack { display:grid; gap:8px; } .toolbar { display:flex; flex-wrap:wrap; gap:8px; }
+    .main { min-width:0; min-height:100vh; display:flex; flex-direction:column; background:linear-gradient(180deg,rgba(17,24,35,.38),rgba(11,14,19,.08)); }
+    .topbar { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:15px 20px; border-bottom:1px solid var(--line); background:rgba(11,14,19,.8); }
+    .topbar > * { min-width:0; } .topbar h2 { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .topbar-meta { display:flex; flex-wrap:wrap; gap:7px; color:var(--muted); font-size:12px; }
+    .pill { border:1px solid var(--line); border-radius:999px; padding:4px 8px; white-space:nowrap; } .pill.good { color:var(--good); border-color:#286c55; } .pill.warn { color:var(--warn); border-color:#725e26; }
+    .transcript { flex:1; padding:30px clamp(14px,5vw,76px); overflow:auto; scroll-behavior:smooth; }
+    .welcome { max-width:700px; margin:12vh auto; padding:28px 30px; border:1px solid var(--line); border-radius:16px; background:rgba(17,22,30,.72); box-shadow:0 18px 50px #0002; }
+    .welcome h2 { font-size:23px; margin-bottom:10px; } .welcome p { color:var(--muted); margin-bottom:18px; }
+    .chat-message { max-width:820px; margin:0 auto 26px; }
+    .chat-message.user { max-width:760px; margin-right:max(0px,8%); margin-left:auto; }
+    .message-meta { display:flex; align-items:center; gap:8px; margin-bottom:7px; color:var(--muted); font-size:11px; }
+    .message-role { color:var(--text); font-weight:700; }
+    .message-content { white-space:pre-wrap; overflow-wrap:anywhere; font-size:15px; line-height:1.65; }
+    .chat-message.user .message-content { padding:12px 15px; border:1px solid #36537b; border-radius:14px 14px 4px 14px; background:#172b45; }
+    .chat-message.assistant .message-content { padding-left:1px; }
+    .assistant-mark { display:inline-grid; place-items:center; width:22px; height:22px; margin-right:7px; border-radius:7px; color:#08121e; background:linear-gradient(135deg,#95c3ff,#4ed29a); font-size:11px; font-weight:800; vertical-align:-5px; }
+    .message-empty { color:var(--muted); font-style:italic; }
+    .activity-details { max-width:820px; margin:0 auto 8px; border:1px solid var(--line); border-radius:10px; background:rgba(17,22,30,.62); overflow:hidden; }
+    .activity-details[hidden] { display:none; }
+    .activity-details > summary { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:9px 12px; color:var(--muted); cursor:pointer; list-style:none; font-size:12px; }
+    .activity-details > summary::-webkit-details-marker { display:none; }
+    .activity-details > summary::before { content:'›'; color:var(--accent); font-size:18px; line-height:0; transform:rotate(0deg); transition:transform .15s ease; }
+    .activity-details[open] > summary::before { transform:rotate(90deg); }
+    .activity-title { flex:1; color:var(--text); }
+    .activity-count { padding:2px 7px; border:1px solid var(--line); border-radius:999px; }
+    .activity-list { max-height:270px; overflow:auto; border-top:1px solid var(--line); padding:5px 10px 8px; }
+    .activity-item { border-bottom:1px solid #202937; padding:7px 2px; }
+    .activity-item:last-child { border-bottom:0; }
+    .activity-item summary { display:flex; align-items:center; gap:8px; color:var(--muted); cursor:pointer; font-size:12px; }
+    .activity-item summary strong { color:var(--text); font-weight:600; }
+    .activity-item summary time { margin-left:auto; font:11px var(--mono); color:var(--muted); }
+    .activity-item pre { margin:7px 0 0 19px; max-height:160px; overflow:auto; color:#aebbd0; white-space:pre-wrap; word-break:break-word; }
+    .run-state { color:var(--muted); }
+    .run-state.active { color:var(--warn); }
+    .run-state.done { color:var(--good); }
+    .event { max-width:920px; margin:0 auto 14px; border:1px solid var(--line); border-radius:10px; background:rgba(17,22,30,.88); overflow:hidden; }
+    .event-head { display:flex; justify-content:space-between; gap:10px; padding:8px 11px; color:var(--muted); font-size:11px; border-bottom:1px solid var(--line); }
+    .event-body { padding:12px; white-space:pre-wrap; overflow:auto; } .event-body.mono,pre { font:12px/1.5 var(--mono); }
+    .composer { border-top:1px solid var(--line); padding:14px 20px 18px; background:rgba(11,14,19,.92); }
+    .composer textarea { width:100%; min-height:75px; resize:vertical; border:1px solid var(--line); border-radius:9px; padding:11px; color:var(--text); background:#0e131a; }
+    .composer-row { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:9px; } .hint { color:var(--muted); font-size:12px; }
+    .section { padding:13px 0; border-bottom:1px solid var(--line); } .section:first-child { padding-top:0; } .section p,.section label { color:var(--muted); font-size:12px; }
+    .field { display:grid; gap:5px; margin-top:9px; } input,select { width:100%; padding:8px; color:var(--text); background:#0e131a; border:1px solid var(--line); border-radius:7px; }
+    .raw { max-height:300px; overflow:auto; border:1px solid var(--line); border-radius:7px; background:#090c11; padding:9px; white-space:pre-wrap; word-break:break-word; font:11px/1.45 var(--mono); }
+    dialog { width:min(520px,calc(100vw - 28px)); border:1px solid var(--line); border-radius:12px; background:var(--panel); color:var(--text); padding:18px; box-shadow:0 20px 70px #0008; } dialog::backdrop { background:#0008; } dialog form { display:grid; gap:12px; } dialog p { color:var(--muted); white-space:pre-wrap; } dialog textarea { width:100%; min-height:110px; resize:vertical; color:var(--text); background:#0e131a; border:1px solid var(--line); border-radius:7px; padding:9px; }
+    .empty { color:var(--muted); padding:10px 0; } .error { color:var(--bad); } .good-text { color:var(--good); }
+    .session-card { padding:9px; border:1px solid var(--line); border-radius:8px; color:var(--muted); font-size:12px; } .session-card strong { color:var(--text); display:block; margin-bottom:3px; }
+    .session-row { width:100%; text-align:left; display:block; overflow:hidden; } .session-row strong,.session-row small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .session-row small { color:var(--muted); margin-top:2px; }
+    .selected-session { color:var(--accent); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    @media (max-width:1100px) { .app { grid-template-columns:240px minmax(0,1fr); } .inspector { grid-column:1/-1; border-left:0; border-top:1px solid var(--line); display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; } .inspector .section { border-bottom:0; padding:0; } }
+    @media (max-width:720px) { .app { display:block; height:auto; min-height:0; overflow:visible; } .main { height:auto; min-height:100vh; overflow:visible; } .sidebar,.inspector { border:0; border-bottom:1px solid var(--line); } .inspector { display:block; } .topbar,.transcript,.composer { padding-left:13px; padding-right:13px; } .topbar { align-items:flex-start; flex-direction:column; } .topbar > div:first-child { width:100%; max-width:100%; } .composer-row { align-items:flex-start; flex-direction:column; } .toolbar button { flex:1; } .welcome { margin:7vh auto; padding:22px; } .chat-message.user { margin-left:7%; margin-right:0; } .activity-details { margin-left:0; margin-right:0; } }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" aria-label="OMP navigation">
+      <div class="brand"><span class="brand-mark">O</span><div><div class="eyebrow">Local control plane</div><h1>OMP Web Console</h1></div></div>
+      <div id="connection-status" class="status"><span class="dot"></span><span>Chưa kết nối OMP</span></div>
+      <div class="stack">
+        <button id="start-btn" type="button">▶ Khởi động OMP context</button>
+        <button id="stop-btn" type="button" disabled>■ Dừng context</button>
+        <button type="button" onclick="location.href='/'">Quota Dashboard ↗</button>
+      </div>
+      <div class="section" style="margin-top:20px"><h3>Sessions / Projects</h3><div id="sessions" class="stack" style="margin-top:9px"><div class="empty">Đang tải session OMP…</div></div></div>
+      <div id="session-actions" class="section"><h3>Session actions</h3><div id="selected-session" class="selected-session" style="margin-top:8px">Chưa chọn session lưu</div><div class="field"><label for="session-name">Tên session</label><input id="session-name" placeholder="Tên mới (tuỳ chọn)" /></div><div class="toolbar" style="margin-top:8px"><button type="button" data-session-command="rename">Rename</button><button type="button" data-session-command="fork">Fork</button><button type="button" data-session-command="new">New</button></div><div class="toolbar" style="margin-top:8px"><button type="button" data-session-command="compact">Compact</button><button type="button" data-session-command="handoff">Handoff</button><button type="button" data-session-command="export">Export HTML</button></div><div class="field"><label for="branch-entry">Branch entry ID</label><input id="branch-entry" placeholder="entry id" /><button type="button" data-session-command="branch">Branch từ entry</button></div></div>
+      <div class="section"><h3>Runtime</h3><div id="runtime-summary" class="session-card" style="margin-top:9px">Chưa có OMP process.</div></div>
+    </aside>
+    <main class="main">
+      <header class="topbar"><div><div class="eyebrow">OMP chat console</div><h2 id="context-title">Chưa có context</h2></div><div class="topbar-meta"><span class="run-state" id="run-state">Sẵn sàng</span><span class="pill" id="protocol-pill">Protocol —</span><span class="pill" id="pid-pill">PID —</span><span class="pill" id="event-pill">Events 0</span></div></header>
+      <details id="activity-details" class="activity-details" hidden><summary><span class="activity-title" id="activity-title">Hoạt động lượt chạy</span><span class="activity-count" id="activity-count">0</span></summary><div id="activity-list" class="activity-list" aria-live="polite"></div></details>
+      <section id="transcript" class="transcript" aria-live="polite"><div class="welcome"><h2>Hỏi OMP bằng một cuộc trò chuyện sạch</h2><p>Chat là phần chính. Các bước chạy, extension và frame kỹ thuật nằm trong Activity/Raw để anh vẫn có toàn quyền kiểm tra khi cần.</p><div class="toolbar"><button id="welcome-start" type="button">Khởi động context đầu tiên</button><button type="button" onclick="location.href='/'">Mở quota/account</button></div></div></section>
+      <form id="composer" class="composer"><textarea id="prompt" aria-label="Prompt OMP" placeholder="Khởi động context rồi nhập prompt…" disabled></textarea><div class="composer-row"><span class="hint">Enter gửi · Shift+Enter xuống dòng · prompt sẽ dùng RPC của OMP</span><div class="toolbar"><select id="prompt-behavior" aria-label="Prompt behavior"><option value="prompt">Prompt mới</option><option value="steer">Steer lượt đang chạy</option><option value="followUp">Follow-up lượt đang chạy</option></select><button id="send-btn" type="submit" disabled>Gửi prompt</button><button id="abort-btn" type="button" disabled>Huỷ</button></div></div></form>
+    </main>
+    <aside class="inspector" aria-label="OMP inspector">
+      <div class="section"><h3>Connection</h3><div class="field"><label for="cwd">Working directory</label><input id="cwd" value="" placeholder="Mặc định thư mục server" /></div><div class="toolbar" style="margin-top:9px"><button id="refresh-btn" type="button">↻ Refresh state</button><button id="raw-toggle" type="button">Raw frames</button></div></div>
+      <div class="section"><h3>OMP controls</h3><div class="field"><label for="model-select">Model</label><select id="model-select" disabled><option>Đang tải model…</option></select></div><div class="field"><label for="thinking-select">Thinking</label><select id="thinking-select" disabled><option value="off">off</option><option value="minimal">minimal</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option></select></div><div class="toolbar" style="margin-top:9px"><button id="fast-toggle" type="button" disabled>Fast: —</button><button id="state-btn" type="button" disabled>Get state</button></div><div class="field"><label for="steering-select">Steering queue</label><select id="steering-select" disabled><option value="all">all</option><option value="one-at-a-time">one-at-a-time</option></select></div><div class="field"><label for="follow-up-select">Follow-up queue</label><select id="follow-up-select" disabled><option value="all">all</option><option value="one-at-a-time">one-at-a-time</option></select></div><div class="field"><label for="interrupt-select">Interrupt</label><select id="interrupt-select" disabled><option value="immediate">immediate</option><option value="wait">wait</option></select></div><div class="toolbar" style="margin-top:9px"><button id="compact-btn" type="button" disabled>Compact</button><button id="retry-btn" type="button" disabled>Retry</button><button id="subagents-btn" type="button" disabled>Subagents</button><button id="stats-btn" type="button" disabled>Stats</button></div><div class="toolbar" style="margin-top:9px"><button id="auto-compaction" type="button" disabled>Auto compact: —</button><button id="auto-retry" type="button" disabled>Auto retry: —</button></div><div class="field"><label for="subagent-level">Subagent events</label><select id="subagent-level" disabled><option value="off">off</option><option value="progress">progress</option><option value="events">events</option></select></div><div class="field"><label for="bash-input">Bash command</label><input id="bash-input" placeholder="npm test…" /><div class="toolbar"><button id="bash-btn" type="button" disabled>Run bash</button><button id="abort-bash" type="button" disabled>Abort bash</button></div></div><div class="field"><label for="todo-json">Todos JSON phases</label><textarea id="todo-json" class="raw" style="min-height:70px" placeholder='[{"name":"Phase","tasks":[]}]'></textarea><button id="todos-btn" type="button" disabled>Set todos</button></div></div>
+      <div class="section"><h3>Login / slash commands</h3><div class="field"><label for="login-provider">OMP provider login</label><select id="login-provider" disabled><option>Đang tải providers…</option></select><button id="login-btn" type="button" disabled>Login qua OMP</button></div><div class="field"><label for="slash-input">Available slash command</label><input id="slash-input" list="slash-commands" placeholder="/model, /mcp, /session…" /><datalist id="slash-commands"></datalist><button id="slash-insert" type="button">Chèn vào composer</button></div></div>
+      <div class="section"><h3>Capabilities</h3><p>Danh sách command lấy động từ OMP, không hard-code.</p><div id="capabilities" class="raw" style="margin-top:9px">Chưa nhận available_commands_update.</div></div>
+      <div class="section"><h3>Diagnostics</h3><div id="diagnostics" class="raw" style="margin-top:9px">Chưa có frame.</div></div>
+      <div class="section" id="raw-section"><h3>Advanced / Raw (always visible)</h3><p>Không sửa trực tiếp trong core; gửi JSON RPC theo OMP protocol.</p><textarea id="raw-input" class="raw" style="width:100%;min-height:110px;margin-top:9px" aria-label="Raw RPC JSON">{"id":"state-1","type":"get_state"}</textarea><button id="raw-send" type="button" style="margin-top:8px" disabled>Gửi raw frame</button></div>
+    </aside>
+  </div>
+  <dialog id="extension-dialog"><form method="dialog"><h2 id="extension-title">OMP extension</h2><p id="extension-message"></p><select id="extension-select"></select><textarea id="extension-input" placeholder="Nhập giá trị…"></textarea><div class="toolbar"><button id="extension-cancel" value="cancel" type="submit">Huỷ</button><button id="extension-confirm" value="confirm" type="submit">Xác nhận</button></div></form></dialog>
+  <script src="/console-live.js"></script>
+</body>
+</html>
