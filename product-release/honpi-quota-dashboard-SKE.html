@@ -378,38 +378,46 @@ input, select { font: inherit; }
 /* ─── Google Protect (Safety Guard) Panel ─── */
 .safety-panel {
   margin-top: 12px;
-  background: var(--surface);
+  overflow: hidden;
+  background: linear-gradient(135deg, color-mix(in oklab, var(--surface), var(--success) 3%), var(--surface));
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: 12px 16px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
 }
 .safety-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: minmax(220px, .8fr) minmax(0, 1.7fr);
+  gap: 16px;
+  align-items: stretch;
+  padding: 16px;
+  border-bottom: 1px solid var(--border-soft);
 }
-.safety-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.safety-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; color: var(--fg-2); cursor: pointer; }
-.safety-toggle input { accent-color: var(--success); }
-.safety-mode-select { max-width: 190px; padding: 3px 7px; font-size: 10px; }
-.safety-accounts-editor { display: none; flex-wrap: wrap; gap: 5px; width: 100%; padding: 7px 9px; border: 1px solid var(--border-soft); border-radius: var(--radius-md); background: var(--surface-warm); }
+.safety-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.safety-toggle { min-width: 0; display: flex; align-items: flex-start; gap: 8px; padding: 9px; border: 1px solid var(--border-soft); border-radius: 10px; background: var(--surface-warm); color: var(--fg-2); cursor: pointer; transition: border-color .16s ease, background .16s ease; }
+.safety-toggle:hover, .safety-toggle:has(input:focus-visible) { border-color: color-mix(in oklab, var(--success), var(--border) 45%); }
+.safety-toggle:has(input:checked) { border-color: color-mix(in oklab, var(--success), transparent 45%); background: color-mix(in oklab, var(--success), transparent 94%); }
+.safety-toggle input { width: 14px; height: 14px; margin: 3px 0 0; flex: 0 0 auto; accent-color: var(--success); }
+.safety-toggle-copy { display: grid; min-width: 0; gap: 2px; }
+.safety-toggle-copy strong { color: var(--fg); font-size: 11px; line-height: 1.25; }
+.safety-toggle-copy small, .safety-control-state { overflow: hidden; color: var(--muted); font-size: 9.5px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.safety-control-state { color: var(--success); }
+.safety-mode-select { min-width: 150px; padding: 5px 8px; font-size: 11px; }
+.safety-accounts-editor { display: none; flex-wrap: wrap; gap: 5px; width: calc(100% - 32px); margin: 0 16px 12px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: var(--radius-md); background: var(--surface-warm); box-sizing: border-box; }
 .safety-accounts-editor.is-open { display: flex; }
 .safety-account-option { display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px; border: 1px solid var(--border); border-radius: var(--radius-pill); color: var(--fg-2); font: 10px var(--font-mono); }
 .safety-account-option input { accent-color: var(--accent); }
 .safety-title-wrap {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 10px;
 }
 .safety-icon-box {
-  width: 26px;
-  height: 26px;
-  border-radius: 6px;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border-radius: 9px;
   background: var(--success-soft);
   color: var(--success);
   display: flex;
@@ -417,10 +425,16 @@ input, select { font: inherit; }
   justify-content: center;
 }
 .safety-title {
-  font-weight: 600;
-  font-size: 12.5px;
+  margin: 0;
+  font-weight: 650;
+  font-size: 15px;
+  line-height: 1.2;
   color: var(--fg);
 }
+.safety-copy { min-width: 0; display: grid; gap: 3px; }
+.safety-eyebrow, .safety-scope-label, .safety-logic-kicker, .safety-policy-card span, .safety-rotation-meta span { color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+.safety-subtitle { margin: 0; color: var(--fg-2); font-size: 10px; line-height: 1.45; }
+.safety-status-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .safety-state-badge {
   font-size: 11px;
   font-weight: 500;
@@ -430,30 +444,43 @@ input, select { font: inherit; }
   border-radius: var(--radius-pill);
   border: 1px solid color-mix(in oklab, var(--success), transparent 75%);
 }
+.safety-scope { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 14px; padding: 10px 16px; border-bottom: 1px solid var(--border-soft); background: color-mix(in oklab, var(--surface-warm), transparent 14%); }
+.safety-scope-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; min-width: 0; }
+.safety-logic { margin: 16px 16px 0; padding: 12px; border: 1px solid color-mix(in oklab, var(--success), var(--border) 65%); border-radius: var(--radius-md); background: color-mix(in oklab, var(--success), transparent 96%); }
+.safety-logic-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 10px; margin-bottom: 9px; }
+.safety-logic-heading p { margin: 0; color: var(--fg-2); font-size: 10.5px; line-height: 1.45; }
+.safety-policy-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.safety-policy-card, .safety-rotation-meta > div { min-width: 0; display: grid; gap: 4px; padding: 9px 10px; border: 1px solid var(--border-soft); border-radius: 9px; background: var(--surface); }
+.safety-policy-card strong, .safety-rotation-meta strong { overflow-wrap: anywhere; color: var(--fg); font: 600 10.5px/1.45 var(--font-mono); }
+.safety-policy-card.is-decision { border-color: color-mix(in oklab, var(--success), transparent 50%); background: color-mix(in oklab, var(--success), transparent 93%); }
+.safety-rotation-meta { display: grid; grid-template-columns: 1.5fr 1fr 1fr; gap: 8px; margin-top: 8px; }
 .safety-metrics-grid {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
   align-items: center;
-  background: var(--surface-warm);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-md);
-  padding: 8px 12px;
+  padding: 16px;
   font-size: 11.5px;
   width: 100%;
   box-sizing: border-box;
 }
 .safety-metric-item {
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--surface-warm);
 }
 .safety-metric-label {
-  font-size: 10px;
+  font-size: 9px;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
+.safety-metric-item .mono { min-width: 0; overflow-wrap: anywhere; line-height: 1.45; }
 .safety-accounts-chips {
   display: flex;
   gap: 4px;
@@ -1492,6 +1519,32 @@ input, select { font: inherit; }
   .account-footer-reset { font-size:9px; }
   .account-action-inline { gap:4px; }
 }
+@media (max-width: 1100px) {
+  .safety-header { grid-template-columns: 1fr; }
+  .safety-controls { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .safety-policy-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .safety-metrics-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 700px) {
+  .safety-policy-grid { grid-template-columns: 1fr; }
+  .safety-rotation-meta { grid-template-columns: 1fr 1fr; }
+  .safety-rotation-meta > div:first-child { grid-column: 1 / -1; }
+  .safety-metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 480px) {
+  .safety-header { padding: 14px; gap: 12px; }
+  .safety-controls { grid-template-columns: 1fr; }
+  .safety-scope { align-items: flex-start; padding: 10px 14px; }
+  .safety-scope-actions { width: 100%; }
+  .safety-mode-select { flex: 1 1 150px; }
+  .safety-accounts-editor { width: calc(100% - 28px); margin-inline: 14px; }
+  .safety-logic { margin: 14px 14px 0; padding: 10px; }
+  .safety-metrics-grid { padding: 14px; }
+}
+@media (max-width: 360px) {
+  .safety-rotation-meta, .safety-metrics-grid { grid-template-columns: 1fr; }
+  .safety-rotation-meta > div:first-child { grid-column: auto; }
+}
 </style>
 </head>
 <body>
@@ -1653,32 +1706,44 @@ input, select { font: inherit; }
           <div class="safety-icon-box">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
           </div>
-          <span class="safety-title">Bảng Điều Khiển Google Protect (Safety Guard)</span>
-          <span class="safety-state-badge" id="safety-state">● Đang bảo vệ 429</span>
+          <div class="safety-copy">
+            <span class="safety-eyebrow">Account safety</span>
+            <h2 class="safety-title">Google Protect</h2>
+            <p class="safety-subtitle">Chính sách quota và phiên cho Google Antigravity.</p>
+            <div class="safety-status-row"><span class="safety-state-badge" id="safety-state">● Đang bảo vệ 429</span></div>
+          </div>
         </div>
         <div class="safety-controls">
-          <label class="safety-toggle" title="Bật hoặc tắt guard chống 429"><input type="checkbox" id="safetyEnabled" checked> <span>Bảo vệ 429</span></label>
-          <label class="safety-toggle" title="Tự động đổi account mặc định mới khi quota live của account hiện tại bị tạm ngưng từ 90%"><input type="checkbox" id="safetyRotationEnabled"> <span>XOAY TÀI KHOẢN</span></label>
-          <label class="safety-toggle" title="Buộc session OMP/PI/OpenDesign mới dùng đúng account đang chọn ở Quota"><input type="checkbox" id="ompAccountControl"> <span>KHỐNG CHẾ OMP</span></label>
+          <label class="safety-toggle" title="Bật hoặc tắt guard chống 429"><input type="checkbox" id="safetyEnabled" checked><span class="safety-toggle-copy"><strong>Bảo vệ 429</strong><small>Cooldown và FIFO theo session</small></span></label>
+          <label class="safety-toggle" title="Tự động đổi account mặc định mới khi quota live của account hiện tại bị tạm ngưng từ 90%"><input type="checkbox" id="safetyRotationEnabled"><span class="safety-toggle-copy"><strong>Xoay tài khoản</strong><small id="rotationState" class="safety-control-state">🔄 Đang tải…</small></span></label>
+          <label class="safety-toggle" title="Buộc session OMP/PI/OpenDesign mới dùng đúng account đang chọn ở Quota"><input type="checkbox" id="ompAccountControl"><span class="safety-toggle-copy"><strong>Khống chế OMP</strong><small id="ompAccountControlState" class="safety-control-state">🔒 Đang tải…</small></span></label>
+        </div>
+      </div>
+      <div class="safety-scope">
+        <span class="safety-scope-label">Phạm vi áp dụng</span>
+        <div class="safety-scope-actions">
           <select class="select-input safety-mode-select" id="safetyMode" aria-label="Phạm vi Safety Guard">
             <option value="auto">Tự động mọi Google</option>
             <option value="manual">Chọn tài khoản</option>
           </select>
           <button class="btn btn-secondary btn-sm" id="safetyAccountsBtn">Tài khoản áp dụng</button>
           <span class="brand-badge" id="safety-applied-badge" style="color: var(--success); border-color: color-mix(in oklab, var(--success), transparent 70%);">🛡️ -- tài khoản</span>
-          <span class="brand-badge" id="ompAccountControlState">🔒 Đang tải…</span>
-          <span class="brand-badge" id="rotationState">🔄 Đang tải…</span>
         </div>
       </div>
       <div class="safety-accounts-editor" id="safetyAccountsEditor" aria-label="Chọn tài khoản Google được bảo vệ"></div>
-      <div class="safety-accounts-editor is-open" aria-label="Logic xoay account Google Protect">
-        <span class="safety-account-option">Luật: quota live ≥90% → account đủ quota ít dùng nhất → chỉ session mới.</span>
-        <span class="safety-account-option">429 lịch sử/cooldown: chờ, không xoay giữa turn.</span>
-        <span class="safety-account-option">Quyết định: <strong id="rotationReason">Đang tải…</strong></span>
-        <span class="safety-account-option">Ứng viên: <strong id="rotationCandidates">--</strong></span>
-        <span class="safety-account-option">Lần kiểm tra tới: <strong id="rotationNextCheck">--</strong></span>
-        <span class="safety-account-option">Lần xoay: <strong id="rotationLast">Chưa xoay</strong></span>
-      </div>
+      <section class="safety-logic" aria-label="Logic xoay account Google Protect">
+        <div class="safety-logic-heading"><span class="safety-logic-kicker">Luật xoay</span><p>Quyết định dựa trên quota live và chỉ thay default cho session mới.</p></div>
+        <div class="safety-policy-grid">
+          <div class="safety-policy-card"><span>Chỉ xoay khi</span><strong>Quota live ≥90% và không có turn đang chạy.</strong></div>
+          <div class="safety-policy-card"><span>Giữ nguyên khi</span><strong>429 lịch sử hoặc cooldown; không đổi giữa turn.</strong></div>
+          <div class="safety-policy-card is-decision"><span>Quyết định hiện tại</span><strong id="rotationReason">Đang tải…</strong></div>
+        </div>
+        <div class="safety-rotation-meta">
+          <div><span>Ứng viên</span><strong id="rotationCandidates">--</strong></div>
+          <div><span>Kiểm tra tới</span><strong id="rotationNextCheck">--</strong></div>
+          <div><span>Lần xoay</span><strong id="rotationLast">Chưa xoay</strong></div>
+        </div>
+      </section>
       <div class="safety-metrics-grid">
         <div class="safety-metric-item">
           <span class="safety-metric-label">Request chạy</span>
@@ -2259,7 +2324,7 @@ input, select { font: inherit; }
     historyScopeStats = {}; renderHistoryScopeCards(); ['history-requests','history-total','history-input','history-output'].forEach(id=>set(id,'--')); set('trend-range-label','Đang tải dữ liệu live OMP…');set('live-sync-time','Cập nhật: Đang tải…');
     document.querySelectorAll('#history-summary .period-btn').forEach(b=>b.disabled=false);
     document.querySelectorAll('.filter-count').forEach(x=>x.textContent='--');
-    const safety=document.getElementById('safety-panel');if(safety){set('safety-state','Đang tải…');set('safety-active','--');set('safety-cooldown','--');set('safety-429','--');set('safety-next-request','Đang tải…');set('ompAccountControlState','🔒 Đang tải…');set('rotationState','🔄 Đang tải…');set('rotationReason','Đang tải…');set('rotationCandidates','--');set('rotationNextCheck','--');set('rotationLast','Chưa xoay');const b=safety.querySelector('.safety-header .brand-badge');if(b)b.textContent='🛡️ Đang tải…';const c=safety.querySelector('.safety-accounts-chips');if(c)c.textContent='Đang tải…'}
+    const safety=document.getElementById('safety-panel');if(safety){set('safety-state','Đang tải…');set('safety-active','--');set('safety-cooldown','--');set('safety-429','--');set('safety-next-request','Đang tải…');set('safety-applied-badge','🛡️ Đang tải…');set('ompAccountControlState','🔒 Đang tải…');set('rotationState','🔄 Đang tải…');set('rotationReason','Đang tải…');set('rotationCandidates','--');set('rotationNextCheck','--');set('rotationLast','Chưa xoay');const c=safety.querySelector('.safety-accounts-chips');if(c)c.textContent='Đang tải…'}
     document.querySelectorAll('#quickCheckModal .modal-kpi-card .mono').forEach(x=>x.textContent='--');document.querySelectorAll('#quickCheckModal .quota-win-card').forEach(card=>{const v=card.querySelector('.quota-win-val'),f=card.querySelector('.progress-bar-fill'),m=card.querySelectorAll('.quota-win-meta span');if(v)v.textContent='--';if(f)updateQuotaBar(f,null,null,card.querySelector('.quota-win-name')?.textContent?.trim()||'Quota');m.forEach(x=>x.textContent='--')});
   }
   function setOAuthButton(label, disabled) { const b=document.getElementById('oauthLoginBtn'); if(!b)return; b.disabled=Boolean(disabled); const text=b.querySelector('span:last-child'); if(text)text.textContent=label; }
