@@ -768,6 +768,9 @@ async function runContract() {
     assert.ok(chatClient.includes("if (state.activeId) {\n      const promptSettings = snapshotSettings();"));
     assert.ok(chatClient.includes("if (requestId !== state.sessionLoadRequestId) return;"));
     assert.ok(chatClient.includes("await loadFolders({ silent: true });"));
+    assert.ok(chatClient.includes("const projectName = session?.folderName?.trim() || '';"));
+    assert.ok(chatClient.includes("'Workspace chung'"));
+    assert.ok(chatClient.includes('`Folder dự án: ${projectName}`'));
     passes.push("queued frontend turns remain in the tray until their backend turn dispatches");
     assert.match(chatClient, /function copyText\(value, label = 'nội dung'\)/);
     assert.match(chatClient, /Sao chép code/);
