@@ -2701,6 +2701,9 @@ async function ensureChatSessionUnlocked(sessionId, body = {}, { requireExisting
       : null;
     if (savedGeminiAccount) await pinGeminiSession(record, id, savedGeminiAccount);
   } else await waitGatewayReady(record);
+  if (record && typeof stored.geminiAccountId === "string" && stored.geminiAccountId.trim()) {
+    record.geminiAccountId = stored.geminiAccountId.trim();
+  }
   if (migratedLegacyCwd) await updateChatMetadata(id, { cwd: effectiveCwd, cwdMigrated: true }, { touchUpdatedAt: false });
   const previous = chatSessionMeta.get(id) || {};
   chatSessionMeta.set(id, { ...previous, ...stored, id, path: persisted?.path || previous.path, cwdMigrated: migratedLegacyCwd || Boolean(stored.cwdMigrated), cwd: migratedLegacyCwd ? effectiveCwd : persisted?.cwd || stored.cwd || previous.cwd || body.cwd || DEFAULT_CHAT_CWD, title: previous.title || stored.title || persisted?.title || body.title || "Phiên làm việc mới", createdAt: previous.createdAt || stored.createdAt || persisted?.createdAt || record.createdAt, updatedAt: record.updatedAt });
