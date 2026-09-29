@@ -376,10 +376,19 @@
     if (mode === 'always-expanded') folder.classList.remove('collapsed');
     if (mode === 'manual' && state.folderCollapsed.has(name)) folder.classList.add('collapsed');
   }
+  function closeLiveContextMenus() {
+    state.menu?.remove();
+    state.folderMenu?.remove();
+    state.menu = null;
+    state.folderMenu = null;
+  }
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') closeLiveContextMenus();
+  });
   function showFolderMenu(name, x, y) {
     if (!name) return;
-    state.folderMenu?.remove();
-    const menu = document.createElement('div'); menu.className = 'neuratalk-context-menu open'; menu.id = 'liveFolderActionMenu'; menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', `Tùy chọn folder ${name}`); menu.style.left = `${Math.max(8, Math.min(x || 24, innerWidth - 228))}px`; menu.style.top = `${Math.max(8, Math.min(y || 80, innerHeight - 180))}px`; menu.style.zIndex = '3000'; menu.style.pointerEvents = 'auto';
+    closeLiveContextMenus();
+    const menu = document.createElement('div'); menu.className = 'neuratalk-context-menu open'; menu.id = 'liveFolderActionMenu'; menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', `Tùy chọn dự án ${name}`); menu.style.left = `${Math.max(8, Math.min(x || 24, innerWidth - 228))}px`; menu.style.top = `${Math.max(8, Math.min(y || 80, innerHeight - 180))}px`; menu.style.zIndex = '3000'; menu.style.pointerEvents = 'auto';
     const title = document.createElement('div'); title.className = 'context-menu-label'; title.textContent = name; menu.append(title);
     const projectRecord = (state.folders || []).find((folder) => folder?.name === name);
     if (projectRecord) {
@@ -393,11 +402,11 @@
     const currentMode = folderMode(name);
     [['always-expanded', 'Luôn mở rộng'], ['always-collapsed', 'Luôn thu gọn'], ['manual', 'Cho phép thu gọn / mở rộng']].forEach(([mode, label]) => {
       const selected = currentMode === mode;
-      const item = document.createElement('button'); item.type = 'button'; item.className = `context-menu-item folder-mode-item${selected ? ' active' : ''}`; item.setAttribute('role', 'menuitemradio'); item.setAttribute('aria-checked', String(selected)); item.title = mode === 'manual' ? 'Cho phép bấm để đóng hoặc mở folder' : mode === 'always-collapsed' ? 'Khoá folder ở trạng thái thu gọn' : 'Khoá folder ở trạng thái mở rộng';
+      const item = document.createElement('button'); item.type = 'button'; item.className = `context-menu-item folder-mode-item${selected ? ' active' : ''}`; item.setAttribute('role', 'menuitemradio'); item.setAttribute('aria-checked', String(selected)); item.title = mode === 'manual' ? 'Cho phép bấm để đóng hoặc mở dự án' : mode === 'always-collapsed' ? 'Khoá dự án ở trạng thái thu gọn' : 'Khoá dự án ở trạng thái mở rộng';
       const textNode = document.createElement('span'); textNode.className = 'menu-label'; textNode.textContent = label;
       const check = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); check.classList.add('folder-mode-check'); check.setAttribute('viewBox', '0 0 24 24'); check.setAttribute('fill', 'none'); check.setAttribute('stroke', 'currentColor'); check.setAttribute('stroke-width', '2.5'); check.setAttribute('aria-hidden', 'true');
       const checkPath = document.createElementNS('http://www.w3.org/2000/svg', 'polyline'); checkPath.setAttribute('points', '20 6 9 17 4 12'); check.append(checkPath); item.append(textNode, check);
-      item.addEventListener('click', () => { setFolderMode(name, mode); state.folderMenu = null; menu.remove(); renderSessions(); notify(mode === 'always-expanded' ? `Folder “${name}” luôn mở rộng` : mode === 'always-collapsed' ? `Folder “${name}” luôn thu gọn` : `Folder “${name}” dùng chế độ thủ công`); }); menu.append(item);
+      item.addEventListener('click', () => { setFolderMode(name, mode); state.folderMenu = null; menu.remove(); renderSessions(); notify(mode === 'always-expanded' ? `Dự án “${name}” luôn mở rộng` : mode === 'always-collapsed' ? `Dự án “${name}” luôn thu gọn` : `Dự án “${name}” dùng chế độ thủ công`); }); menu.append(item);
     });
     document.body.append(menu); state.folderMenu = menu;
     setTimeout(() => document.addEventListener('click', () => { menu.remove(); state.folderMenu = null; }, { once: true }), 0);
@@ -523,10 +532,9 @@
   }
 
   function showMenu(session, x, y) {
-    state.menu?.remove();
-    state.folderMenu?.remove();
+    closeLiveContextMenus();
     const menu = document.createElement('div'); menu.className = 'neuratalk-context-menu open'; menu.id = 'liveSessionActionMenu'; menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', `Tùy chọn cuộc trò chuyện ${session.title || session.id}`); menu.style.left = `${Math.max(8, Math.min(x || 24, innerWidth - 228))}px`; menu.style.top = `${Math.max(8, Math.min(y || 80, innerHeight - 300))}px`; menu.style.zIndex = '3000'; menu.style.pointerEvents = 'auto';
-    const actions = [['rename', 'Đặt lại tên'], [session.isPinned ? 'unpin' : 'pin', session.isPinned ? 'Bỏ ghim' : 'Ghim'], [session.isUnread ? 'read' : 'unread', session.isUnread ? 'Đánh dấu đã đọc' : 'Đánh dấu chưa đọc'], ['folder', 'Phân loại folder'], ['duplicate', 'Nhân bản cuộc trò chuyện'], ['fork', 'Tạo nhánh'], ['export', 'Xuất dữ liệu (.md)'], ['reconnect', 'Kết nối lại session'], ['share', 'Chia sẻ liên kết'], ['archive', 'Lưu trữ'], ['delete', 'Xoá vĩnh viễn']];
+    const actions = [['rename', 'Đặt lại tên'], [session.isPinned ? 'unpin' : 'pin', session.isPinned ? 'Bỏ ghim' : 'Ghim'], [session.isUnread ? 'read' : 'unread', session.isUnread ? 'Đánh dấu đã đọc' : 'Đánh dấu chưa đọc'], ['folder', 'Phân loại dự án'], ['duplicate', 'Nhân bản cuộc trò chuyện'], ['fork', 'Tạo nhánh'], ['export', 'Xuất dữ liệu (.md)'], ['reconnect', 'Kết nối lại phiên'], ['share', 'Chia sẻ liên kết'], ['archive', 'Lưu trữ'], ['delete', 'Xoá vĩnh viễn']];
     actions.forEach(([action, label]) => {
       const item = document.createElement('button'); item.type = 'button'; item.className = `context-menu-item${action === 'delete' ? ' danger' : ''}`; item.dataset.action = action; item.textContent = label;
       item.addEventListener('click', () => {
@@ -541,13 +549,12 @@
   }
   function showFolderAssignmentMenu(session, x, y) {
     if (!session?.id) return;
-    state.menu?.remove();
-    state.folderMenu?.remove();
+    closeLiveContextMenus();
     const menu = document.createElement('div');
     menu.className = 'neuratalk-context-menu open';
     menu.id = 'liveFolderAssignmentMenu';
     menu.setAttribute('role', 'menu');
-    menu.setAttribute('aria-label', `Phân loại folder cho ${session.title || session.id}`);
+    menu.setAttribute('aria-label', `Phân loại dự án cho ${session.title || session.id}`);
     menu.style.left = `${Math.max(8, Math.min(x || 24, innerWidth - 260))}px`;
     menu.style.top = `${Math.max(8, Math.min(y || 80, innerHeight - 320))}px`;
     menu.style.zIndex = '3000';
@@ -572,15 +579,15 @@
           close();
         } catch (error) {
           item.disabled = false;
-          notify(`Không thể cập nhật folder: ${error.message}`, true);
+          notify(`Không thể cập nhật dự án: ${error.message}`, true);
         }
       });
       menu.append(item);
     };
     if (session.folderId || session.folderName) {
-      addItem('Bỏ phân loại folder', () => runAction(session.id, 'unassign_folder'), { danger: true });
+      addItem('Bỏ phân loại dự án', () => runAction(session.id, 'unassign_folder'), { danger: true });
     }
-    addItem('Tạo folder mới…', async () => {
+    addItem('Tạo dự án mới…', async () => {
       const created = await requestProjectFolder();
       if (!created?.id) return;
       await loadFolders({ silent: true });
@@ -600,7 +607,7 @@
     } else {
       const empty = document.createElement('div');
       empty.className = 'context-menu-label';
-      empty.textContent = 'Chưa có folder đã lưu';
+      empty.textContent = 'Chưa có dự án đã lưu';
       menu.append(empty);
     }
     document.body.append(menu);
