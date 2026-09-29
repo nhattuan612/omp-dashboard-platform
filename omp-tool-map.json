@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "mapVersion": "2026-09-29.2",
+  "mapVersion": "2026-09-29.3",
   "verification": { "ompVersion": "18.3.2" },
   "groups": [
     { "id": "workspace", "label": "WORKSPACE" },
@@ -12,7 +12,8 @@
     { "id": "history", "label": "THEO DÕI OMP" }
   ],
   "modes": [
-    { "id": "plan-yolo", "lifecycle": "active", "omp": { "kind": "cli-flag", "flag": "--plan-yolo" }, "chat": { "surface": "composer", "label": "Plan YOLO", "description": "Lập kế hoạch chỉ đọc, tự duyệt plan rồi chuyển sang thực thi." } }
+    { "id": "plan-yolo", "lifecycle": "active", "omp": { "kind": "cli-flag", "flag": "--plan-yolo" }, "chat": { "surface": "modes", "label": "Plan YOLO", "description": "Lập kế hoạch chỉ đọc, tự duyệt plan rồi chuyển sang thực thi." } },
+    { "id": "advisor", "lifecycle": "active", "omp": { "kind": "cli-flag", "flag": "--advisor" }, "chat": { "surface": "modes", "label": "Advisor", "description": "Model thứ hai review thụ động mỗi lượt và chèn ghi chú khi cần." } }
   ],
   "tools": [
     { "id": "read", "lifecycle": "active", "omp": { "kind": "builtin", "cliId": "read", "config": { "mode": "always" } }, "chat": { "group": "workspace", "label": "Đọc tệp", "description": "Đọc nội dung tệp trong workspace để phân tích.", "icon": "↳", "approval": "read", "alwaysAsk": true, "selection": "cli" } },
