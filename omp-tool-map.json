@@ -1,6 +1,6 @@
 {
-  "schemaVersion": 1,
-  "mapVersion": "2026-09-29.1",
+  "schemaVersion": 2,
+  "mapVersion": "2026-09-29.2",
   "verification": { "ompVersion": "18.3.2" },
   "groups": [
     { "id": "workspace", "label": "WORKSPACE" },
@@ -10,6 +10,9 @@
     { "id": "web", "label": "WEB" },
     { "id": "connections", "label": "KẾT NỐI OMP" },
     { "id": "history", "label": "THEO DÕI OMP" }
+  ],
+  "modes": [
+    { "id": "plan-yolo", "lifecycle": "active", "omp": { "kind": "cli-flag", "flag": "--plan-yolo" }, "chat": { "surface": "composer", "label": "Plan YOLO", "description": "Lập kế hoạch chỉ đọc, tự duyệt plan rồi chuyển sang thực thi." } }
   ],
   "tools": [
     { "id": "read", "lifecycle": "active", "omp": { "kind": "builtin", "cliId": "read", "config": { "mode": "always" } }, "chat": { "group": "workspace", "label": "Đọc tệp", "description": "Đọc nội dung tệp trong workspace để phân tích.", "icon": "↳", "approval": "read", "alwaysAsk": true, "selection": "cli" } },
