@@ -762,6 +762,7 @@ async function runContract() {
     passes.push("Quota falls back to the broker usage probe when omp usage is empty");
 
     const chatClient = await readFile(join(PROJECT_ROOT, "honpi-chat-dashboard-live.js"), "utf8");
+    const chatDashboard = await readFile(join(PROJECT_ROOT, "honpi-chat-dashboard-SKE.html"), "utf8");
     const quotaDashboards = await Promise.all([
       readFile(join(PROJECT_ROOT, "honpi-quota-dashboard-SKE.html"), "utf8"),
       readFile(join(PROJECT_ROOT, "product-release", "honpi-quota-dashboard-SKE.html"), "utf8"),
@@ -808,6 +809,11 @@ async function runContract() {
     assert.match(chatClient, /newSessionBtn.*void createSession\(\)/);
     assert.match(chatClient, /aria-pressed/);
     assert.match(acpAdapter, /isImageGenerationTool\(name\) \? imageAttachments\(output\) : \[\]/);
+    assert.match(chatClient, /TOOL_STORAGE_KEY/);
+    assert.match(chatClient, /syncOmpCatalog/);
+    assert.doesNotMatch(chatClient, /const basicIds/);
+    assert.doesNotMatch(chatClient, /const glyphs/);
+    assert.doesNotMatch(chatDashboard, /tool-row-python/);
     passes.push("frontend exposes attachment, copy, prompt-revision, branch, markdown-table, and OMP file-change controls");
     for (const quotaDashboard of quotaDashboards) {
       assert.ok(quotaDashboard.includes("['blocked','error','auth_error','access_error','transient_error'].includes(raw.generationStatus)"));

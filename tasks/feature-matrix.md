@@ -11,6 +11,7 @@
 | Session actions, pagination và folder persistence | `/api/v1/sessions/:id/action`, `/api/v1/folders`, `?limit=&cursor=` | supported; create/assign/unassign/reassign/reload giữ metadata thật |
 | File listing/reference | `/api/v1/sessions/:id/files`, `/files/reference` | supported; workspace-constrained; isolated API acceptance covers valid text plus traversal, symlink, `.git`, binary, and size boundaries; production file smoke chưa chạy |
 | Approval, Agent Hub, capability catalog | `/approval`, `/agents`, `/api/v1/omp/capabilities` | approval roundtrip supported for real `confirm`/`select` frames; Agent Hub partial/read-only, real subagent observed and completed; capability GET `200` |
+| OMP tool catalog & drift | `omp-tool-map.json`, `/api/v1/omp/capabilities`, `POST /api/v1/omp/capabilities/audit` | supported; source map versioned, runtime audit không gửi prompt/model, unknown/MCP chỉ read-only, `hub` blocked theo evidence |
 | Browser modes | capability catalog + Settings | partial; Ego Browser mặc định, relay/chrome unavailable |
 | Share modes | `/api/v1/sessions/:id/action` action `share` | partial; live session đã pass local loopback và encrypted HTTPS; collab unavailable |
 | OMP-native Memory adapter | `/api/v1/sessions/:id/memory`, `/api/v1/sessions/:id/memory/action` | deployed; capability supported; live backend `off`, không có production Memory operation trong rollout |

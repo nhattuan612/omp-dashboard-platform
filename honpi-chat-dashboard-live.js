@@ -3,6 +3,7 @@
   'use strict';
   window.HONPI_CHAT_CONFIG = { endpoints: { sessions: '/api/v1/sessions', stream: '/api/v1/chat/stream', models: '/api/v1/quota/models' } };
   const API = '/api/v1';
+  const TOOL_STORAGE_KEY = 'omp.tools.v2';
   const BROWSER_MODE_PREFERENCE_VERSION = 'manual-v1';
   const initialBrowserMode = localStorage.getItem('omp.browserModePreferenceVersion') === BROWSER_MODE_PREFERENCE_VERSION ? localStorage.getItem('omp.browserMode') : 'none';
   const state = { sessions: [], nextCursor: null, activeId: null, generation: 0, messages: [], models: [], activeModel: null, controller: null, requestId: null, activeRequest: null, createPromise: null, menu: null, folderMenu: null, quota: null, accounts: [], attachments: [], workspaceFiles: [], workspaceMention: '@', capabilities: null, selectedTools: [], toolsUpdating: false, folderExpanded: new Set(), folderCollapsed: new Set(), thinking: localStorage.getItem('omp.thinking') || 'max', browserMode: initialBrowserMode === 'ego-browser' ? 'ego-browser' : 'none', shareMode: localStorage.getItem('omp.shareMode') || 'encrypted', approvalMode: localStorage.getItem('omp.approvalMode') || 'always-ask', enterBehavior: localStorage.getItem('omp.enterBehavior') || 'queue', conversationDisplay: localStorage.getItem('omp.conversationDisplay') || 'compact', pendingPrompts: [], queuePausedSessions: new Map(), editingQueueId: null, draftPromptPreview: null, browserAction: null, browserStatus: null, media: { screenCapture: { status: 'unavailable', reason: 'Native screen capture is not provided by OMP dashboard.' }, camera: { status: 'unavailable' }, microphone: { status: 'unavailable' }, video: { status: 'unavailable' } } };
@@ -93,6 +94,18 @@
   }
   const $ = (id) => document.getElementById(id);
   const text = (value) => String(value ?? '');
+  const selectableTools = () => (state.capabilities?.tools || []).filter((item) => item.canToggle).map((item) => item.id);
+  const saveSelectedTools = () => {
+    const tools = [...new Set(state.selectedTools)];
+    localStorage.setItem(TOOL_STORAGE_KEY, JSON.stringify({ fingerprint: state.capabilities?.catalog?.fingerprint || '', tools }));
+    localStorage.setItem('omp.tools', JSON.stringify(tools));
+  };
+  const restoreSelectedTools = (fallback) => {
+    let stored; try { stored = JSON.parse(localStorage.getItem(TOOL_STORAGE_KEY) || 'null'); } catch {}
+    if (!Array.isArray(stored?.tools)) { try { stored = { tools: JSON.parse(localStorage.getItem('omp.tools') || '[]') }; } catch { stored = null; } }
+    const valid = Array.isArray(stored?.tools) && stored.tools.length && stored.tools.every((id) => fallback.includes(id));
+    return valid ? stored.tools : fallback;
+  };
   const workspacePathLabel = (value) => text(value).replace(/^\/Users\/[^/]+(?=\/|$)/, '~');
   const looksLikeImageGenerationPrompt = (value) => {
     const prompt = text(value).trim();
@@ -1511,8 +1524,10 @@
       restoreRetry(id);
     }
     if (Array.isArray(session.tools)) {
-      state.selectedTools = [...session.tools];
-      localStorage.setItem('omp.tools', JSON.stringify(state.selectedTools));
+      const selectable = new Set(selectableTools());
+      state.selectedTools = session.tools.filter((id) => selectable.has(id));
+      if (!state.selectedTools.length) state.selectedTools = selectableTools();
+      saveSelectedTools();
       renderOmpTools();
     }
     renderSessions();
@@ -2939,47 +2954,61 @@
     const tools = $('toolsContentArea'); const catalog = state.capabilities?.tools || []; if (!tools) return; tools.replaceChildren();
     if (!catalog.length) { tools.append(emptyNode('OMP chưa công bố capability')); return; }
     tools.setAttribute('aria-label', 'Công cụ OMP. Gửi thêm order giữ nguyên trạng thái; chat mới dùng lựa chọn hiện tại; đổi toggle áp dụng từ lượt kế tiếp.');
-    const basicIds = new Set(['read', 'write', 'edit', 'ast_edit', 'grep', 'glob']);
-    const groups = [['CÔNG CỤ CƠ BẢN', catalog.filter((item) => basicIds.has(item.id))], ['CÔNG CỤ NÂNG CAO', catalog.filter((item) => !basicIds.has(item.id))]];
-    const glyphs = { read: '↳', write: '□', edit: '✎', ast_edit: '⌘', grep: '⌕', glob: '⋯', bash: '>_', eval: '∑', lsp: '⌁', debug: '⌁', task: '↳', hub: '◎', web_search: '⌕', todo: '✓', goal: '◇', init_experiment: '↗', run_experiment: '▶', log_experiment: '▤', update_notes: '≡' };
+    const metadata = state.capabilities?.catalog || {}; const statuses = { supported: 'Tắt', unavailable: 'Chưa khả dụng', blocked: 'Bị chặn', probe_error: 'Lỗi kiểm tra', stale: 'Cần cập nhật', unmapped: 'Chờ map' };
+    const summary = document.createElement('div'); summary.className = 'tool-group-label'; summary.textContent = `OMP ${metadata.audit?.ompVersion || 'chưa kiểm tra'} · ${metadata.counts?.supported || 0} tool dùng được`;
+    const sync = document.createElement('button'); sync.type = 'button'; sync.className = 'btn-secondary'; sync.textContent = state.toolsUpdating ? 'Đang đồng bộ…' : 'Đồng bộ OMP'; sync.disabled = state.toolsUpdating; sync.addEventListener('click', () => void syncOmpCatalog()); tools.append(summary, sync);
+    const listedGroups = metadata.groups || []; const groupIds = new Set(listedGroups.map((item) => item.id)); const groups = [...listedGroups, { id: 'history', label: 'THEO DÕI OMP' }].filter((group, index, all) => all.findIndex((item) => item.id === group.id) === index).map((group) => [group.label, catalog.filter((item) => item.group === group.id)]);
+    const leftovers = catalog.filter((item) => !groupIds.has(item.group)); if (leftovers.length) groups.push(['KHÁC', leftovers]);
     const renderRow = (item) => {
-      const checked = item.status === 'supported' && state.selectedTools.includes(item.id);
+      const checked = item.canToggle && state.selectedTools.includes(item.id);
       const row = document.createElement('div'); row.className = 'tool-item-row production-tool-row'; row.dataset.toolId = item.id;
       const left = document.createElement('div'); left.className = 'tool-item-left';
-      const icon = document.createElement('div'); icon.className = 'tool-icon-avatar'; icon.setAttribute('aria-hidden', 'true'); icon.textContent = glyphs[item.id] || '•';
+      const icon = document.createElement('div'); icon.className = 'tool-icon-avatar'; icon.setAttribute('aria-hidden', 'true'); icon.textContent = item.icon || '•';
       const info = document.createElement('div'); info.className = 'tool-item-info';
       const nameWrap = document.createElement('div'); nameWrap.className = 'tool-item-name-wrap';
       const title = document.createElement('span'); title.className = 'tool-item-name'; title.textContent = item.label || item.id;
-      const status = document.createElement('span'); status.className = `tool-item-status-tag${checked ? ' tag-active' : ''}`; status.textContent = item.status === 'supported' ? (checked ? 'Bật' : 'Tắt') : 'Chưa khả dụng'; status.dataset.status = item.status;
-      const description = document.createElement('div'); description.className = 'tool-item-desc'; description.textContent = item.description || 'OMP chưa cung cấp mô tả.';
+      const status = document.createElement('span'); status.className = `tool-item-status-tag${checked ? ' tag-active' : ''}`; status.textContent = checked ? 'Bật' : (statuses[item.status] || item.status || 'Chưa rõ'); status.dataset.status = item.status;
+      const description = document.createElement('div'); description.className = 'tool-item-desc'; description.textContent = item.status === 'supported' ? (item.description || 'OMP chưa cung cấp mô tả.') : (item.reason || item.description || 'OMP chưa cung cấp mô tả.');
       nameWrap.append(title, status); info.append(nameWrap, description); left.append(icon, info);
-      const toggle = document.createElement('div'); toggle.className = 'omp-tool-switch'; if (checked) toggle.classList.add('on'); toggle.dataset.toolId = item.id; toggle.setAttribute('role', 'switch'); toggle.setAttribute('aria-checked', String(checked)); toggle.setAttribute('aria-label', `${item.label || item.id}: bật/tắt`); toggle.setAttribute('title', `${item.label || item.id}: ${item.status === 'supported' ? 'bật/tắt' : 'chưa khả dụng'}`); toggle.tabIndex = item.status === 'supported' && !state.toolsUpdating ? 0 : -1; if (item.status !== 'supported' || state.toolsUpdating) toggle.setAttribute('aria-disabled', 'true');
+      const toggle = document.createElement(item.canToggle ? 'button' : 'div'); if (item.canToggle) toggle.type = 'button'; toggle.className = 'toggle-switch omp-tool-switch'; if (checked) toggle.classList.add('on'); toggle.dataset.toolId = item.id; toggle.setAttribute('role', 'switch'); toggle.setAttribute('aria-checked', String(checked)); toggle.setAttribute('aria-label', `${item.label || item.id}: ${item.canToggle ? 'bật/tắt' : statuses[item.status] || 'chưa khả dụng'}`); toggle.setAttribute('title', `${item.label || item.id}: ${item.reason || statuses[item.status] || 'chưa khả dụng'}`); if (!item.canToggle || state.toolsUpdating) toggle.setAttribute('aria-disabled', 'true');
       const knob = document.createElement('div'); knob.className = 'toggle-knob'; toggle.append(knob); row.append(left, toggle);
-      const activate = (event) => { event.preventDefault(); event.stopPropagation(); if (item.status === 'supported' && !state.toolsUpdating) setOmpTools(item.id, !checked); };
-      toggle.addEventListener('click', activate); toggle.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') activate(event); });
+      if (item.canToggle) toggle.addEventListener('click', () => { if (!state.toolsUpdating) void setOmpTools(item.id, !checked); });
       return row;
     };
     groups.forEach(([label, items]) => { if (!items.length) return; const group = document.createElement('div'); group.className = 'tool-section-group production-tool-group'; const heading = document.createElement('div'); heading.className = 'tool-group-label'; heading.textContent = label; group.append(heading, ...items.map(renderRow)); tools.append(group); });
     const badge = $('drawerTabToolsBtn')?.querySelector('.drawer-tab-badge'); if (badge) badge.textContent = String(catalog.filter((item) => item.status === 'supported').length);
   }
   async function setOmpTools(toolId, enabled) {
-    const supported = new Set((state.capabilities?.tools || []).filter((item) => item.status === 'supported').map((item) => item.id));
+    const supported = new Set(selectableTools());
     const previous = [...state.selectedTools]; const next = previous.filter((id) => id !== toolId); if (enabled) next.push(toolId);
     if (!next.length) { notify('OMP cần ít nhất một công cụ đang bật.', true); renderOmpTools(); return; }
     if (!supported.has(toolId)) { notify('Công cụ này chưa khả dụng trong OMP.', true); renderOmpTools(); return; }
-    state.selectedTools = [...new Set(next)]; localStorage.setItem('omp.tools', JSON.stringify(state.selectedTools)); state.toolsUpdating = true; renderOmpTools();
+    state.selectedTools = [...new Set(next)]; saveSelectedTools(); state.toolsUpdating = true; renderOmpTools();
     const guard = sessionGuard();
     if (!guard.sessionId) { state.toolsUpdating = false; renderOmpTools(); prewarmDraftWorker(); notify('Đã lưu cho session mới; gửi thêm order sẽ giữ nguyên danh sách tool.'); return; }
     try {
       await readJson(`${API}/sessions/${encodeURIComponent(guard.sessionId)}/action`, { method: 'POST', body: JSON.stringify({ action: 'tools', tools: state.selectedTools }) });
       if (isCurrentSession(guard)) notify('Đã cập nhật công cụ OMP cho phiên; áp dụng từ lượt kế tiếp.');
     } catch (error) {
-      if (isCurrentSession(guard)) { state.selectedTools = previous; localStorage.setItem('omp.tools', JSON.stringify(previous)); notify(`Không cập nhật được công cụ OMP: ${error.message}`, true); }
+      if (isCurrentSession(guard)) { state.selectedTools = previous; saveSelectedTools(); notify(`Không cập nhật được công cụ OMP: ${error.message}`, true); }
     } finally { state.toolsUpdating = false; renderOmpTools(); }
+  }
+  async function syncOmpCatalog() {
+    if (state.toolsUpdating) return; state.toolsUpdating = true; renderOmpTools();
+    try {
+      const { payload } = await readJson(`${API}/omp/capabilities/audit`, { method: 'POST', body: '{}' });
+      if (payload?.catalog?.tools) state.capabilities = { ...state.capabilities, ...payload.catalog };
+      await loadCapabilities();
+      const drift = payload?.catalog?.catalog?.drift; const changed = [...(drift?.added || []), ...(drift?.removed || []), ...(drift?.changed || [])];
+      notify(changed.length ? `Đã đồng bộ OMP: ${changed.length} thay đổi cần đối chiếu map.` : 'Đã đồng bộ catalog OMP.');
+    } catch (error) { notify(`Không đồng bộ được OMP: ${error.message}`, true); }
+    finally { state.toolsUpdating = false; renderOmpTools(); }
   }
   async function loadAgentHub(guard = sessionGuard()) {
     const host = $('ompAgentHubStatus'); if (!host) return;
     host.replaceChildren(); const title = document.createElement('div'); title.className = 'settings-section-title'; title.textContent = 'OMP Agent Hub'; host.append(title);
+    const hub = state.capabilities?.tools?.find((item) => item.id === 'hub');
+    if (!hub?.canToggle) { host.append(emptyNode(hub?.reason || 'Agent Hub chưa được OMP công bố.')); return; }
     if (!guard.sessionId || !isCurrentSession(guard)) { host.append(emptyNode('Chọn session để xem task/subagent thật.')); return; }
     if (state.capabilities?.featureStatus?.['agent-hub'] === 'unavailable') { host.append(emptyNode('Agent Hub chưa khả dụng qua ACP; OMP không công bố dữ liệu subagent cho dashboard.')); return; }
     try {
@@ -3182,10 +3211,9 @@
         video: { status: media.video?.status || 'unavailable' },
       };
       state.capabilities = { ...payload, imageGenerationModels, media: state.media };
-      const supported = (payload.tools || []).filter((item) => item.status === 'supported').map((item) => item.id);
-      let stored = []; try { stored = JSON.parse(localStorage.getItem('omp.tools') || '[]'); } catch {}
-      state.selectedTools = stored.length && stored.every((id) => supported.includes(id)) ? stored : supported;
-      localStorage.setItem('omp.tools', JSON.stringify(state.selectedTools));
+      const supported = selectableTools();
+      state.selectedTools = restoreSelectedTools(supported);
+      saveSelectedTools();
       renderOmpTools(); ensureOmpSettings(); syncBrowserPill();
     } catch (error) { state.capabilities = {}; syncBrowserPill(); notify(`OMP capability lỗi: ${error.message}`, true); }
   }
