@@ -6,7 +6,7 @@
   const TOOL_STORAGE_KEY = 'omp.tools.v2';
   const BROWSER_MODE_PREFERENCE_VERSION = 'manual-v1';
   const initialBrowserMode = localStorage.getItem('omp.browserModePreferenceVersion') === BROWSER_MODE_PREFERENCE_VERSION ? localStorage.getItem('omp.browserMode') : 'none';
-  const state = { sessions: [], nextCursor: null, activeId: null, generation: 0, messages: [], models: [], activeModel: null, controller: null, requestId: null, activeRequest: null, createPromise: null, menu: null, folderMenu: null, quota: null, accounts: [], attachments: [], workspaceFiles: [], workspaceMention: '@', capabilities: null, selectedTools: [], toolsUpdating: false, folderExpanded: new Set(), folderCollapsed: new Set(), thinking: localStorage.getItem('omp.thinking') || 'max', browserMode: initialBrowserMode === 'ego-browser' ? 'ego-browser' : 'none', shareMode: localStorage.getItem('omp.shareMode') || 'encrypted', approvalMode: localStorage.getItem('omp.approvalMode') || 'always-ask', enterBehavior: localStorage.getItem('omp.enterBehavior') || 'queue', conversationDisplay: localStorage.getItem('omp.conversationDisplay') || 'compact', pendingPrompts: [], queuePausedSessions: new Map(), editingQueueId: null, draftPromptPreview: null, browserAction: null, browserStatus: null, media: { screenCapture: { status: 'unavailable', reason: 'Native screen capture is not provided by OMP dashboard.' }, camera: { status: 'unavailable' }, microphone: { status: 'unavailable' }, video: { status: 'unavailable' } } };
+  const state = { sessions: [], nextCursor: null, activeId: null, generation: 0, messages: [], models: [], activeModel: null, controller: null, requestId: null, activeRequest: null, createPromise: null, menu: null, folderMenu: null, quota: null, accounts: [], attachments: [], workspaceFiles: [], workspaceMention: '@', capabilities: null, selectedTools: [], toolsUpdating: false, folderExpanded: new Set(), folderCollapsed: new Set(), thinking: localStorage.getItem('omp.thinking') || 'max', browserMode: initialBrowserMode === 'ego-browser' ? 'ego-browser' : 'none', planYolo: localStorage.getItem('omp.planYolo') === 'true', shareMode: localStorage.getItem('omp.shareMode') || 'encrypted', approvalMode: localStorage.getItem('omp.approvalMode') || 'always-ask', enterBehavior: localStorage.getItem('omp.enterBehavior') || 'queue', conversationDisplay: localStorage.getItem('omp.conversationDisplay') || 'compact', pendingPrompts: [], queuePausedSessions: new Map(), editingQueueId: null, draftPromptPreview: null, browserAction: null, browserStatus: null, media: { screenCapture: { status: 'unavailable', reason: 'Native screen capture is not provided by OMP dashboard.' }, camera: { status: 'unavailable' }, microphone: { status: 'unavailable' }, video: { status: 'unavailable' } } };
   state.enterBehavior = 'send';
   state.modelAccess = null;
   state.modelAccessInitialized = false;
@@ -251,14 +251,14 @@
       body: JSON.stringify({
         ...(state.draftWorkspaceCwd ? { cwd: state.draftWorkspaceCwd } : {}),
         approvalMode: settings.approvalMode,
-        browserMode: settings.browserMode,
+        browserMode: settings.browserMode, planYolo: settings.planYolo,
         tools: settings.tools,
       }),
       keepalive: true,
     }).catch(() => {});
   }
   function snapshotSettings() {
-    return { model: state.activeModel || null, modelProvider: state.activeModelProvider, modelSource: state.modelSource, thinking: state.thinking, browserMode: state.browserMode, approvalMode: state.approvalMode, tools: [...state.selectedTools] };
+    return { model: state.activeModel || null, modelProvider: state.activeModelProvider, modelSource: state.modelSource, thinking: state.thinking, browserMode: state.browserMode, planYolo: state.planYolo, planYoloModel: state.activeModel || null, approvalMode: state.approvalMode, tools: [...state.selectedTools] };
   }
   function setBrowserMode(value) {
     state.browserMode = value === 'ego-browser' ? 'ego-browser' : 'none';
@@ -1586,7 +1586,7 @@
     setNeutralSelection({ preserveDraftPreview: Boolean(state.draftPromptPreview) });
     state.createPromise = (async () => {
       try {
-        const { payload } = await readJson(`${API}/sessions`, { method: 'POST', body: JSON.stringify({ title, ...(options.folderId ? { folderId: options.folderId } : {}), ...(cwd ? { cwd } : {}), browserMode: state.browserMode, approvalMode: state.approvalMode, ...(state.selectedTools.length ? { tools: state.selectedTools } : {}) }) });
+        const { payload } = await readJson(`${API}/sessions`, { method: 'POST', body: JSON.stringify({ title, ...(options.folderId ? { folderId: options.folderId } : {}), ...(cwd ? { cwd } : {}), browserMode: state.browserMode, planYolo: state.planYolo, ...(state.planYolo ? { planYoloModel: state.activeModel } : {}), approvalMode: state.approvalMode, ...(state.selectedTools.length ? { tools: state.selectedTools } : {}) }) });
         const created = payload?.session || payload;
         if (!created?.id) throw new Error('Backend không trả id session hợp lệ');
         state.sessionLoadRequestId += 1;
@@ -1988,7 +1988,7 @@
       const attachments = item.attachments || [];
       const statusLabel = { queued: 'Đang chờ web', priority: 'Đang được ưu tiên', paused: 'Tạm dừng sau lỗi', editing: 'Đang chỉnh sửa', running: 'Đang gửi lên OMP' }[item.status] || item.status || 'Đang chờ web';
       const sessionLabel = item.sessionId || 'đang tạo session…';
-      const technicalMeta = `Session ${sessionLabel} · ${item.status || 'queued'} · ${settings.model || 'model mặc định'} · ${settings.thinking || 'mặc định'} · browser ${settings.browserMode || 'mặc định'} · approval ${settings.approvalMode || 'mặc định'} · tools ${(settings.tools || []).length} · tệp: ${queueAttachmentSummary(attachments)}`;
+      const technicalMeta = `Session ${sessionLabel} · ${item.status || 'queued'} · ${settings.model || 'model mặc định'} · ${settings.thinking || 'mặc định'} · browser ${settings.browserMode || 'mặc định'} · plan-yolo ${settings.planYolo ? 'on' : 'off'} · approval ${settings.approvalMode || 'mặc định'} · tools ${(settings.tools || []).length} · tệp: ${queueAttachmentSummary(attachments)}`;
       const row = document.createElement('div');
       row.className = 'queue-turn-row';
       row.dataset.queueId = item.id;
@@ -2296,7 +2296,7 @@
     setStreamStatus('Đang gửi lên OMP…', 'waiting');
     let normalEnd = false;
     try {
-      const response = await fetch(`${API}/chat/stream`, { method: 'POST', headers: { Accept: 'text/event-stream', 'content-type': 'application/json' }, signal: request.controller.signal, body: JSON.stringify({ sessionId, prompt, model, modelProvider, modelSource, requestId: request.requestId, thinking: settings.thinking, browserMode: settings.browserMode, approvalMode: settings.approvalMode, tools: settings.tools?.length ? settings.tools : undefined, attachments }) });
+      const response = await fetch(`${API}/chat/stream`, { method: 'POST', headers: { Accept: 'text/event-stream', 'content-type': 'application/json' }, signal: request.controller.signal, body: JSON.stringify({ sessionId, prompt, model, modelProvider, modelSource, requestId: request.requestId, thinking: settings.thinking, browserMode: settings.browserMode, planYolo: settings.planYolo, planYoloModel: settings.planYoloModel, approvalMode: settings.approvalMode, tools: settings.tools?.length ? settings.tools : undefined, attachments }) });
       if (!response.ok || !response.body) {
         let payload;
         try { payload = await response.json(); } catch {}
@@ -2951,13 +2951,15 @@
     });
   }
   function renderOmpTools() {
-    const tools = $('toolsContentArea'); const catalog = state.capabilities?.tools || []; if (!tools) return; tools.replaceChildren();
-    if (!catalog.length) { tools.append(emptyNode('OMP chưa công bố capability')); return; }
+    const tools = $('toolsContentArea'); const allTools = state.capabilities?.tools || []; const catalog = allTools.filter((item) => item.status === 'supported' && item.canToggle); if (!tools) return; tools.replaceChildren();
+    if (!allTools.length) { tools.append(emptyNode('OMP chưa công bố capability')); return; }
     tools.setAttribute('aria-label', 'Công cụ OMP. Gửi thêm order giữ nguyên trạng thái; chat mới dùng lựa chọn hiện tại; đổi toggle áp dụng từ lượt kế tiếp.');
-    const metadata = state.capabilities?.catalog || {}; const statuses = { supported: 'Tắt', unavailable: 'Chưa khả dụng', blocked: 'Bị chặn', probe_error: 'Lỗi kiểm tra', stale: 'Cần cập nhật', unmapped: 'Chờ map' };
+    const metadata = state.capabilities?.catalog || {}; const statuses = { supported: 'Tắt' };
     const summary = document.createElement('div'); summary.className = 'tool-group-label'; summary.textContent = `OMP ${text(metadata.audit?.ompVersion || 'chưa kiểm tra').replace(/^omp\//i, '')} · ${metadata.counts?.supported || 0} tool dùng được`;
     const sync = document.createElement('button'); sync.type = 'button'; sync.className = 'btn-secondary'; sync.textContent = state.toolsUpdating ? 'Đang đồng bộ…' : 'Đồng bộ OMP'; sync.disabled = state.toolsUpdating; sync.addEventListener('click', () => void syncOmpCatalog()); tools.append(summary, sync);
-    const listedGroups = metadata.groups || []; const groupIds = new Set(listedGroups.map((item) => item.id)); const groups = [...listedGroups, { id: 'history', label: 'THEO DÕI OMP' }].filter((group, index, all) => all.findIndex((item) => item.id === group.id) === index).map((group) => [group.label, catalog.filter((item) => item.group === group.id)]);
+    const available = catalog.length; const toolsTab = $('drawerTabToolsBtn'); const badge = toolsTab?.querySelector('.drawer-tab-badge'); if (badge) badge.textContent = String(available); if (toolsTab) toolsTab.setAttribute('aria-label', `Công cụ OMP: ${available} tool khả dụng`);
+    if (!catalog.length) { tools.append(emptyNode('Không có công cụ OMP dùng được; hãy đồng bộ lại.')); return; }
+    const listedGroups = metadata.groups || []; const groupIds = new Set(listedGroups.map((item) => item.id)); const groups = listedGroups.map((group) => [group.label, catalog.filter((item) => item.group === group.id)]);
     const leftovers = catalog.filter((item) => !groupIds.has(item.group)); if (leftovers.length) groups.push(['KHÁC', leftovers]);
     const renderRow = (item) => {
       const checked = item.canToggle && state.selectedTools.includes(item.id);
@@ -2976,7 +2978,6 @@
       return row;
     };
     groups.forEach(([label, items]) => { if (!items.length) return; const group = document.createElement('div'); group.className = 'tool-section-group production-tool-group'; const heading = document.createElement('div'); heading.className = 'tool-group-label'; heading.textContent = label; group.append(heading, ...items.map(renderRow)); tools.append(group); });
-    const available = catalog.filter((item) => item.canToggle).length; const toolsTab = $('drawerTabToolsBtn'); const badge = toolsTab?.querySelector('.drawer-tab-badge'); if (badge) badge.textContent = String(available); if (toolsTab) toolsTab.setAttribute('aria-label', `Công cụ OMP: ${available} tool khả dụng`);
   }
   async function setOmpTools(toolId, enabled) {
     const supported = new Set(selectableTools());
@@ -3006,9 +3007,9 @@
   }
   async function loadAgentHub(guard = sessionGuard()) {
     const host = $('ompAgentHubStatus'); if (!host) return;
-    host.replaceChildren(); const title = document.createElement('div'); title.className = 'settings-section-title'; title.textContent = 'OMP Agent Hub'; host.append(title);
     const hub = state.capabilities?.tools?.find((item) => item.id === 'hub');
-    if (!hub?.canToggle) { host.append(emptyNode(hub?.reason || 'Agent Hub chưa được OMP công bố.')); return; }
+    if (!hub?.canToggle) { host.hidden = true; return; }
+    host.hidden = false; host.replaceChildren(); const title = document.createElement('div'); title.className = 'settings-section-title'; title.textContent = 'OMP Agent Hub'; host.append(title);
     if (!guard.sessionId || !isCurrentSession(guard)) { host.append(emptyNode('Chọn session để xem task/subagent thật.')); return; }
     if (state.capabilities?.featureStatus?.['agent-hub'] === 'unavailable') { host.append(emptyNode('Agent Hub chưa khả dụng qua ACP; OMP không công bố dữ liệu subagent cho dashboard.')); return; }
     try {
@@ -3196,6 +3197,21 @@
       : 'Bật Ego Browser khi order cần web';
     toggle.setAttribute('aria-label', toggle.title); toggle.setAttribute('aria-pressed', String(enabled)); toggle.hidden = false; toggle.removeAttribute('aria-hidden');
   }
+  function syncPlanYoloPill() {
+    const toggle = $('planYoloToggle'); if (!toggle) return;
+    const mode = state.capabilities?.sessionModes?.find((item) => item.id === 'plan-yolo');
+    const enabled = state.planYolo && mode?.status === 'supported';
+    toggle.hidden = mode?.status !== 'supported';
+    toggle.classList.toggle('active', enabled);
+    const label = toggle.querySelector('span'); if (label) label.textContent = enabled ? 'Plan YOLO · Bật' : 'Plan YOLO · Tắt';
+    toggle.title = enabled ? 'Plan chỉ đọc, tự duyệt rồi thực thi ở lượt kế tiếp.' : 'Bật Plan YOLO cho lượt kế tiếp.';
+    toggle.setAttribute('aria-label', toggle.title); toggle.setAttribute('aria-pressed', String(enabled));
+  }
+  function togglePlanYolo() {
+    if (!state.planYolo && !state.activeModel) { notify('Chọn model trước khi bật Plan YOLO.', true); return; }
+    state.planYolo = !state.planYolo; localStorage.setItem('omp.planYolo', String(state.planYolo)); syncPlanYoloPill();
+    notify(`Plan YOLO ${state.planYolo ? 'đã bật' : 'đã tắt'}; áp dụng từ lượt kế tiếp.`);
+  }
   async function loadCapabilities() {
     try {
       const { payload } = await readJson('/api/v1/omp/capabilities');
@@ -3214,8 +3230,8 @@
       const supported = selectableTools();
       state.selectedTools = restoreSelectedTools(supported);
       saveSelectedTools();
-      renderOmpTools(); ensureOmpSettings(); syncBrowserPill();
-    } catch (error) { state.capabilities = {}; syncBrowserPill(); notify(`OMP capability lỗi: ${error.message}`, true); }
+      renderOmpTools(); ensureOmpSettings(); syncBrowserPill(); syncPlanYoloPill();
+    } catch (error) { state.capabilities = {}; syncBrowserPill(); syncPlanYoloPill(); notify(`OMP capability lỗi: ${error.message}`, true); }
   }
   function bindDialogAccessibility() {
     const sync = (dialog) => {
@@ -3247,7 +3263,7 @@
     observer.observe(document.body, { childList: true, subtree: true });
   }
 
-  function bindOmpSurface() { ['egoBrowserToggle', 'drawerTabFilesBtn', 'tabFilesPane', 'settingsNavPlugins', 'settingsTabPlugins', 'settingsNavAgents', 'settingsTabAgents'].forEach((id) => { const node = $(id); if (node) { node.hidden = false; node.removeAttribute('aria-hidden'); node.style.removeProperty('display'); } }); ['fileChangeFloatingBar', 'fileChangeFloatingPill', 'shareSessionModal', 'openWindowModal', 'codeDiffReviewModal', 'upgradeModal', 'sessionContextMenu'].forEach((id) => { const node = $(id); if (node) { node.hidden = true; node.setAttribute('aria-hidden', 'true'); node.style.setProperty('display', 'none', 'important'); node.classList.remove('open'); } }); const fileList = $('drawerFilesList'); if (fileList) { fileList.replaceChildren(emptyNode('Chưa có tệp được đính kèm')); } const quotaRows = $('chatModalAccountsRows'); if (quotaRows) quotaRows.replaceChildren(emptyNode('Đang tải dữ liệu quota…')); const fileBadge = $('drawerTabFilesBtn')?.querySelector('.drawer-tab-badge'); if (fileBadge) fileBadge.textContent = '0'; $('drawerTabFilesBtn')?.setAttribute('aria-label', 'Tệp đính kèm thật'); $('drawerUploadFileBtn')?.removeAttribute('data-production-unsupported'); const permission = $('settingsPermissionSelect'); const map = { require_approval: 'always-ask', approve_for_me: 'write', full_access: 'yolo' }; if (permission) { permission.value = Object.entries(map).find(([, value]) => value === state.approvalMode)?.[0] || 'require_approval'; if (typeof setPermissionMode === 'function') setPermissionMode(permission.value, false); permission.addEventListener('change', () => { state.approvalMode = map[permission.value] || 'always-ask'; localStorage.setItem('omp.approvalMode', state.approvalMode); if (typeof setPermissionMode === 'function') setPermissionMode(permission.value, false); notify(`Đã chọn quyền OMP: ${permission.options[permission.selectedIndex]?.textContent || state.approvalMode}`); }, true); } const ego = $('egoBrowserToggle'); ego?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); state.browserMode = state.browserMode === 'ego-browser' ? 'none' : 'ego-browser'; localStorage.setItem('omp.browserMode', state.browserMode); syncBrowserPill(); }, true); document.addEventListener('click', (event) => { const option = event.target.closest('.approval-option-item'); if (!option) return; const mode = map[option.dataset.value] || 'always-ask'; state.approvalMode = mode; localStorage.setItem('omp.approvalMode', mode); }, true); bindFileAttachment(); loadCapabilities(); }
+  function bindOmpSurface() { ['egoBrowserToggle', 'planYoloToggle', 'drawerTabFilesBtn', 'tabFilesPane', 'settingsNavPlugins', 'settingsTabPlugins', 'settingsNavAgents', 'settingsTabAgents'].forEach((id) => { const node = $(id); if (node) { node.hidden = false; node.removeAttribute('aria-hidden'); node.style.removeProperty('display'); } }); ['fileChangeFloatingBar', 'fileChangeFloatingPill', 'shareSessionModal', 'openWindowModal', 'codeDiffReviewModal', 'upgradeModal', 'sessionContextMenu'].forEach((id) => { const node = $(id); if (node) { node.hidden = true; node.setAttribute('aria-hidden', 'true'); node.style.setProperty('display', 'none', 'important'); node.classList.remove('open'); } }); const fileList = $('drawerFilesList'); if (fileList) { fileList.replaceChildren(emptyNode('Chưa có tệp được đính kèm')); } const quotaRows = $('chatModalAccountsRows'); if (quotaRows) quotaRows.replaceChildren(emptyNode('Đang tải dữ liệu quota…')); const fileBadge = $('drawerTabFilesBtn')?.querySelector('.drawer-tab-badge'); if (fileBadge) fileBadge.textContent = '0'; $('drawerTabFilesBtn')?.setAttribute('aria-label', 'Tệp đính kèm thật'); $('drawerUploadFileBtn')?.removeAttribute('data-production-unsupported'); const permission = $('settingsPermissionSelect'); const map = { require_approval: 'always-ask', approve_for_me: 'write', full_access: 'yolo' }; if (permission) { permission.value = Object.entries(map).find(([, value]) => value === state.approvalMode)?.[0] || 'require_approval'; if (typeof setPermissionMode === 'function') setPermissionMode(permission.value, false); permission.addEventListener('change', () => { state.approvalMode = map[permission.value] || 'always-ask'; localStorage.setItem('omp.approvalMode', state.approvalMode); if (typeof setPermissionMode === 'function') setPermissionMode(permission.value, false); notify(`Đã chọn quyền OMP: ${permission.options[permission.selectedIndex]?.textContent || state.approvalMode}`); }, true); } const ego = $('egoBrowserToggle'); ego?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); state.browserMode = state.browserMode === 'ego-browser' ? 'none' : 'ego-browser'; localStorage.setItem('omp.browserMode', state.browserMode); syncBrowserPill(); }, true); $('planYoloToggle')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); togglePlanYolo(); }, true); document.addEventListener('click', (event) => { const plan = event.target.closest('[data-action="plan-mode"],#plusPlanningMode'); if (plan) { event.preventDefault(); event.stopImmediatePropagation(); togglePlanYolo(); return; } const option = event.target.closest('.approval-option-item'); if (!option) return; const mode = map[option.dataset.value] || 'always-ask'; state.approvalMode = mode; localStorage.setItem('omp.approvalMode', mode); }, true); bindFileAttachment(); loadCapabilities(); }
 
   function ensureToolsRail() {
     const drawer = $('toolsDrawer'); if (!drawer || $('toolsDrawerRail')) return;

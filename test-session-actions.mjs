@@ -205,6 +205,10 @@ async function fakeOmp(args) {
     process.stdout.write("omp/18.3.2\n");
     return;
   }
+  if (args[0] === "--help") {
+    process.stdout.write("  --plan-yolo  Plan before implementation\n");
+    return;
+  }
   if (args[0] === "usage") {
     await writeFile(join(process.env.HOME, "test-omp-path.txt"), `${process.env.PATH || ""}\n`, { mode: 0o600 });
     const failurePath = homePath(process.env.HOME || "", "usage-dashboard", "test-usage-stderr.txt");
@@ -769,6 +773,7 @@ async function runContract() {
       readFile(join(PROJECT_ROOT, "product-release", "honpi-quota-dashboard-SKE.html"), "utf8"),
     ]);
     const acpAdapter = await readFile(join(PROJECT_ROOT, "acp-session-context.mjs"), "utf8");
+    const bridgeSource = await readFile(join(PROJECT_ROOT, "console-bridge.mjs"), "utf8");
     assert.match(chatClient, /const isServerQueuedTurn = \(queue\) => queue\?\.phase === 'paused' \|\| \(queue\?\.phase === 'fifo' && Number\(queue\.queueAhead\) > 0\);/);
     assert.match(chatClient, /if \(isServerQueuedTurn\(request\.queueState\) && !\['waiting', 'end', 'done', 'error'\]\.includes\(event\)\) return;/);
     assert.match(chatClient, /if \(isServerQueuedTurn\(request\.queueState\)\) \{\s*renderQueueTray\(\);\s*return;\s*\}\s*mountChatTurn\(\);/);
@@ -867,7 +872,8 @@ async function runContract() {
     assert.ok(capabilities.payload.features.includes("memory"));
     assert.equal(capabilities.payload.sessionActions?.steer, "unavailable");
     assert.equal(capabilities.payload.featureStatus["agent-hub"], "unavailable");
-    assert.equal(capabilities.payload.catalog?.mapVersion, "2026-09-29.1", "capabilities must identify the checked-in OMP-to-Chat map");
+    assert.equal(capabilities.payload.catalog?.mapVersion, "2026-09-29.2", "capabilities must identify the checked-in OMP-to-Chat map");
+    assert.equal(capabilities.payload.sessionModes?.find((item) => item.id === "plan-yolo")?.status, "supported", "Plan YOLO must be verified from OMP help");
     const waitTool = capabilities.payload.tools.find((item) => item.id === "wait");
     assert.equal(waitTool?.status, "supported", "the ACP-verified wait tool must be visible to Chat");
     assert.equal(waitTool?.canToggle, true, "verified native tools must remain selectable");
@@ -892,6 +898,11 @@ async function runContract() {
     assert.ok(!capabilities.payload.commands.includes("set_session_name"), "ACP capability catalog must exclude unimplemented commands");
     passes.push("ACP capability catalog excludes steer, Agent Hub and unsupported session naming");
     passes.push("full-access OMP session accepts every advertised supported tool");
+    const planYoloSession = await api("POST", "/api/v1/sessions", { title: "Plan YOLO session", cwd: workspaceRoot, planYolo: true, planYoloModel: "smoke-model", tools: ["read"] });
+    assert.equal(planYoloSession.status, 201, `Plan YOLO session should create: ${JSON.stringify(planYoloSession.payload)}`);
+    assert.equal(planYoloSession.payload.planYolo, true);
+    assert.match(bridgeSource, /\["--plan-yolo"\]/, "Plan YOLO must be passed to the OMP worker");
+    passes.push("Plan YOLO is mapped, verified, persisted, and passed to OMP");
     const prewarmInput = { cwd: workspaceRoot, approvalMode: "write", browserMode: "ego-browser", tools: [] };
     const prewarmed = await api("POST", "/api/v1/omp/prewarm", prewarmInput);
     assert.equal(prewarmed.status, 202, `ACP prewarm should start a worker: ${JSON.stringify(prewarmed.payload)}`);

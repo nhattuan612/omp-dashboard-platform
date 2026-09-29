@@ -1487,6 +1487,16 @@ function approvalMode(value) {
   if (!["always-ask", "write", "yolo"].includes(mode)) throw Object.assign(new Error("approvalMode không hợp lệ"), { code: "BAD_REQUEST", field: "approvalMode" });
   return mode;
 }
+function planYolo(value) {
+  if (value == null) return false;
+  if (typeof value !== "boolean") throw Object.assign(new Error("planYolo phải là boolean"), { code: "BAD_REQUEST", field: "planYolo" });
+  return value;
+}
+function planYoloModel(value) {
+  const model = typeof value === "string" ? value.trim() : "";
+  if (!model || model.length > 200) throw Object.assign(new Error("Plan YOLO cần model OMP hợp lệ"), { code: "BAD_REQUEST", field: "planYoloModel" });
+  return model;
+}
 
 async function headlessTools(approval, tools) {
   if (approval === "yolo") return tools;
@@ -1600,11 +1610,15 @@ function gatewayPayload(record) {
 async function gatewayLaunchConfig(body = {}) {
   const selectedApprovalMode = approvalMode(body.approvalMode);
   const selectedBrowserMode = body.browserMode == null ? null : browserMode(body.browserMode);
+  const selectedPlanYolo = planYolo(body.planYolo);
+  const selectedPlanYoloModel = selectedPlanYolo ? planYoloModel(body.planYoloModel || body.model) : null;
   const useSkillBrowser = selectedBrowserMode === "ego-browser";
   const selectedTools = useSkillBrowser ? null : await headlessTools(selectedApprovalMode, await selectedOmpTools(body.tools));
   return {
     approvalMode: selectedApprovalMode,
     browserMode: selectedBrowserMode,
+    planYolo: selectedPlanYolo,
+    planYoloModel: selectedPlanYoloModel,
     tools: selectedTools,
     workerTools: selectedTools ?? [],
   };
@@ -1625,6 +1639,8 @@ async function createGatewaySession(body) {
       protocol,
       cwd: body.cwd,
       approvalMode: launch.approvalMode,
+      planYolo: launch.planYolo,
+      planYoloModel: launch.planYoloModel,
       tools: launch.workerTools,
       ompSessionId: body.ompSessionId,
     });
@@ -1637,6 +1653,8 @@ async function createGatewaySession(body) {
       approvalMode: launch.approvalMode,
       tools: launch.tools,
       browserMode: launch.browserMode,
+      planYolo: launch.planYolo,
+      planYoloModel: launch.planYoloModel,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
@@ -1655,7 +1673,7 @@ async function prewarmGateway(body = {}) {
   const launch = await gatewayLaunchConfig(body);
   const cwd = typeof body.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : GENERAL_CHAT_CWD;
   if (cwd === GENERAL_CHAT_CWD) await mkdir(cwd, { recursive: true, mode: 0o700 });
-  return consoleBridge.prewarm({ cwd, approvalMode: launch.approvalMode, tools: launch.workerTools });
+  return consoleBridge.prewarm({ cwd, approvalMode: launch.approvalMode, planYolo: launch.planYolo, planYoloModel: launch.planYoloModel, tools: launch.workerTools });
 }
 
 function normalizedChatMetadata(value) {
@@ -2607,13 +2625,16 @@ async function ensureChatSessionUnlocked(sessionId, body = {}, { requireExisting
   const useSkillBrowser = selectedBrowserMode === "ego-browser";
   const requestedApprovalMode = body.approvalMode ? approvalMode(body.approvalMode) : null;
   const selectedApprovalMode = requestedApprovalMode || record?.approvalMode || approvalMode(stored.approvalMode);
+  const hasPlanYolo = Object.hasOwn(body, "planYolo");
+  const selectedPlanYolo = hasPlanYolo ? planYolo(body.planYolo) : record?.planYolo === true || stored.planYolo === true;
+  const selectedPlanYoloModel = selectedPlanYolo ? planYoloModel(body.planYoloModel || body.model || record?.planYoloModel || stored.planYoloModel) : null;
   const requestedTools = hasBrowserMode && useSkillBrowser
     ? null
     : body.tools == null
       ? (hasBrowserMode && record?.tools == null ? await headlessTools(selectedApprovalMode, await selectedOmpTools(stored.tools)) : null)
       : await headlessTools(selectedApprovalMode, await selectedOmpTools(body.tools));
   const browserContextChanged = Boolean(record && hasBrowserMode && ((useSkillBrowser && record.tools !== null) || (!useSkillBrowser && record.tools === null)));
-  if (record && ((requestedApprovalMode && record.approvalMode !== requestedApprovalMode) || (requestedTools && JSON.stringify(record.tools || []) !== JSON.stringify(requestedTools)) || browserContextChanged) && !contextHasChatWork(record.contextId)) {
+  if (record && ((requestedApprovalMode && record.approvalMode !== requestedApprovalMode) || (hasPlanYolo && (record.planYolo !== selectedPlanYolo || record.planYoloModel !== selectedPlanYoloModel)) || (requestedTools && JSON.stringify(record.tools || []) !== JSON.stringify(requestedTools)) || browserContextChanged) && !contextHasChatWork(record.contextId)) {
     await consoleBridge.stop(record.contextId);
     gatewaySessions.delete(id);
     record = null;
@@ -2625,6 +2646,8 @@ async function ensureChatSessionUnlocked(sessionId, body = {}, { requireExisting
       sessionId: id,
       cwd: effectiveCwd,
       approvalMode: selectedApprovalMode,
+      planYolo: selectedPlanYolo,
+      planYoloModel: selectedPlanYoloModel,
       ...(hasBrowserMode ? { browserMode: selectedBrowserMode } : {}),
       tools: requestedTools ?? stored.tools,
       ...((persisted?.ompSessionId || stored.ompSessionId) ? { ompSessionId: persisted?.ompSessionId || stored.ompSessionId } : {}),
@@ -3364,7 +3387,7 @@ async function sessionAction(sessionId, req, providedBody = null) {
     const selectedChatModel = record?.selectedChatModel || null;
     const tools = await headlessTools(record?.approvalMode || approvalMode(current.approvalMode), await selectedOmpTools(body.tools));
     if (!record) {
-      await ensureChatSession(id, { tools, approvalMode: current.approvalMode });
+      await ensureChatSession(id, { tools, approvalMode: current.approvalMode, planYolo: current.planYolo === true, planYoloModel: current.planYoloModel });
       record = liveGatewayRecord(id);
       if (record) record.selectedChatModel = selectedChatModel;
     } else {
@@ -3373,7 +3396,7 @@ async function sessionAction(sessionId, req, providedBody = null) {
       const sourcePath = current.path || (await readPersistedChatSession(id).catch(() => null))?.path;
       await consoleBridge.stop(record.contextId);
       gatewaySessions.delete(id);
-      await createGatewaySession({ sessionId: id, cwd: summary.cwd, approvalMode: record.approvalMode, tools });
+      await createGatewaySession({ sessionId: id, cwd: summary.cwd, approvalMode: record.approvalMode, planYolo: record.planYolo === true, planYoloModel: record.planYoloModel, tools });
       const nextRecord = liveGatewayRecord(id);
       if (nextRecord) nextRecord.selectedChatModel = selectedChatModel;
       if (sourcePath) await queryGatewayResponse(nextRecord, { type: "switch_session", sessionPath: sourcePath });
@@ -3392,10 +3415,12 @@ async function sessionAction(sessionId, req, providedBody = null) {
     const summary = record ? consoleBridge.get(record.contextId).summary() : null;
     if (record && contextHasChatWork(record.contextId)) throw Object.assign(new Error("Không thể reconnect khi session đang chạy hoặc đang chờ; hãy dừng lượt trước."), { code: "CONFLICT" });
     const savedApprovalMode = record?.approvalMode || current.approvalMode;
+    const savedPlanYolo = record?.planYolo === true || current.planYolo === true;
+    const savedPlanYoloModel = record?.planYoloModel || current.planYoloModel;
     const savedTools = Array.isArray(record?.tools) ? record.tools : current.tools;
     const cwd = summary?.cwd || persisted?.cwd;
     if (record) { await consoleBridge.stop(record.contextId); gatewaySessions.delete(id); }
-    const nextRecord = await ensureChatSession(id, { cwd, approvalMode: savedApprovalMode, ...(Array.isArray(savedTools) ? { tools: savedTools } : {}) });
+    const nextRecord = await ensureChatSession(id, { cwd, approvalMode: savedApprovalMode, planYolo: savedPlanYolo, ...(savedPlanYolo ? { planYoloModel: savedPlanYoloModel } : {}), ...(Array.isArray(savedTools) ? { tools: savedTools } : {}) });
     const stored = await updateChatMetadata(id, { reconnectedAt: new Date().toISOString() }, { touchUpdatedAt: false });
     return { success: true, action, sessionId: id, status: "ready", metadata: stored, context: consoleBridge.publicSummary(nextRecord.contextId) };
   } else if (action === "resume_queue") {
@@ -3474,6 +3499,8 @@ async function sessionAction(sessionId, req, providedBody = null) {
           cwd,
           ompSessionId: childId,
           approvalMode: target.approvalMode,
+          planYolo: target.planYolo === true,
+          planYoloModel: target.planYoloModel || null,
           tools: target.tools,
           createdAt,
         });
@@ -3485,6 +3512,8 @@ async function sessionAction(sessionId, req, providedBody = null) {
           ompSessionId: childId,
           cwd,
           approvalMode: target.approvalMode,
+          planYolo: target.planYolo === true,
+          planYoloModel: target.planYoloModel || null,
           tools: target.tools,
           browserMode: target.browserMode,
           createdAt: timestamp,
@@ -4841,13 +4870,15 @@ const server = http.createServer(async (req, res) => {
           await mkdir(GENERAL_CHAT_CWD, { recursive: true, mode: 0o700 });
           cwd = GENERAL_CHAT_CWD;
         }
-        const record = await ensureChatSession(sessionId, { cwd, title: body.title, ...(body.browserMode != null ? { browserMode: body.browserMode } : {}), ...(body.approvalMode != null ? { approvalMode: body.approvalMode } : {}), ...(body.tools != null ? { tools: body.tools } : {}) });
+        const record = await ensureChatSession(sessionId, { cwd, title: body.title, ...(body.browserMode != null ? { browserMode: body.browserMode } : {}), ...(body.approvalMode != null ? { approvalMode: body.approvalMode } : {}), ...(body.planYolo != null ? { planYolo: body.planYolo } : {}), ...(body.planYoloModel != null ? { planYoloModel: body.planYoloModel } : {}), ...(body.tools != null ? { tools: body.tools } : {}) });
         const now = new Date(record.createdAt || Date.now()).toISOString();
         const title = String(body.title || "Phiên làm việc mới").trim() || "Phiên làm việc mới";
         const stored = await updateChatMetadata(sessionId, {
           title,
           createdAt: now,
           tools: record.tools,
+          planYolo: record.planYolo,
+          planYoloModel: record.planYoloModel,
           cwd: record.cwd,
           ...geminiDefaultSnapshot,
           ...(projectFolder ? { folderId: projectFolder.id, folderName: projectFolder.name } : {}),
@@ -4923,6 +4954,7 @@ const server = http.createServer(async (req, res) => {
       if (activeChatRequests.has(requestId)) throw Object.assign(new Error("requestId đang được xử lý"), { code: "CONFLICT" });
       const { model: selectedModel } = await resolveChatModel(chatModel(body.model), modelSource, modelProvider, sessionId, prompt);
       const record = await ensureChatSession(sessionId, { ...body, approvalMode: selectedApprovalMode, browserMode: selectedBrowserMode });
+      if (Object.hasOwn(body, "planYolo")) await updateChatMetadata(sessionId, { planYolo: record.planYolo === true, planYoloModel: record.planYoloModel || null }, { touchUpdatedAt: false });
       record.selectedChatModel = selectedModel;
       if (isQuotaGoogleChatModel(selectedModel)) {
         const { account, availability } = await selectedGeminiAccountState(sessionId);
@@ -5028,7 +5060,7 @@ const server = http.createServer(async (req, res) => {
           browserPageScreenshot: "unavailable",
           note: "Ego Browser host hiện không cung cấp Page.captureScreenshot ổn định; snapshot page p1 là đọc cây trợ năng, không phải native screen capture.",
         },
-        models, tools, catalog: toolCatalog.catalog, observedToolIds: toolCatalog.observedToolIds, commands: [...ACP_GATEWAY_COMMANDS].filter((command) => !BLOCKED_BROWSER_COMMANDS.has(command)).sort(), browsers: OMP_BROWSER_MODES, approvalModes: OMP_APPROVAL_MODES, shareModes: OMP_SHARE_MODES,
+        models, tools, sessionModes: toolCatalog.sessionModes, catalog: toolCatalog.catalog, observedToolIds: toolCatalog.observedToolIds, commands: [...ACP_GATEWAY_COMMANDS].filter((command) => !BLOCKED_BROWSER_COMMANDS.has(command)).sort(), browsers: OMP_BROWSER_MODES, approvalModes: OMP_APPROVAL_MODES, shareModes: OMP_SHARE_MODES,
         safety: consoleBridge.safety(),
         note: "Catalog lấy từ OMP runtime; capability unavailable không được báo thành công.",
       });

@@ -323,10 +323,12 @@ function normalizeTools(value) {
 }
 
 class ConsoleContext {
-  constructor({ cwd, guard, onGenerationFinished, onSafetyChanged, onIdle, approvalMode = "always-ask", tools = [], env = process.env }) {
+  constructor({ cwd, guard, onGenerationFinished, onSafetyChanged, onIdle, approvalMode = "always-ask", planYolo = false, planYoloModel = null, tools = [], env = process.env }) {
     this.id = randomUUID();
     this.cwd = cwd;
     this.approvalMode = ["always-ask", "write", "yolo"].includes(approvalMode) ? approvalMode : "always-ask";
+    this.planYolo = planYolo === true;
+    this.planYoloModel = this.planYolo && typeof planYoloModel === "string" ? planYoloModel : null;
     this.tools = normalizeTools(tools);
     this.env = env;
     this.guard = guard;
@@ -393,7 +395,7 @@ class ConsoleContext {
     this.status = "starting";
     this.startedAt = Date.now();
     this.#broadcast("bridge_status", this.publicSummary());
-    const args = ["--approval-mode", this.approvalMode, "--mode", "rpc", "--extension", GEMINI_PIN_EXTENSION];
+    const args = ["--approval-mode", this.approvalMode, ...(this.planYolo ? ["--plan-yolo", `--plan=${this.planYoloModel}`, `--plan-yolo-into=${this.planYoloModel}`] : []), "--mode", "rpc", "--extension", GEMINI_PIN_EXTENSION];
     if (this.tools.length) args.push(`--tools=${this.tools.join(",")}`);
     const child = spawn(OMP_BIN, args, {
       cwd: this.cwd,
@@ -659,22 +661,22 @@ export class ConsoleBridge {
   async start(body = {}) {
     const cwd = await validCwd(body.cwd);
     if (body.protocol === "acp") return this.#startAcp(body, cwd);
-    const context = new ConsoleContext({ cwd, env: this.#env, guard: this.#guard, onGenerationFinished: this.#onGenerationFinished, onSafetyChanged: this.#onSafetyChanged, onIdle: (contextId) => this.#contexts.delete(contextId), approvalMode: body.approvalMode, tools: body.tools });
+    const context = new ConsoleContext({ cwd, env: this.#env, guard: this.#guard, onGenerationFinished: this.#onGenerationFinished, onSafetyChanged: this.#onSafetyChanged, onIdle: (contextId) => this.#contexts.delete(contextId), approvalMode: body.approvalMode, planYolo: body.planYolo, planYoloModel: body.planYoloModel, tools: body.tools });
     this.#contexts.set(context.id, context);
     await context.start();
     return context.summary();
   }
 
-  #acquireAcpWorker(cwd, approvalMode, tools) {
+  #acquireAcpWorker(cwd, approvalMode, planYolo, planYoloModel, tools) {
     const normalizedTools = [...tools].sort();
-    const key = JSON.stringify({ cwd, approvalMode, tools: normalizedTools });
+    const key = JSON.stringify({ cwd, approvalMode, planYolo: planYolo === true, planYoloModel: planYolo ? planYoloModel : null, tools: normalizedTools });
     let record = this.#acpWorkers.get(key);
     if (record && ["error", "closed"].includes(record.worker.status)) {
       this.#acpWorkers.delete(key);
       record = null;
     }
     if (!record) {
-      const args = ["--approval-mode", approvalMode, "--extension", GEMINI_PIN_EXTENSION];
+      const args = ["--approval-mode", approvalMode, ...(planYolo ? ["--plan-yolo", `--plan=${planYoloModel}`, `--plan-yolo-into=${planYoloModel}`] : []), "--extension", GEMINI_PIN_EXTENSION];
       if (normalizedTools.length) args.push(`--tools=${normalizedTools.join(",")}`);
       args.push("acp");
       const worker = new AcpWorker({ command: OMP_BIN, args, cwd, env: this.#env });
@@ -752,7 +754,8 @@ export class ConsoleBridge {
   async #startAcp(body, cwd) {
     const approvalMode = ["always-ask", "write", "yolo"].includes(body.approvalMode) ? body.approvalMode : "always-ask";
     const tools = normalizeTools(body.tools);
-    const record = this.#acquireAcpWorker(cwd, approvalMode, tools);
+    const planYolo = body.planYolo === true;
+    const record = this.#acquireAcpWorker(cwd, approvalMode, planYolo, body.planYoloModel, tools);
     const context = this.#makeAcpContext(record, cwd, approvalMode, tools);
     try {
       await context.start({ sessionId: typeof body.ompSessionId === "string" ? body.ompSessionId : null });
@@ -773,7 +776,7 @@ export class ConsoleBridge {
     const cwd = await validCwd(body.cwd);
     const approvalMode = ["always-ask", "write", "yolo"].includes(body.approvalMode) ? body.approvalMode : "always-ask";
     const tools = normalizeTools(body.tools);
-    const record = this.#acquireAcpWorker(cwd, approvalMode, tools);
+    const record = this.#acquireAcpWorker(cwd, approvalMode, body.planYolo === true, body.planYoloModel, tools);
     const worker = await record.worker.start();
     if (!record.contexts.size) this.#scheduleAcpWorkerStop(record);
     return { status: worker.status, pid: worker.pid };
