@@ -3457,7 +3457,7 @@
     }
   }
 
-  function unsupported(event) { const target = event.target.closest('[data-production-unsupported],.toggle-switch,.plus-tool-action-item,#confirmUpgradeBtn,#launchRealBrowserTabBtn,#btnModalApplyDiff,#btnModalRevertFile,#btnApplyAllDiff,#btnUndoCurrentDiff,#terminalInput'); if (!target) return; event.preventDefault(); event.stopImmediatePropagation(); notify('Control này chưa có backend production.', true); }
+  function unsupported(event) { const target = event.target.closest('[data-production-unsupported],.plus-tool-action-item,#confirmUpgradeBtn,#launchRealBrowserTabBtn,#btnModalApplyDiff,#btnModalRevertFile,#btnApplyAllDiff,#btnUndoCurrentDiff,#terminalInput'); if (!target) return; event.preventDefault(); event.stopImmediatePropagation(); notify('Control này chưa có backend production.', true); }
   function bind() {
     if (bound) return;
     bound = true;
@@ -3526,7 +3526,6 @@
     ensureToolsRail();
     $('codeDiffReviewModal') && ($('codeDiffReviewModal').hidden = true);
     $('upgradeModal') && ($('upgradeModal').hidden = true);
-    document.querySelectorAll('.toggle-switch').forEach((switcher) => { switcher.setAttribute('aria-disabled', 'true'); switcher.tabIndex = -1; });
     setInterval(() => { void loadQuota(); void loadModels(); }, 30000);
     const refreshQuotaModelAccess = () => { if (document.visibilityState !== 'hidden') { void loadQuota(); void loadModels(); } };
     window.addEventListener('focus', refreshQuotaModelAccess);

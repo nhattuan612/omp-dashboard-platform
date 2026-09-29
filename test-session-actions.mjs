@@ -814,6 +814,7 @@ async function runContract() {
     assert.match(chatClient, /syncOmpCatalog/);
     assert.doesNotMatch(chatClient, /const basicIds/);
     assert.doesNotMatch(chatClient, /const glyphs/);
+    assert.doesNotMatch(chatClient, /\[data-production-unsupported\],\.toggle-switch/);
     assert.doesNotMatch(chatDashboard, /tool-row-python/);
     passes.push("frontend exposes attachment, copy, prompt-revision, branch, markdown-table, and OMP file-change controls");
     for (const quotaDashboard of quotaDashboards) {
