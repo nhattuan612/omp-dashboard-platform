@@ -4990,8 +4990,8 @@ const server = http.createServer(async (req, res) => {
   }
   if ((req.url === "/api/omp/v1/capabilities" || req.url === "/api/v1/omp/capabilities") && req.method === "GET") {
     try {
-      const models = await availableModels();
-      const imageGeneration = imageGenerationCapability(models);
+      const models = availableModelsCache.items;
+      const imageGeneration = models.length ? imageGenerationCapability(models) : { status: "partial", models: [], reason: "Model catalog đang được nạp riêng." };
       const imageGenerationModels = imageGeneration.models;
       const toolCatalog = await ompToolCatalog.read();
       const tools = toolCatalog.tools;
