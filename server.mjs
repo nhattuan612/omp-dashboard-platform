@@ -1424,6 +1424,8 @@ const OMP_MEMORY_BACKENDS = new Set(["off", "local", "hindsight", "mnemopi", "sh
 const OMP_MEMORY_ACTIONS = ["view", "stats", "diagnose", "queue", "sync", "clear", "reset", "enqueue", "rebuild"];
 const OMP_MEMORY_MUTATING_ACTIONS = new Set(["sync", "clear", "reset", "enqueue", "rebuild"]);
 const OMP_MEMORY_CONFIRM_ACTIONS = new Set(["sync", "clear", "reset", "enqueue", "rebuild"]);
+const ADVISOR_SYNC_BACKLOGS = new Set(["off", "1", "3", "5"]);
+const ADVISOR_TIERS = new Set(["inherit", "none", "auto", "default", "flex", "scale", "priority"]);
 const HEADLESS_APPROVAL_RANK = { read: 0, write: 1, exec: 2 };
 const HEADLESS_APPROVAL_LIMIT = { "always-ask": "read", write: "write", yolo: "exec" };
 function runOmpMemoryBackend(cwd) {
@@ -1455,6 +1457,46 @@ function runOmpMemoryBackend(cwd) {
       finish(resolve, OMP_MEMORY_BACKENDS.has(backend) ? backend : "unknown");
     });
   });
+}
+
+function runOmpConfig(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(OMP_BIN, ["config", ...args], { env: OMP_ENV, stdio: ["ignore", "pipe", "pipe"] });
+    let output = ""; let errorOutput = ""; let settled = false;
+    const finish = (fn, value) => { if (settled) return; settled = true; clearTimeout(timer); fn(value); };
+    const timer = setTimeout(() => { child.kill("SIGTERM"); finish(reject, Object.assign(new Error("OMP config không phản hồi"), { code: "UPSTREAM_UNAVAILABLE" })); }, 15000);
+    const append = (target) => (chunk) => { if (target === "out") output += chunk.toString(); else errorOutput += chunk.toString(); };
+    child.stdout.on("data", append("out")); child.stderr.on("data", append("err"));
+    child.on("error", () => finish(reject, Object.assign(new Error("Không chạy được OMP config"), { code: "UPSTREAM_UNAVAILABLE" })));
+    child.on("close", (code) => code === 0 ? finish(resolve, output) : finish(reject, Object.assign(new Error(errorOutput.trim() || "OMP config từ chối thay đổi"), { code: "UPSTREAM_UNAVAILABLE" })));
+  });
+}
+
+async function advisorConfig() {
+  const raw = JSON.parse(await runOmpConfig(["list", "--json"]));
+  const get = (key, fallback) => raw?.[key]?.value ?? fallback;
+  const roles = get("modelRoles", {});
+  return {
+    syncBacklog: get("advisor.syncBacklog", "off"), immuneTurns: get("advisor.immuneTurns", 3), maxNotesPerUpdate: get("advisor.maxNotesPerUpdate", 4), evictStaleResults: get("advisor.evictStaleResults", true),
+    model: typeof roles?.advisor === "string" ? roles.advisor : "", tier: get("tier.advisor", "none"),
+  };
+}
+
+async function updateAdvisorConfig(body) {
+  if (!body || Array.isArray(body) || typeof body !== "object") throw Object.assign(new Error("Cấu hình Advisor phải là object"), { code: "BAD_REQUEST" });
+  const current = await advisorConfig();
+  const next = { ...current, ...body };
+  if (!ADVISOR_SYNC_BACKLOGS.has(next.syncBacklog)) throw Object.assign(new Error("Advisor sync backlog không hợp lệ"), { code: "BAD_REQUEST", field: "syncBacklog" });
+  if (!Number.isInteger(next.immuneTurns) || next.immuneTurns < 0 || next.immuneTurns > 5) throw Object.assign(new Error("Advisor immune turns phải từ 0 đến 5"), { code: "BAD_REQUEST", field: "immuneTurns" });
+  if (!Number.isInteger(next.maxNotesPerUpdate) || next.maxNotesPerUpdate < 1 || next.maxNotesPerUpdate > 5) throw Object.assign(new Error("Advisor max notes phải từ 1 đến 5"), { code: "BAD_REQUEST", field: "maxNotesPerUpdate" });
+  if (typeof next.evictStaleResults !== "boolean") throw Object.assign(new Error("Advisor evict stale results phải là boolean"), { code: "BAD_REQUEST", field: "evictStaleResults" });
+  if (typeof next.model !== "string" || !next.model.trim() || next.model.length > 200) throw Object.assign(new Error("Model Advisor không hợp lệ"), { code: "BAD_REQUEST", field: "model" });
+  if (!ADVISOR_TIERS.has(next.tier)) throw Object.assign(new Error("Service tier Advisor không hợp lệ"), { code: "BAD_REQUEST", field: "tier" });
+  const raw = JSON.parse(await runOmpConfig(["list", "--json"])); const roles = { ...(raw?.modelRoles?.value || {}), advisor: next.model.trim() };
+  for (const args of [
+    ["set", "advisor.syncBacklog", next.syncBacklog], ["set", "advisor.immuneTurns", String(next.immuneTurns)], ["set", "advisor.maxNotesPerUpdate", String(next.maxNotesPerUpdate)], ["set", "advisor.evictStaleResults", String(next.evictStaleResults)], ["set", "tier.advisor", next.tier], ["set", "modelRoles", JSON.stringify(roles)],
+  ]) await runOmpConfig(args);
+  return advisorConfig();
 }
 
 async function readOmpToolCatalog() {
@@ -1490,6 +1532,11 @@ function approvalMode(value) {
 function planYolo(value) {
   if (value == null) return false;
   if (typeof value !== "boolean") throw Object.assign(new Error("planYolo phải là boolean"), { code: "BAD_REQUEST", field: "planYolo" });
+  return value;
+}
+function advisor(value) {
+  if (value == null) return false;
+  if (typeof value !== "boolean") throw Object.assign(new Error("advisor phải là boolean"), { code: "BAD_REQUEST", field: "advisor" });
   return value;
 }
 function planYoloModel(value) {
@@ -1604,6 +1651,7 @@ function gatewayPayload(record) {
     context,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+    advisor: record.advisor === true,
   };
 }
 
@@ -1612,6 +1660,7 @@ async function gatewayLaunchConfig(body = {}) {
   const selectedBrowserMode = body.browserMode == null ? null : browserMode(body.browserMode);
   const selectedPlanYolo = planYolo(body.planYolo);
   const selectedPlanYoloModel = selectedPlanYolo ? planYoloModel(body.planYoloModel || body.model) : null;
+  const selectedAdvisor = advisor(body.advisor);
   const useSkillBrowser = selectedBrowserMode === "ego-browser";
   const selectedTools = useSkillBrowser ? null : await headlessTools(selectedApprovalMode, await selectedOmpTools(body.tools));
   return {
@@ -1619,6 +1668,7 @@ async function gatewayLaunchConfig(body = {}) {
     browserMode: selectedBrowserMode,
     planYolo: selectedPlanYolo,
     planYoloModel: selectedPlanYoloModel,
+    advisor: selectedAdvisor,
     tools: selectedTools,
     workerTools: selectedTools ?? [],
   };
@@ -1641,6 +1691,7 @@ async function createGatewaySession(body) {
       approvalMode: launch.approvalMode,
       planYolo: launch.planYolo,
       planYoloModel: launch.planYoloModel,
+      advisor: launch.advisor,
       tools: launch.workerTools,
       ompSessionId: body.ompSessionId,
     });
@@ -1655,6 +1706,7 @@ async function createGatewaySession(body) {
       browserMode: launch.browserMode,
       planYolo: launch.planYolo,
       planYoloModel: launch.planYoloModel,
+      advisor: launch.advisor,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
@@ -1673,7 +1725,7 @@ async function prewarmGateway(body = {}) {
   const launch = await gatewayLaunchConfig(body);
   const cwd = typeof body.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : GENERAL_CHAT_CWD;
   if (cwd === GENERAL_CHAT_CWD) await mkdir(cwd, { recursive: true, mode: 0o700 });
-  return consoleBridge.prewarm({ cwd, approvalMode: launch.approvalMode, planYolo: launch.planYolo, planYoloModel: launch.planYoloModel, tools: launch.workerTools });
+  return consoleBridge.prewarm({ cwd, approvalMode: launch.approvalMode, planYolo: launch.planYolo, planYoloModel: launch.planYoloModel, advisor: launch.advisor, tools: launch.workerTools });
 }
 
 function normalizedChatMetadata(value) {
@@ -2485,6 +2537,7 @@ function chatSessionView(session) {
     isUnread: Boolean(session.isUnread),
     ...(Array.isArray(session.tools) ? { tools: session.tools } : {}),
     ...(session.planYolo === true ? { planYolo: true, planYoloModel: session.planYoloModel || null } : {}),
+    ...(session.advisor === true ? { advisor: true } : {}),
     ...(folderId ? { folderId } : {}),
     ...(folderName ? { folderName } : {}),
     updatedAgo: shortAge(updatedAt),
@@ -2629,13 +2682,15 @@ async function ensureChatSessionUnlocked(sessionId, body = {}, { requireExisting
   const hasPlanYolo = Object.hasOwn(body, "planYolo");
   const selectedPlanYolo = hasPlanYolo ? planYolo(body.planYolo) : record?.planYolo === true || stored.planYolo === true;
   const selectedPlanYoloModel = selectedPlanYolo ? planYoloModel(body.planYoloModel || body.model || record?.planYoloModel || stored.planYoloModel) : null;
+  const hasAdvisor = Object.hasOwn(body, "advisor");
+  const selectedAdvisor = hasAdvisor ? advisor(body.advisor) : record?.advisor === true || stored.advisor === true;
   const requestedTools = hasBrowserMode && useSkillBrowser
     ? null
     : body.tools == null
       ? (hasBrowserMode && record?.tools == null ? await headlessTools(selectedApprovalMode, await selectedOmpTools(stored.tools)) : null)
       : await headlessTools(selectedApprovalMode, await selectedOmpTools(body.tools));
   const browserContextChanged = Boolean(record && hasBrowserMode && ((useSkillBrowser && record.tools !== null) || (!useSkillBrowser && record.tools === null)));
-  if (record && ((requestedApprovalMode && record.approvalMode !== requestedApprovalMode) || (hasPlanYolo && (record.planYolo !== selectedPlanYolo || record.planYoloModel !== selectedPlanYoloModel)) || (requestedTools && JSON.stringify(record.tools || []) !== JSON.stringify(requestedTools)) || browserContextChanged) && !contextHasChatWork(record.contextId)) {
+  if (record && ((requestedApprovalMode && record.approvalMode !== requestedApprovalMode) || (hasPlanYolo && (record.planYolo !== selectedPlanYolo || record.planYoloModel !== selectedPlanYoloModel)) || (hasAdvisor && record.advisor !== selectedAdvisor) || (requestedTools && JSON.stringify(record.tools || []) !== JSON.stringify(requestedTools)) || browserContextChanged) && !contextHasChatWork(record.contextId)) {
     await consoleBridge.stop(record.contextId);
     gatewaySessions.delete(id);
     record = null;
@@ -2649,6 +2704,7 @@ async function ensureChatSessionUnlocked(sessionId, body = {}, { requireExisting
       approvalMode: selectedApprovalMode,
       planYolo: selectedPlanYolo,
       planYoloModel: selectedPlanYoloModel,
+      advisor: selectedAdvisor,
       ...(hasBrowserMode ? { browserMode: selectedBrowserMode } : {}),
       tools: requestedTools ?? stored.tools,
       ...((persisted?.ompSessionId || stored.ompSessionId) ? { ompSessionId: persisted?.ompSessionId || stored.ompSessionId } : {}),
@@ -3388,7 +3444,7 @@ async function sessionAction(sessionId, req, providedBody = null) {
     const selectedChatModel = record?.selectedChatModel || null;
     const tools = await headlessTools(record?.approvalMode || approvalMode(current.approvalMode), await selectedOmpTools(body.tools));
     if (!record) {
-      await ensureChatSession(id, { tools, approvalMode: current.approvalMode, planYolo: current.planYolo === true, planYoloModel: current.planYoloModel });
+      await ensureChatSession(id, { tools, approvalMode: current.approvalMode, planYolo: current.planYolo === true, planYoloModel: current.planYoloModel, advisor: current.advisor === true });
       record = liveGatewayRecord(id);
       if (record) record.selectedChatModel = selectedChatModel;
     } else {
@@ -3397,7 +3453,7 @@ async function sessionAction(sessionId, req, providedBody = null) {
       const sourcePath = current.path || (await readPersistedChatSession(id).catch(() => null))?.path;
       await consoleBridge.stop(record.contextId);
       gatewaySessions.delete(id);
-      await createGatewaySession({ sessionId: id, cwd: summary.cwd, approvalMode: record.approvalMode, planYolo: record.planYolo === true, planYoloModel: record.planYoloModel, tools });
+      await createGatewaySession({ sessionId: id, cwd: summary.cwd, approvalMode: record.approvalMode, planYolo: record.planYolo === true, planYoloModel: record.planYoloModel, advisor: record.advisor === true, tools });
       const nextRecord = liveGatewayRecord(id);
       if (nextRecord) nextRecord.selectedChatModel = selectedChatModel;
       if (sourcePath) await queryGatewayResponse(nextRecord, { type: "switch_session", sessionPath: sourcePath });
@@ -3418,10 +3474,11 @@ async function sessionAction(sessionId, req, providedBody = null) {
     const savedApprovalMode = record?.approvalMode || current.approvalMode;
     const savedPlanYolo = record?.planYolo === true || current.planYolo === true;
     const savedPlanYoloModel = record?.planYoloModel || current.planYoloModel;
+    const savedAdvisor = record?.advisor === true || current.advisor === true;
     const savedTools = Array.isArray(record?.tools) ? record.tools : current.tools;
     const cwd = summary?.cwd || persisted?.cwd;
     if (record) { await consoleBridge.stop(record.contextId); gatewaySessions.delete(id); }
-    const nextRecord = await ensureChatSession(id, { cwd, approvalMode: savedApprovalMode, planYolo: savedPlanYolo, ...(savedPlanYolo ? { planYoloModel: savedPlanYoloModel } : {}), ...(Array.isArray(savedTools) ? { tools: savedTools } : {}) });
+    const nextRecord = await ensureChatSession(id, { cwd, approvalMode: savedApprovalMode, planYolo: savedPlanYolo, advisor: savedAdvisor, ...(savedPlanYolo ? { planYoloModel: savedPlanYoloModel } : {}), ...(Array.isArray(savedTools) ? { tools: savedTools } : {}) });
     const stored = await updateChatMetadata(id, { reconnectedAt: new Date().toISOString() }, { touchUpdatedAt: false });
     return { success: true, action, sessionId: id, status: "ready", metadata: stored, context: consoleBridge.publicSummary(nextRecord.contextId) };
   } else if (action === "resume_queue") {
@@ -3502,6 +3559,7 @@ async function sessionAction(sessionId, req, providedBody = null) {
           approvalMode: target.approvalMode,
           planYolo: target.planYolo === true,
           planYoloModel: target.planYoloModel || null,
+          advisor: target.advisor === true,
           tools: target.tools,
           createdAt,
         });
@@ -4871,7 +4929,7 @@ const server = http.createServer(async (req, res) => {
           await mkdir(GENERAL_CHAT_CWD, { recursive: true, mode: 0o700 });
           cwd = GENERAL_CHAT_CWD;
         }
-        const record = await ensureChatSession(sessionId, { cwd, title: body.title, ...(body.browserMode != null ? { browserMode: body.browserMode } : {}), ...(body.approvalMode != null ? { approvalMode: body.approvalMode } : {}), ...(body.planYolo != null ? { planYolo: body.planYolo } : {}), ...(body.planYoloModel != null ? { planYoloModel: body.planYoloModel } : {}), ...(body.tools != null ? { tools: body.tools } : {}) });
+        const record = await ensureChatSession(sessionId, { cwd, title: body.title, ...(body.browserMode != null ? { browserMode: body.browserMode } : {}), ...(body.approvalMode != null ? { approvalMode: body.approvalMode } : {}), ...(body.planYolo != null ? { planYolo: body.planYolo } : {}), ...(body.planYoloModel != null ? { planYoloModel: body.planYoloModel } : {}), ...(body.advisor != null ? { advisor: body.advisor } : {}), ...(body.tools != null ? { tools: body.tools } : {}) });
         const now = new Date(record.createdAt || Date.now()).toISOString();
         const title = String(body.title || "Phiên làm việc mới").trim() || "Phiên làm việc mới";
         const stored = await updateChatMetadata(sessionId, {
@@ -4880,6 +4938,7 @@ const server = http.createServer(async (req, res) => {
           tools: record.tools,
           planYolo: record.planYolo,
           planYoloModel: record.planYoloModel,
+          advisor: record.advisor === true,
           cwd: record.cwd,
           ...geminiDefaultSnapshot,
           ...(projectFolder ? { folderId: projectFolder.id, folderName: projectFolder.name } : {}),
@@ -4955,7 +5014,7 @@ const server = http.createServer(async (req, res) => {
       if (activeChatRequests.has(requestId)) throw Object.assign(new Error("requestId đang được xử lý"), { code: "CONFLICT" });
       const { model: selectedModel } = await resolveChatModel(chatModel(body.model), modelSource, modelProvider, sessionId, prompt);
       const record = await ensureChatSession(sessionId, { ...body, approvalMode: selectedApprovalMode, browserMode: selectedBrowserMode });
-      if (Object.hasOwn(body, "planYolo")) await updateChatMetadata(sessionId, { planYolo: record.planYolo === true, planYoloModel: record.planYoloModel || null }, { touchUpdatedAt: false });
+      if (Object.hasOwn(body, "planYolo") || Object.hasOwn(body, "advisor")) await updateChatMetadata(sessionId, { planYolo: record.planYolo === true, planYoloModel: record.planYoloModel || null, advisor: record.advisor === true }, { touchUpdatedAt: false });
       record.selectedChatModel = selectedModel;
       if (isQuotaGoogleChatModel(selectedModel)) {
         const { account, availability } = await selectedGeminiAccountState(sessionId);
@@ -4989,6 +5048,10 @@ const server = http.createServer(async (req, res) => {
       if (!body || Array.isArray(body) || typeof body !== "object") throw Object.assign(new Error("Payload phải là object JSON."), { code: "BAD_REQUEST" });
       return json(res, 202, { ok: true, worker: await prewarmGateway(body) });
     } catch (error) { return chatError(res, error); }
+  }
+  if ((requestUrl.pathname === "/api/v1/omp/advisor-config" || requestUrl.pathname === "/api/omp/v1/advisor-config") && (req.method === "GET" || req.method === "POST")) {
+    try { return json(res, 200, req.method === "GET" ? await advisorConfig() : await updateAdvisorConfig(await jsonBody(req))); }
+    catch (error) { return chatError(res, error); }
   }
   if (requestUrl.pathname === "/chat" && req.method === "GET") {
     const page = await readDashboardAsset("honpi-chat-dashboard-SKE.html", res.cspNonce);

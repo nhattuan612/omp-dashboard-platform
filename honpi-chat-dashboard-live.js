@@ -6,7 +6,7 @@
   const TOOL_STORAGE_KEY = 'omp.tools.v2';
   const BROWSER_MODE_PREFERENCE_VERSION = 'manual-v1';
   const initialBrowserMode = localStorage.getItem('omp.browserModePreferenceVersion') === BROWSER_MODE_PREFERENCE_VERSION ? localStorage.getItem('omp.browserMode') : 'none';
-  const state = { sessions: [], nextCursor: null, activeId: null, generation: 0, messages: [], models: [], activeModel: null, controller: null, requestId: null, activeRequest: null, createPromise: null, menu: null, folderMenu: null, quota: null, accounts: [], attachments: [], workspaceFiles: [], workspaceMention: '@', capabilities: null, selectedTools: [], toolsUpdating: false, folderExpanded: new Set(), folderCollapsed: new Set(), thinking: localStorage.getItem('omp.thinking') || 'max', browserMode: initialBrowserMode === 'ego-browser' ? 'ego-browser' : 'none', planYolo: localStorage.getItem('omp.planYolo') === 'true', planYoloModel: localStorage.getItem('omp.planYoloModel') || '', shareMode: localStorage.getItem('omp.shareMode') || 'encrypted', approvalMode: localStorage.getItem('omp.approvalMode') || 'always-ask', enterBehavior: localStorage.getItem('omp.enterBehavior') || 'queue', conversationDisplay: localStorage.getItem('omp.conversationDisplay') || 'compact', pendingPrompts: [], queuePausedSessions: new Map(), editingQueueId: null, draftPromptPreview: null, browserAction: null, browserStatus: null, media: { screenCapture: { status: 'unavailable', reason: 'Native screen capture is not provided by OMP dashboard.' }, camera: { status: 'unavailable' }, microphone: { status: 'unavailable' }, video: { status: 'unavailable' } } };
+  const state = { sessions: [], nextCursor: null, activeId: null, generation: 0, messages: [], models: [], activeModel: null, controller: null, requestId: null, activeRequest: null, createPromise: null, menu: null, folderMenu: null, quota: null, accounts: [], attachments: [], workspaceFiles: [], workspaceMention: '@', capabilities: null, selectedTools: [], toolsUpdating: false, advisor: localStorage.getItem('omp.advisor') === 'true', advisorConfig: null, advisorConfigLoading: false, advisorConfigSaving: false, folderExpanded: new Set(), folderCollapsed: new Set(), thinking: localStorage.getItem('omp.thinking') || 'max', browserMode: initialBrowserMode === 'ego-browser' ? 'ego-browser' : 'none', planYolo: localStorage.getItem('omp.planYolo') === 'true', planYoloModel: localStorage.getItem('omp.planYoloModel') || '', shareMode: localStorage.getItem('omp.shareMode') || 'encrypted', approvalMode: localStorage.getItem('omp.approvalMode') || 'always-ask', enterBehavior: localStorage.getItem('omp.enterBehavior') || 'queue', conversationDisplay: localStorage.getItem('omp.conversationDisplay') || 'compact', pendingPrompts: [], queuePausedSessions: new Map(), editingQueueId: null, draftPromptPreview: null, browserAction: null, browserStatus: null, media: { screenCapture: { status: 'unavailable', reason: 'Native screen capture is not provided by OMP dashboard.' }, camera: { status: 'unavailable' }, microphone: { status: 'unavailable' }, video: { status: 'unavailable' } } };
   state.enterBehavior = 'send';
   state.modelAccess = null;
   state.modelAccessInitialized = false;
@@ -251,14 +251,14 @@
       body: JSON.stringify({
         ...(state.draftWorkspaceCwd ? { cwd: state.draftWorkspaceCwd } : {}),
         approvalMode: settings.approvalMode,
-        browserMode: settings.browserMode, planYolo: settings.planYolo,
+        browserMode: settings.browserMode, planYolo: settings.planYolo, ...(settings.planYolo ? { planYoloModel: settings.planYoloModel } : {}), advisor: settings.advisor,
         tools: settings.tools,
       }),
       keepalive: true,
     }).catch(() => {});
   }
   function snapshotSettings() {
-    return { model: state.activeModel || null, modelProvider: state.activeModelProvider, modelSource: state.modelSource, thinking: state.thinking, browserMode: state.browserMode, planYolo: state.planYolo, planYoloModel: state.planYoloModel || state.activeModel || null, approvalMode: state.approvalMode, tools: [...state.selectedTools] };
+    return { model: state.activeModel || null, modelProvider: state.activeModelProvider, modelSource: state.modelSource, thinking: state.thinking, browserMode: state.browserMode, planYolo: state.planYolo, planYoloModel: state.planYoloModel || state.activeModel || null, advisor: state.advisor, approvalMode: state.approvalMode, tools: [...state.selectedTools] };
   }
   function setBrowserMode(value) {
     state.browserMode = value === 'ego-browser' ? 'ego-browser' : 'none';
@@ -1586,7 +1586,7 @@
     setNeutralSelection({ preserveDraftPreview: Boolean(state.draftPromptPreview) });
     state.createPromise = (async () => {
       try {
-        const { payload } = await readJson(`${API}/sessions`, { method: 'POST', body: JSON.stringify({ title, ...(options.folderId ? { folderId: options.folderId } : {}), ...(cwd ? { cwd } : {}), browserMode: state.browserMode, planYolo: state.planYolo, ...(state.planYolo ? { planYoloModel: state.planYoloModel || state.activeModel } : {}), approvalMode: state.approvalMode, ...(state.selectedTools.length ? { tools: state.selectedTools } : {}) }) });
+        const { payload } = await readJson(`${API}/sessions`, { method: 'POST', body: JSON.stringify({ title, ...(options.folderId ? { folderId: options.folderId } : {}), ...(cwd ? { cwd } : {}), browserMode: state.browserMode, planYolo: state.planYolo, ...(state.planYolo ? { planYoloModel: state.planYoloModel || state.activeModel } : {}), advisor: state.advisor, approvalMode: state.approvalMode, ...(state.selectedTools.length ? { tools: state.selectedTools } : {}) }) });
         const created = payload?.session || payload;
         if (!created?.id) throw new Error('Backend không trả id session hợp lệ');
         state.sessionLoadRequestId += 1;
@@ -2296,7 +2296,7 @@
     setStreamStatus('Đang gửi lên OMP…', 'waiting');
     let normalEnd = false;
     try {
-      const response = await fetch(`${API}/chat/stream`, { method: 'POST', headers: { Accept: 'text/event-stream', 'content-type': 'application/json' }, signal: request.controller.signal, body: JSON.stringify({ sessionId, prompt, model, modelProvider, modelSource, requestId: request.requestId, thinking: settings.thinking, browserMode: settings.browserMode, planYolo: settings.planYolo, planYoloModel: settings.planYoloModel, approvalMode: settings.approvalMode, tools: settings.tools?.length ? settings.tools : undefined, attachments }) });
+      const response = await fetch(`${API}/chat/stream`, { method: 'POST', headers: { Accept: 'text/event-stream', 'content-type': 'application/json' }, signal: request.controller.signal, body: JSON.stringify({ sessionId, prompt, model, modelProvider, modelSource, requestId: request.requestId, thinking: settings.thinking, browserMode: settings.browserMode, approvalMode: settings.approvalMode, tools: settings.tools?.length ? settings.tools : undefined, attachments }) });
       if (!response.ok || !response.body) {
         let payload;
         try { payload = await response.json(); } catch {}
@@ -2717,8 +2717,8 @@
   async function syncQuota() { const button = $('forceSyncAllOmpBtn'); if (button) button.disabled = true; try { await readJson(`${API}/quota/sync`, { method: 'POST', body: JSON.stringify({}) }); await Promise.all([loadQuota(), loadModels()]); notify('Đã đồng bộ quota'); } catch (error) { notify(`Đồng bộ quota lỗi: ${error.message}`, true); } finally { if (button) button.disabled = false; } }
   const modelOptionValue = (model) => JSON.stringify([model.provider || '', model.id]);
   function syncPlanYoloModelControl() {
-    const select = $('toolsPlanYoloModelSelect'); if (!select) return;
-    const models = [...new Map(state.models.filter((item) => item?.id).map((item) => [item.id, item])).values()];
+    const select = $('modesPlanYoloModelSelect'); if (!select) return;
+    const models = [...new Map((state.models.length ? state.models : state.capabilities?.models || []).filter((item) => item?.id).map((item) => [item.id, item])).values()];
     const selected = models.find((item) => item.id === state.planYoloModel) || models.find((item) => item.id === state.activeModel) || models[0];
     if (!selected) { select.replaceChildren(new Option('Chưa có model OMP khả dụng', '')); select.disabled = true; return; }
     if (state.planYoloModel !== selected.id) { state.planYoloModel = selected.id; localStorage.setItem('omp.planYoloModel', selected.id); }
@@ -2972,26 +2972,6 @@
     const metadata = state.capabilities?.catalog || {}; const statuses = { supported: 'Tắt' };
     const summary = document.createElement('div'); summary.className = 'tool-group-label'; summary.textContent = `OMP ${text(metadata.audit?.ompVersion || 'chưa kiểm tra').replace(/^omp\//i, '')} · ${metadata.counts?.supported || 0} tool dùng được`;
     const sync = document.createElement('button'); sync.type = 'button'; sync.className = 'tool-sync-button'; sync.textContent = state.toolsUpdating ? 'Đang đồng bộ…' : 'Đồng bộ OMP'; sync.disabled = state.toolsUpdating; sync.setAttribute('aria-label', sync.textContent); sync.addEventListener('click', () => void syncOmpCatalog()); tools.append(summary, sync);
-    const planMode = state.capabilities?.sessionModes?.find((item) => item.id === 'plan-yolo');
-    if (planMode?.status === 'supported') {
-      const group = document.createElement('section'); group.className = 'tool-section-group'; group.setAttribute('aria-label', 'Chế độ Plan YOLO');
-      const heading = document.createElement('div'); heading.className = 'tool-group-label'; heading.textContent = 'CHẾ ĐỘ OMP';
-      const card = document.createElement('div'); card.className = 'plan-yolo-tool-card';
-      const head = document.createElement('div'); head.className = 'plan-yolo-tool-head';
-      const left = document.createElement('div'); left.className = 'tool-item-left';
-      const icon = document.createElement('div'); icon.className = 'tool-icon-avatar'; icon.setAttribute('aria-hidden', 'true'); icon.textContent = '◈';
-      const info = document.createElement('div'); info.className = 'tool-item-info';
-      const name = document.createElement('div'); name.className = 'tool-item-name-wrap';
-      const title = document.createElement('span'); title.className = 'tool-item-name'; title.textContent = 'Plan YOLO';
-      const status = document.createElement('span'); status.id = 'toolsPlanYoloStatus'; status.className = `tool-item-status-tag${state.planYolo ? ' tag-active' : ''}`; status.textContent = state.planYolo ? 'Bật' : 'Tắt';
-      const description = document.createElement('div'); description.className = 'tool-item-desc'; description.id = 'toolsPlanYoloHint'; description.textContent = 'Lập kế hoạch chỉ đọc, tự duyệt rồi thực thi bằng model đã chọn.';
-      name.append(title, status); info.append(name, description); left.append(icon, info);
-      const toggle = document.createElement('button'); toggle.id = 'toolsPlanYoloToggle'; toggle.type = 'button'; toggle.className = `toggle-switch${state.planYolo ? ' on' : ''}`; toggle.setAttribute('role', 'switch'); toggle.setAttribute('aria-checked', String(state.planYolo)); toggle.setAttribute('aria-label', 'Bật hoặc tắt Plan YOLO'); toggle.title = state.planYolo ? 'Tắt Plan YOLO' : 'Bật Plan YOLO'; const knob = document.createElement('div'); knob.className = 'toggle-knob'; toggle.append(knob); toggle.addEventListener('click', () => { togglePlanYolo(); renderOmpTools(); });
-      const modelWrap = document.createElement('div'); modelWrap.className = 'plan-yolo-tool-select-wrap';
-      const modelLabel = document.createElement('label'); modelLabel.className = 'plan-yolo-tool-select-label'; modelLabel.htmlFor = 'toolsPlanYoloModelSelect'; modelLabel.textContent = 'MODEL MẶC ĐỊNH PLAN YOLO';
-      const model = document.createElement('select'); model.id = 'toolsPlanYoloModelSelect'; model.className = 'plan-yolo-tool-select'; model.setAttribute('aria-describedby', 'toolsPlanYoloHint'); model.disabled = true; model.append(new Option('Đang tải model từ OMP…', '')); model.addEventListener('change', () => setPlanYoloModel(model.value));
-      head.append(left, toggle); modelWrap.append(modelLabel, model); card.append(head, modelWrap); group.append(heading, card); tools.append(group); syncPlanYoloModelControl();
-    }
     const available = catalog.length; const toolsTab = $('drawerTabToolsBtn'); const badge = toolsTab?.querySelector('.drawer-tab-badge'); if (badge) badge.textContent = String(available); if (toolsTab) toolsTab.setAttribute('aria-label', `Công cụ OMP: ${available} tool khả dụng`);
     if (!catalog.length) { tools.append(emptyNode('Không có công cụ OMP dùng được; hãy đồng bộ lại.')); return; }
     const listedGroups = metadata.groups || []; const groupIds = new Set(listedGroups.map((item) => item.id)); const groups = listedGroups.map((group) => [group.label, catalog.filter((item) => item.group === group.id)]);
@@ -3014,6 +2994,42 @@
     };
     groups.forEach(([label, items]) => { if (!items.length) return; const group = document.createElement('div'); group.className = 'tool-section-group production-tool-group'; const heading = document.createElement('div'); heading.className = 'tool-group-label'; heading.textContent = label; group.append(heading, ...items.map(renderRow)); tools.append(group); });
   }
+  function modeToggle(id, enabled, label, onClick) {
+    const toggle = document.createElement('button'); toggle.id = id; toggle.type = 'button'; toggle.className = `toggle-switch${enabled ? ' on' : ''}`; toggle.setAttribute('role', 'switch'); toggle.setAttribute('aria-checked', String(enabled)); toggle.setAttribute('aria-label', label); toggle.title = label; const knob = document.createElement('div'); knob.className = 'toggle-knob'; toggle.append(knob); toggle.addEventListener('click', onClick); return toggle;
+  }
+  function modeInfo(name, description, enabled) {
+    const left = document.createElement('div'); left.className = 'tool-item-left'; const icon = document.createElement('div'); icon.className = 'tool-icon-avatar'; icon.setAttribute('aria-hidden', 'true'); icon.textContent = name === 'Advisor' ? '✦' : '◈'; const info = document.createElement('div'); info.className = 'tool-item-info'; const line = document.createElement('div'); line.className = 'tool-item-name-wrap'; const title = document.createElement('span'); title.className = 'tool-item-name'; title.textContent = name; const status = document.createElement('span'); status.className = `tool-item-status-tag${enabled ? ' tag-active' : ''}`; status.textContent = enabled ? 'Bật' : 'Tắt'; const detail = document.createElement('div'); detail.className = 'tool-item-desc'; detail.textContent = description; line.append(title, status); info.append(line, detail); left.append(icon, info); return left;
+  }
+  function modeField(label, control) { const field = document.createElement('div'); field.className = 'mode-field'; const caption = document.createElement('label'); caption.htmlFor = control.id; caption.textContent = label; field.append(caption, control); return field; }
+  function renderOmpModes() {
+    const host = $('modesContentArea'); if (!host) return; host.replaceChildren(); const modes = state.capabilities?.sessionModes || []; const plan = modes.find((item) => item.id === 'plan-yolo'); const advisorMode = modes.find((item) => item.id === 'advisor'); const supported = [plan, advisorMode].filter((item) => item?.status === 'supported'); const badge = $('drawerTabModesBtn')?.querySelector('.drawer-tab-badge'); if (badge) badge.textContent = String(supported.length);
+    if (!modes.length) { host.append(emptyNode('OMP chưa công bố chế độ runtime.')); return; }
+    host.setAttribute('aria-label', 'Chế độ runtime OMP cho chat mới'); const note = document.createElement('div'); note.className = 'mode-runtime-note'; note.setAttribute('role', 'status'); note.textContent = 'OMP chỉ đọc các chế độ này khi khởi tạo runtime. Chat đang mở giữ nguyên; hãy tạo Cuộc trò chuyện mới để áp dụng.'; host.append(note);
+    const section = document.createElement('section'); section.className = 'tool-section-group'; const heading = document.createElement('div'); heading.className = 'tool-group-label'; heading.textContent = 'CHẾ ĐỘ ÁP DỤNG CHO CHAT MỚI'; section.append(heading);
+    if (plan?.status === 'supported') {
+      const card = document.createElement('div'); card.className = 'mode-card'; const head = document.createElement('div'); head.className = 'mode-card-head'; head.append(modeInfo('Plan YOLO', 'Bắt đầu chỉ đọc, tự duyệt plan ở resolve đầu rồi chuyển sang model thực thi.', state.planYolo), modeToggle('modesPlanYoloToggle', state.planYolo, state.planYolo ? 'Tắt Plan YOLO' : 'Bật Plan YOLO', () => { togglePlanYolo(); renderOmpModes(); }));
+      const select = document.createElement('select'); select.id = 'modesPlanYoloModelSelect'; select.disabled = true; select.append(new Option('Đang tải model từ OMP…', '')); select.addEventListener('change', () => setPlanYoloModel(select.value)); card.append(head, modeField('MODEL MẶC ĐỊNH PLAN YOLO', select)); section.append(card); syncPlanYoloModelControl();
+    }
+    if (advisorMode?.status === 'supported') {
+      const card = document.createElement('div'); card.className = 'mode-card'; const head = document.createElement('div'); head.className = 'mode-card-head'; head.append(modeInfo('Advisor', 'Model thứ hai review thụ động mỗi lượt và chèn note khi cần; có thể tăng token/quota.', state.advisor), modeToggle('modesAdvisorToggle', state.advisor, state.advisor ? 'Tắt Advisor' : 'Bật Advisor', () => { state.advisor = !state.advisor; localStorage.setItem('omp.advisor', String(state.advisor)); renderOmpModes(); notify(`Advisor ${state.advisor ? 'đã bật' : 'đã tắt'}; áp dụng cho chat mới.`); }));
+      const controls = document.createElement('div'); controls.className = 'mode-card-controls'; const config = state.advisorConfig; const disabled = !state.advisor || state.advisorConfigLoading || state.advisorConfigSaving;
+      if (!config) { const loading = document.createElement('div'); loading.className = 'tool-item-desc'; loading.textContent = state.advisorConfigLoading ? 'Đang đọc tuning Advisor từ OMP…' : 'Chưa đọc được tuning Advisor.'; controls.append(loading); }
+      else {
+        const input = document.createElement('input'); input.id = 'advisorModelInput'; input.value = config.model; input.disabled = disabled; input.maxLength = 200;
+        const tier = document.createElement('select'); tier.id = 'advisorTierSelect'; ['inherit', 'none', 'auto', 'default', 'flex', 'scale', 'priority'].forEach((value) => tier.append(new Option(value, value, false, value === config.tier))); tier.disabled = disabled;
+        const backlog = document.createElement('select'); backlog.id = 'advisorBacklogSelect'; [['off', 'Tắt'], ['1', '1 lượt'], ['3', '3 lượt'], ['5', '5 lượt']].forEach(([value, label]) => backlog.append(new Option(label, value, false, value === config.syncBacklog))); backlog.disabled = disabled;
+        const immune = document.createElement('select'); immune.id = 'advisorImmuneSelect'; [0, 1, 2, 3, 4, 5].forEach((value) => immune.append(new Option(`${value} lượt`, String(value), false, value === config.immuneTurns))); immune.disabled = disabled;
+        const notes = document.createElement('select'); notes.id = 'advisorNotesSelect'; [1, 2, 3, 4, 5].forEach((value) => notes.append(new Option(`${value} note`, String(value), false, value === config.maxNotesPerUpdate))); notes.disabled = disabled;
+        const evict = modeToggle('advisorEvictToggle', config.evictStaleResults, config.evictStaleResults ? 'Giữ dọn note cũ' : 'Tắt dọn note cũ', () => { const value = evict.dataset.value !== 'true'; evict.classList.toggle('on', value); evict.setAttribute('aria-checked', String(value)); evict.dataset.value = String(value); }); evict.disabled = disabled; evict.dataset.value = String(config.evictStaleResults);
+        controls.append(modeField('MODEL ADVISOR', input), modeField('SERVICE TIER', tier), modeField('ĐỒNG BỘ BACKLOG', backlog), modeField('IMMUNE TURNS', immune), modeField('MAX NOTES / UPDATE', notes), modeField('DỌN KẾT QUẢ CŨ', evict));
+        const save = document.createElement('button'); save.type = 'button'; save.className = 'mode-save-button'; save.disabled = disabled; save.textContent = state.advisorConfigSaving ? 'Đang lưu vào OMP…' : 'Lưu tuning Advisor vào OMP'; save.addEventListener('click', () => saveAdvisorConfig({ model: input.value, tier: tier.value, syncBacklog: backlog.value, immuneTurns: Number(immune.value), maxNotesPerUpdate: Number(notes.value), evictStaleResults: evict.dataset.value === 'true' })); controls.append(save);
+      }
+      card.append(head, controls); section.append(card);
+    }
+    if (!supported.length) section.append(emptyNode('OMP chưa hỗ trợ chế độ nào trong catalog hiện tại.')); host.append(section);
+  }
+  async function loadAdvisorConfig() { if (state.advisorConfigLoading) return; state.advisorConfigLoading = true; renderOmpModes(); try { const { payload } = await readJson(`${API}/omp/advisor-config`); state.advisorConfig = payload; } catch (error) { notify(`Không đọc được tuning Advisor: ${error.message}`, true); } finally { state.advisorConfigLoading = false; renderOmpModes(); } }
+  async function saveAdvisorConfig(next) { state.advisorConfigSaving = true; renderOmpModes(); try { const { payload } = await readJson(`${API}/omp/advisor-config`, { method: 'POST', body: JSON.stringify(next) }); state.advisorConfig = payload; notify('Đã lưu tuning Advisor vào OMP; áp dụng khi tạo chat mới.'); } catch (error) { notify(`Không lưu được tuning Advisor: ${error.message}`, true); } finally { state.advisorConfigSaving = false; renderOmpModes(); } }
   async function setOmpTools(toolId, enabled) {
     const supported = new Set(selectableTools());
     const previous = [...state.selectedTools]; const next = previous.filter((id) => id !== toolId); if (enabled) next.push(toolId);
@@ -3236,16 +3252,15 @@
     const mode = state.capabilities?.sessionModes?.find((item) => item.id === 'plan-yolo');
     const enabled = state.planYolo && mode?.status === 'supported';
     const model = state.planYoloModel || state.activeModel || 'chưa chọn';
-    const title = enabled ? `Plan chỉ đọc, tự duyệt rồi thực thi với ${model}.` : `Bật Plan YOLO với ${model} cho lượt kế tiếp.`;
+    const title = enabled ? `Plan chỉ đọc, tự duyệt rồi thực thi với ${model}; chỉ áp dụng cho chat mới.` : `Bật Plan YOLO với ${model} cho chat mới.`;
     const composerToggle = $('planYoloToggle');
     if (composerToggle) { composerToggle.hidden = mode?.status !== 'supported'; composerToggle.classList.toggle('active', enabled); const label = composerToggle.querySelector('span'); if (label) label.textContent = enabled ? 'Plan YOLO · Bật' : 'Plan YOLO · Tắt'; composerToggle.title = title; composerToggle.setAttribute('aria-label', title); composerToggle.setAttribute('aria-pressed', String(enabled)); }
-    const toolsToggle = $('toolsPlanYoloToggle'); if (toolsToggle) { toolsToggle.classList.toggle('on', enabled); toolsToggle.setAttribute('aria-checked', String(enabled)); toolsToggle.title = enabled ? 'Tắt Plan YOLO' : 'Bật Plan YOLO'; }
-    const toolsStatus = $('toolsPlanYoloStatus'); if (toolsStatus) { toolsStatus.textContent = enabled ? 'Bật' : 'Tắt'; toolsStatus.classList.toggle('tag-active', enabled); }
+    const modesToggle = $('modesPlanYoloToggle'); if (modesToggle) { modesToggle.classList.toggle('on', enabled); modesToggle.setAttribute('aria-checked', String(enabled)); modesToggle.title = enabled ? 'Tắt Plan YOLO' : 'Bật Plan YOLO'; }
   }
   function togglePlanYolo() {
     if (!state.planYolo && !(state.planYoloModel || state.activeModel)) { notify('Chọn model Plan YOLO trước khi bật.', true); return; }
     state.planYolo = !state.planYolo; localStorage.setItem('omp.planYolo', String(state.planYolo)); syncPlanYoloPill();
-    notify(`Plan YOLO ${state.planYolo ? 'đã bật' : 'đã tắt'}; áp dụng từ lượt kế tiếp.`);
+    notify(`Plan YOLO ${state.planYolo ? 'đã bật' : 'đã tắt'}; chỉ áp dụng khi tạo chat mới.`);
   }
   async function loadCapabilities() {
     try {
@@ -3265,8 +3280,8 @@
       const supported = selectableTools();
       state.selectedTools = restoreSelectedTools(supported);
       saveSelectedTools();
-      renderOmpTools(); ensureOmpSettings(); syncBrowserPill(); syncPlanYoloPill();
-    } catch (error) { state.capabilities = {}; syncBrowserPill(); syncPlanYoloPill(); notify(`OMP capability lỗi: ${error.message}`, true); }
+      renderOmpTools(); renderOmpModes(); ensureOmpSettings(); syncBrowserPill(); syncPlanYoloPill();
+    } catch (error) { state.capabilities = {}; renderOmpModes(); syncBrowserPill(); syncPlanYoloPill(); notify(`OMP capability lỗi: ${error.message}`, true); }
   }
   function bindDialogAccessibility() {
     const sync = (dialog) => {
@@ -3298,7 +3313,8 @@
     observer.observe(document.body, { childList: true, subtree: true });
   }
 
-  function bindOmpSurface() { ['egoBrowserToggle', 'planYoloToggle', 'drawerTabFilesBtn', 'tabFilesPane', 'settingsNavPlugins', 'settingsTabPlugins', 'settingsNavAgents', 'settingsTabAgents'].forEach((id) => { const node = $(id); if (node) { node.hidden = false; node.removeAttribute('aria-hidden'); node.style.removeProperty('display'); } }); ['fileChangeFloatingBar', 'fileChangeFloatingPill', 'shareSessionModal', 'openWindowModal', 'codeDiffReviewModal', 'upgradeModal', 'sessionContextMenu'].forEach((id) => { const node = $(id); if (node) { node.hidden = true; node.setAttribute('aria-hidden', 'true'); node.style.setProperty('display', 'none', 'important'); node.classList.remove('open'); } }); const fileList = $('drawerFilesList'); if (fileList) { fileList.replaceChildren(emptyNode('Chưa có tệp được đính kèm')); } const quotaRows = $('chatModalAccountsRows'); if (quotaRows) quotaRows.replaceChildren(emptyNode('Đang tải dữ liệu quota…')); const fileBadge = $('drawerTabFilesBtn')?.querySelector('.drawer-tab-badge'); if (fileBadge) fileBadge.textContent = '0'; $('drawerTabFilesBtn')?.setAttribute('aria-label', 'Tệp đính kèm thật'); $('drawerUploadFileBtn')?.removeAttribute('data-production-unsupported'); const permission = $('settingsPermissionSelect'); const map = { require_approval: 'always-ask', approve_for_me: 'write', full_access: 'yolo' }; if (permission) { permission.value = Object.entries(map).find(([, value]) => value === state.approvalMode)?.[0] || 'require_approval'; if (typeof setPermissionMode === 'function') setPermissionMode(permission.value, false); permission.addEventListener('change', () => { state.approvalMode = map[permission.value] || 'always-ask'; localStorage.setItem('omp.approvalMode', state.approvalMode); if (typeof setPermissionMode === 'function') setPermissionMode(permission.value, false); notify(`Đã chọn quyền OMP: ${permission.options[permission.selectedIndex]?.textContent || state.approvalMode}`); }, true); } const ego = $('egoBrowserToggle'); ego?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); state.browserMode = state.browserMode === 'ego-browser' ? 'none' : 'ego-browser'; localStorage.setItem('omp.browserMode', state.browserMode); syncBrowserPill(); }, true); $('planYoloToggle')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); togglePlanYolo(); }, true); document.addEventListener('click', (event) => { const plan = event.target.closest('[data-action="plan-mode"],#plusPlanningMode'); if (plan) { event.preventDefault(); event.stopImmediatePropagation(); togglePlanYolo(); return; } const option = event.target.closest('.approval-option-item'); if (!option) return; const mode = map[option.dataset.value] || 'always-ask'; state.approvalMode = mode; localStorage.setItem('omp.approvalMode', mode); }, true); bindFileAttachment(); loadCapabilities(); }
+  function bindDrawerTabs() { document.querySelectorAll('.drawer-tab[data-tab]').forEach((tab) => tab.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); const name = tab.dataset.tab; document.querySelectorAll('.drawer-tab[data-tab]').forEach((node) => { const active = node === tab; node.classList.toggle('active', active); node.setAttribute('aria-selected', String(active)); }); [['tools', 'tabToolsPane'], ['modes', 'tabModesPane'], ['files', 'tabFilesPane']].forEach(([id, paneId]) => $(paneId)?.classList.toggle('active', id === name)); if (name === 'modes') void loadAdvisorConfig(); if (name === 'files') void loadWorkspaceFiles(state.workspaceMention); }, true)); }
+  function bindOmpSurface() { ['egoBrowserToggle', 'planYoloToggle', 'drawerTabFilesBtn', 'drawerTabModesBtn', 'tabFilesPane', 'tabModesPane', 'settingsNavPlugins', 'settingsTabPlugins', 'settingsNavAgents', 'settingsTabAgents'].forEach((id) => { const node = $(id); if (node) { node.hidden = false; node.removeAttribute('aria-hidden'); node.style.removeProperty('display'); } }); ['fileChangeFloatingBar', 'fileChangeFloatingPill', 'shareSessionModal', 'openWindowModal', 'codeDiffReviewModal', 'upgradeModal', 'sessionContextMenu'].forEach((id) => { const node = $(id); if (node) { node.hidden = true; node.setAttribute('aria-hidden', 'true'); node.style.setProperty('display', 'none', 'important'); node.classList.remove('open'); } }); const fileList = $('drawerFilesList'); if (fileList) { fileList.replaceChildren(emptyNode('Chưa có tệp được đính kèm')); } const quotaRows = $('chatModalAccountsRows'); if (quotaRows) quotaRows.replaceChildren(emptyNode('Đang tải dữ liệu quota…')); const fileBadge = $('drawerTabFilesBtn')?.querySelector('.drawer-tab-badge'); if (fileBadge) fileBadge.textContent = '0'; $('drawerTabFilesBtn')?.setAttribute('aria-label', 'Tệp đính kèm thật'); $('drawerUploadFileBtn')?.removeAttribute('data-production-unsupported'); const permission = $('settingsPermissionSelect'); const map = { require_approval: 'always-ask', approve_for_me: 'write', full_access: 'yolo' }; if (permission) { permission.value = Object.entries(map).find(([, value]) => value === state.approvalMode)?.[0] || 'require_approval'; if (typeof setPermissionMode === 'function') setPermissionMode(permission.value, false); permission.addEventListener('change', () => { state.approvalMode = map[permission.value] || 'always-ask'; localStorage.setItem('omp.approvalMode', state.approvalMode); if (typeof setPermissionMode === 'function') setPermissionMode(permission.value, false); notify(`Đã chọn quyền OMP: ${permission.options[permission.selectedIndex]?.textContent || state.approvalMode}`); }, true); } const ego = $('egoBrowserToggle'); ego?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); state.browserMode = state.browserMode === 'ego-browser' ? 'none' : 'ego-browser'; localStorage.setItem('omp.browserMode', state.browserMode); syncBrowserPill(); }, true); $('planYoloToggle')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); togglePlanYolo(); }, true); document.addEventListener('click', (event) => { const plan = event.target.closest('[data-action="plan-mode"],#plusPlanningMode'); if (plan) { event.preventDefault(); event.stopImmediatePropagation(); togglePlanYolo(); return; } const option = event.target.closest('.approval-option-item'); if (!option) return; const mode = map[option.dataset.value] || 'always-ask'; state.approvalMode = mode; localStorage.setItem('omp.approvalMode', mode); }, true); bindDrawerTabs(); bindFileAttachment(); void loadAdvisorConfig(); loadCapabilities(); }
 
   function ensureToolsRail() {
     const drawer = $('toolsDrawer'); if (!drawer || $('toolsDrawerRail')) return;

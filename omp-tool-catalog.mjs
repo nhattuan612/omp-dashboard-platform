@@ -36,7 +36,7 @@ function validateMap(map) {
     ids.add(tool.id);
   }
   for (const mode of map.modes) {
-    if (!mode || !/^[a-z][a-z0-9-]*$/.test(mode.id || "") || mode.omp?.kind !== "cli-flag" || !/^--[a-z][a-z-]*$/.test(mode.omp?.flag || "") || mode.chat?.surface !== "composer" || typeof mode.chat?.label !== "string") throw mapError(`mode ${mode?.id || "không rõ"}`);
+    if (!mode || !/^[a-z][a-z0-9-]*$/.test(mode.id || "") || mode.omp?.kind !== "cli-flag" || !/^--[a-z][a-z-]*$/.test(mode.omp?.flag || "") || mode.chat?.surface !== "modes" || typeof mode.chat?.label !== "string") throw mapError(`mode ${mode?.id || "không rõ"}`);
   }
   return map;
 }
