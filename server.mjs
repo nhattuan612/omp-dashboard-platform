@@ -5034,6 +5034,10 @@ const server = http.createServer(async (req, res) => {
       });
     } catch (error) { return chatError(res, error); }
   }
+  if (requestUrl.pathname === "/api/v1/omp/capabilities/audit" && req.method === "POST") {
+    try { return json(res, 200, { ok: true, catalog: await ompToolCatalog.read({ force: true }) }); }
+    catch (error) { return chatError(res, error); }
+  }
   if (req.url === "/api/omp/v1/sessions" && req.method === "POST") {
     try { return json(res, 201, await createGatewaySession(await jsonBody(req))); }
     catch (error) { return errorResponse(res, error); }

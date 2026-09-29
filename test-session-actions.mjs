@@ -201,6 +201,10 @@ async function freePort() {
 }
 
 async function fakeOmp(args) {
+  if (args[0] === "--version") {
+    process.stdout.write("omp/18.3.2\n");
+    return;
+  }
   if (args[0] === "usage") {
     await writeFile(join(process.env.HOME, "test-omp-path.txt"), `${process.env.PATH || ""}\n`, { mode: 0o600 });
     const failurePath = homePath(process.env.HOME || "", "usage-dashboard", "test-usage-stderr.txt");
@@ -377,7 +381,10 @@ async function fakeOmp(args) {
           stateSessionId = `fixture-runtime-${randomUUID()}`;
           stateSessionPath = await seedOmpSession(process.env.HOME, stateSessionId, process.cwd(), "Recovered runtime session");
         }
-        emit({ type: "response", id: frame.id, command: frame.type, success: true, data: { sessionFile: stateSessionPath, sessionId: stateSessionId, messageCount: 0 } });
+        const dumpTools = ["read", "write", "edit", "grep", "glob", "bash", "eval", "task", "todo", "wait", "web_search"]
+          .map((name) => ({ name, parameters: { type: "object", properties: {} } }));
+        dumpTools.push({ name: "mcp__fixture_browser_snapshot", parameters: { type: "object", properties: { url: { type: "string" } } } });
+        emit({ type: "response", id: frame.id, command: frame.type, success: true, data: { sessionFile: stateSessionPath, sessionId: stateSessionId, messageCount: 0, dumpTools } });
       } else if (frame.type === "get_available_commands") {
         emit({ type: "response", id: frame.id, command: frame.type, success: true, data: { commands: [
           { name: "dashboard-gemini-pin", source: "extension" },
@@ -861,6 +868,16 @@ async function runContract() {
     assert.equal(hubTool?.status, "blocked", "Agent Hub must report the measured ACP startup failure");
     assert.equal(hubTool?.canToggle, false, "blocked tools must never reach --tools");
     assert.ok(capabilities.payload.observedToolIds.includes("wait"), "observed IDs must derive from the compiled catalog");
+    assert.equal(capabilities.payload.catalog?.audit?.ompVersion, "omp/18.3.2", "the catalog must expose the audited OMP version");
+    const dynamicTool = capabilities.payload.tools.find((item) => item.id === "mcp__fixture_browser_snapshot");
+    assert.equal(dynamicTool?.status, "unmapped", "new OMP MCP tools must be visible without becoming selectable");
+    assert.equal(dynamicTool?.source, "mcp", "dynamic provider tools must retain their source");
+    assert.equal(dynamicTool?.selection, "readonly", "dynamic MCP tools must never be sent through --tools");
+    assert.equal(dynamicTool?.canToggle, false, "unmapped tool must fail closed");
+    assert.ok(capabilities.payload.catalog?.drift?.added.includes("mcp__fixture_browser_snapshot"), "unmapped OMP tools must create visible drift");
+    const audit = await api("POST", "/api/v1/omp/capabilities/audit", {});
+    assert.equal(audit.status, 200, "manual OMP audit must remain dashboard-session protected and available");
+    assert.equal(audit.payload.catalog?.tools?.find((item) => item.id === "mcp__fixture_browser_snapshot")?.status, "unmapped");
     const supportedTools = capabilities.payload.tools.filter((item) => item.status === "supported").map((item) => item.id);
     const fullAccessSession = await api("POST", "/api/v1/sessions", { title: "Full OMP tool catalog", cwd: workspaceRoot, approvalMode: "yolo", tools: supportedTools });
     assert.equal(fullAccessSession.status, 201, `full OMP tool catalog should create a session: ${JSON.stringify(fullAccessSession.payload)}`);

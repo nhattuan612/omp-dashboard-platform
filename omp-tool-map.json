@@ -1,12 +1,14 @@
 {
   "schemaVersion": 1,
   "mapVersion": "2026-09-29.1",
+  "verification": { "ompVersion": "18.3.2" },
   "groups": [
     { "id": "workspace", "label": "WORKSPACE" },
     { "id": "code", "label": "CODE INTELLIGENCE" },
     { "id": "execution", "label": "THỰC THI" },
     { "id": "orchestration", "label": "ĐIỀU PHỐI" },
     { "id": "web", "label": "WEB" },
+    { "id": "connections", "label": "KẾT NỐI OMP" },
     { "id": "history", "label": "THEO DÕI OMP" }
   ],
   "tools": [
