@@ -1407,10 +1407,13 @@
   }
   async function openFileChangeReview(snapshot) {
     let current = snapshot;
-    if (!current?.id || !Array.isArray(current.files)) {
-      if (!state.activeId) return notify('Chưa chọn cuộc trò chuyện.', true);
-      try { const { payload } = await readJson(`${API}/sessions/${encodeURIComponent(state.activeId)}/file-changes`); current = payload?.snapshot; }
-      catch (error) { return notify(`Không tải được snapshot file-change: ${error.message}`, true); }
+    const sessionId = current?.sessionId || state.activeId;
+    if (!sessionId) return notify('Chưa chọn cuộc trò chuyện.', true);
+    try {
+      const { payload } = await readJson(`${API}/sessions/${encodeURIComponent(sessionId)}/file-changes`);
+      if (payload?.snapshot) current = payload.snapshot;
+    } catch (error) {
+      if (!current?.id) return notify(`Không tải được snapshot file-change: ${error.message}`, true);
     }
     if (!current?.files?.length) return notify(current?.reason || 'Phiên này chưa có snapshot file-change để xem.', true);
     ensureFileChangeReviewStyles();
