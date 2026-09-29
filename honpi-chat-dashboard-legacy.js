@@ -3002,6 +3002,10 @@
       document.getElementById('codeDiffReviewModal')?.addEventListener('click', (e) => {
         if (e.target.id === 'codeDiffReviewModal') closeCodeDiffReviewModal();
       });
+      document.getElementById('btnCloseDiffReviewModal')?.addEventListener('click', closeCodeDiffReviewModal);
+      document.getElementById('btnCloseDiffReviewModalFooter')?.addEventListener('click', closeCodeDiffReviewModal);
+      document.getElementById('btnModalRevertFile')?.addEventListener('click', revertCurrentDiffFile);
+      document.getElementById('btnModalApplyDiff')?.addEventListener('click', applyDiffChanges);
 
       // ─── Theme Switcher Logic & Keyboard Shortcut ───
       const themeLightBtn = document.getElementById('themeLightBtn');

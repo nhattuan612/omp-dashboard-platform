@@ -5605,7 +5605,7 @@
         <div class="prompt-dock-container prompt-dock-inner">
           <!-- Floating Changed Files Status Pill (from image-95: 4 tệp đã thay đổi +18 -8) - Chỉ hiện khi có edit file -->
           <div class="file-change-floating-bar" id="fileChangeFloatingBar" style="display: none;">
-            <button type="button" class="file-change-pill" id="fileChangeFloatingPill" onclick="openCodeDiffReviewModal('multi')" title="Nhấp để xem xét các tệp đã thay đổi">
+            <button type="button" class="file-change-pill" id="fileChangeFloatingPill" title="Xem xét thay đổi tệp khi runtime cung cấp diff adapter">
               <span class="file-change-pill-text">4 tệp đã thay đổi</span>
               <span class="diff-stat-add">+18</span>
               <span class="diff-stat-del">-8</span>
@@ -6989,7 +6989,7 @@
                 <span style="display: inline-block; padding: 2px 6px; border-radius: 4px; background: color-mix(in oklab, var(--danger), transparent 85%); color: var(--danger); font-size: 10px; font-weight: 600; white-space: nowrap;">Hết Quota</span>
               </div>
               <div style="text-align: right;">
-                <button type="button" class="btn-switch-account" id="btnChatSwitch_acc-4" onclick="switchChatOmpAccount('acc-4')" title="Bấm để chọn và sử dụng tài khoản này">
+                <button type="button" class="btn-switch-account" id="btnChatSwitch_acc-4" title="Bấm để chọn và sử dụng tài khoản này">
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 16V4M7 4L3 8M7 4L11 8M17 8V20M17 20L21 16M17 20L13 16"/></svg>
                   <span>Chuyển</span>
                 </button>
@@ -7021,7 +7021,7 @@
                 <span style="display: inline-block; padding: 2px 6px; border-radius: 4px; background: color-mix(in oklab, var(--warn), transparent 85%); color: var(--warn); font-size: 10px; font-weight: 600; white-space: nowrap;">Cảnh báo &gt;75%</span>
               </div>
               <div style="text-align: right;">
-                <button type="button" class="btn-switch-account" id="btnChatSwitch_acc-1" onclick="switchChatOmpAccount('acc-1')" title="Bấm để chọn và sử dụng tài khoản này">
+                <button type="button" class="btn-switch-account" id="btnChatSwitch_acc-1" title="Bấm để chọn và sử dụng tài khoản này">
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 16V4M7 4L3 8M7 4L11 8M17 8V20M17 20L21 16M17 20L13 16"/></svg>
                   <span>Chuyển</span>
                 </button>
@@ -7053,7 +7053,7 @@
                 <span style="display: inline-block; padding: 2px 6px; border-radius: 4px; background: color-mix(in oklab, var(--success), transparent 85%); color: var(--success); font-size: 10px; font-weight: 600; white-space: nowrap;">Bình thường</span>
               </div>
               <div style="text-align: right;">
-                <button type="button" class="btn-switch-account" id="btnChatSwitch_acc-3" onclick="switchChatOmpAccount('acc-3')" title="Bấm để chọn và sử dụng tài khoản này">
+                <button type="button" class="btn-switch-account" id="btnChatSwitch_acc-3" title="Bấm để chọn và sử dụng tài khoản này">
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 16V4M7 4L3 8M7 4L11 8M17 8V20M17 20L21 16M17 20L13 16"/></svg>
                   <span>Chuyển</span>
                 </button>
@@ -7085,7 +7085,7 @@
                 <span style="display: inline-block; padding: 2px 6px; border-radius: 4px; background: color-mix(in oklab, var(--success), transparent 85%); color: var(--success); font-size: 10px; font-weight: 600; white-space: nowrap;">Bình thường</span>
               </div>
               <div style="text-align: right;">
-                <button type="button" class="btn-switch-account" id="btnChatSwitch_acc-5" onclick="switchChatOmpAccount('acc-5')" title="Bấm để chọn và sử dụng tài khoản này">
+                <button type="button" class="btn-switch-account" id="btnChatSwitch_acc-5" title="Bấm để chọn và sử dụng tài khoản này">
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 16V4M7 4L3 8M7 4L11 8M17 8V20M17 20L21 16M17 20L13 16"/></svg>
                   <span>Chuyển</span>
                 </button>
@@ -7751,20 +7751,20 @@
           </div>
         </div>
         <div class="diff-review-header-actions">
-          <button type="button" class="btn-diff-modal-revert" id="btnModalRevertFile" onclick="revertCurrentDiffFile()" title="Hoàn tác các thay đổi trên tệp đang xem">
+          <button type="button" class="btn-diff-modal-revert" id="btnModalRevertFile" title="Hoàn tác chỉ khả dụng khi runtime cung cấp diff adapter">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M9 14 4 9l5-5"></path>
               <path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H11"></path>
             </svg>
             <span>Hoàn tác tệp này</span>
           </button>
-          <button type="button" class="btn-diff-modal-apply" id="btnModalApplyDiff" onclick="applyDiffChanges()" title="Chấp thuận và áp dụng các thay đổi này">
+          <button type="button" class="btn-diff-modal-apply" id="btnModalApplyDiff" title="Áp dụng chỉ khả dụng khi runtime cung cấp diff adapter">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="20 6 9 17 4 12"></polyline>
             </svg>
             <span>Áp dụng tất cả</span>
           </button>
-          <button type="button" class="diff-review-close-btn" onclick="closeCodeDiffReviewModal()" aria-label="Đóng xem xét">
+          <button type="button" class="diff-review-close-btn" id="btnCloseDiffReviewModal" aria-label="Đóng xem xét">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
           </button>
         </div>
@@ -7793,7 +7793,7 @@
           <span>Phím <kbd>&larr;</kbd> <kbd>&rarr;</kbd> để chuyển tệp</span>
         </div>
         <div class="diff-review-footer-actions">
-          <button type="button" class="btn-modal-cancel" onclick="closeCodeDiffReviewModal()">Đóng xem xét</button>
+          <button type="button" class="btn-modal-cancel" id="btnCloseDiffReviewModalFooter">Đóng xem xét</button>
         </div>
       </div>
     </div>
