@@ -1,6 +1,6 @@
 {
   "name": "hon-pi-omp-dashboard-product",
-  "version": "2026.09.28",
+  "version": "2026.09.29",
   "entrypoints": {
     "chat": "/chat",
     "quota": "/quota",
@@ -8,6 +8,8 @@
   },
   "files": [
     "server.mjs",
+    "omp-tool-catalog.mjs",
+    "omp-tool-map.json",
     "console-bridge.mjs",
     "acp-worker.mjs",
     "acp-session-context.mjs",

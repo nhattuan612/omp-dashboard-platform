@@ -43,6 +43,71 @@
     }
   ],
   "paths": {
+    "/api/v1/omp/capabilities": {
+      "get": {
+        "tags": ["System & Telemetry"],
+        "summary": "Đọc catalog OMP → Chat đã được kiểm tra",
+        "description": "Trả source map, trạng thái runtime và drift đã redaction. Chỉ tool có canToggle=true mới được gửi vào session.",
+        "operationId": "getOmpToolCapabilities",
+        "responses": {
+          "200": {
+            "description": "Catalog OMP hiện hành",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["ok", "tools", "catalog"],
+                  "properties": {
+                    "ok": { "type": "boolean" },
+                    "tools": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["id", "group", "source", "selection", "status", "canToggle"],
+                        "properties": {
+                          "id": { "type": "string" },
+                          "group": { "type": "string" },
+                          "source": { "enum": ["builtin", "mcp"] },
+                          "selection": { "enum": ["cli", "readonly"] },
+                          "status": { "enum": ["supported", "unavailable", "blocked", "probe_error", "stale", "unmapped"] },
+                          "reason": { "type": "string" },
+                          "canToggle": { "type": "boolean" }
+                        }
+                      }
+                    },
+                    "catalog": {
+                      "type": "object",
+                      "required": ["mapVersion", "fingerprint", "audit", "drift"],
+                      "properties": {
+                        "mapVersion": { "type": "string" },
+                        "fingerprint": { "type": "string" },
+                        "stale": { "type": "boolean" },
+                        "audit": { "type": "object" },
+                        "drift": { "type": "object" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "description": "Phiên dashboard không hợp lệ hoặc đã hết hạn." }
+        }
+      }
+    },
+    "/api/v1/omp/capabilities/audit": {
+      "post": {
+        "tags": ["System & Telemetry"],
+        "summary": "Đồng bộ lại catalog OMP",
+        "description": "Chạy lại audit no-prompt rồi trả catalog mới; không đổi config OMP hoặc session.",
+        "operationId": "auditOmpToolCapabilities",
+        "responses": {
+          "200": { "description": "Catalog sau audit", "content": { "application/json": { "schema": { "type": "object", "required": ["ok", "catalog"], "properties": { "ok": { "type": "boolean" }, "catalog": { "type": "object" } } } } } },
+          "401": { "description": "Phiên dashboard không hợp lệ hoặc đã hết hạn." },
+          "502": { "description": "Không kiểm tra được OMP runtime." }
+        }
+      }
+    },
     "/api/v1/quota/accounts": {
       "get": {
         "tags": ["Quota Management"],

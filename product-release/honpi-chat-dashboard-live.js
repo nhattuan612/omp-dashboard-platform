@@ -3,9 +3,10 @@
   'use strict';
   window.HONPI_CHAT_CONFIG = { endpoints: { sessions: '/api/v1/sessions', stream: '/api/v1/chat/stream', models: '/api/v1/quota/models' } };
   const API = '/api/v1';
+  const TOOL_STORAGE_KEY = 'omp.tools.v2';
   const BROWSER_MODE_PREFERENCE_VERSION = 'manual-v1';
   const initialBrowserMode = localStorage.getItem('omp.browserModePreferenceVersion') === BROWSER_MODE_PREFERENCE_VERSION ? localStorage.getItem('omp.browserMode') : 'none';
-  const state = { sessions: [], nextCursor: null, activeId: null, generation: 0, messages: [], models: [], activeModel: null, controller: null, requestId: null, activeRequest: null, createPromise: null, menu: null, folderMenu: null, quota: null, accounts: [], attachments: [], workspaceFiles: [], workspaceMention: '@', capabilities: null, selectedTools: [], toolsUpdating: false, folderExpanded: new Set(), folderCollapsed: new Set(), thinking: localStorage.getItem('omp.thinking') || 'max', browserMode: initialBrowserMode === 'ego-browser' ? 'ego-browser' : 'none', shareMode: localStorage.getItem('omp.shareMode') || 'encrypted', approvalMode: localStorage.getItem('omp.approvalMode') || 'always-ask', enterBehavior: localStorage.getItem('omp.enterBehavior') || 'queue', conversationDisplay: localStorage.getItem('omp.conversationDisplay') || 'compact', pendingPrompts: [], queuePaused: false, queueDraining: false, browserAction: null, browserStatus: null, media: { screenCapture: { status: 'unavailable', reason: 'Native screen capture is not provided by OMP dashboard.' }, camera: { status: 'unavailable' }, microphone: { status: 'unavailable' }, video: { status: 'unavailable' } } };
+  const state = { sessions: [], nextCursor: null, activeId: null, generation: 0, messages: [], models: [], activeModel: null, controller: null, requestId: null, activeRequest: null, createPromise: null, menu: null, folderMenu: null, quota: null, accounts: [], attachments: [], workspaceFiles: [], workspaceMention: '@', capabilities: null, selectedTools: [], toolsUpdating: false, folderExpanded: new Set(), folderCollapsed: new Set(), thinking: localStorage.getItem('omp.thinking') || 'max', browserMode: initialBrowserMode === 'ego-browser' ? 'ego-browser' : 'none', shareMode: localStorage.getItem('omp.shareMode') || 'encrypted', approvalMode: localStorage.getItem('omp.approvalMode') || 'always-ask', enterBehavior: localStorage.getItem('omp.enterBehavior') || 'queue', conversationDisplay: localStorage.getItem('omp.conversationDisplay') || 'compact', pendingPrompts: [], queuePausedSessions: new Map(), editingQueueId: null, draftPromptPreview: null, browserAction: null, browserStatus: null, media: { screenCapture: { status: 'unavailable', reason: 'Native screen capture is not provided by OMP dashboard.' }, camera: { status: 'unavailable' }, microphone: { status: 'unavailable' }, video: { status: 'unavailable' } } };
   state.enterBehavior = 'send';
   state.modelAccess = null;
   state.modelAccessInitialized = false;
@@ -53,6 +54,11 @@
   }
   state.optimisticTitles = new Map();
   const DEFAULT_SESSION_TITLE = 'Phiên làm việc mới';
+  const MAX_WEB_PENDING_PROMPTS = 32;
+  const queueKey = (sessionId) => sessionId || '__draft__';
+  const queueIsPaused = (sessionId) => state.queuePausedSessions.has(queueKey(sessionId));
+  const pauseQueue = (sessionId, reason = 'previous_turn_failed') => { state.queuePausedSessions.set(queueKey(sessionId), reason); renderQueueTray(); };
+  const resumeQueue = (sessionId) => { state.queuePausedSessions.delete(queueKey(sessionId)); renderQueueTray(); };
   const sessionHasQueuedPrompt = (sessionId) => state.pendingPrompts.some((item) => item.sessionId === sessionId);
   const setGreetingVisible = (visible) => {
     const greeting = $('greetingSection');
@@ -88,6 +94,18 @@
   }
   const $ = (id) => document.getElementById(id);
   const text = (value) => String(value ?? '');
+  const selectableTools = () => (state.capabilities?.tools || []).filter((item) => item.canToggle).map((item) => item.id);
+  const saveSelectedTools = () => {
+    const tools = [...new Set(state.selectedTools)];
+    localStorage.setItem(TOOL_STORAGE_KEY, JSON.stringify({ fingerprint: state.capabilities?.catalog?.fingerprint || '', tools }));
+    localStorage.setItem('omp.tools', JSON.stringify(tools));
+  };
+  const restoreSelectedTools = (fallback) => {
+    let stored; try { stored = JSON.parse(localStorage.getItem(TOOL_STORAGE_KEY) || 'null'); } catch {}
+    if (!Array.isArray(stored?.tools)) { try { stored = { tools: JSON.parse(localStorage.getItem('omp.tools') || '[]') }; } catch { stored = null; } }
+    const valid = Array.isArray(stored?.tools) && stored.tools.length && stored.tools.every((id) => fallback.includes(id));
+    return valid ? stored.tools : fallback;
+  };
   const workspacePathLabel = (value) => text(value).replace(/^\/Users\/[^/]+(?=\/|$)/, '~');
   const looksLikeImageGenerationPrompt = (value) => {
     const prompt = text(value).trim();
@@ -194,10 +212,11 @@
     const previousId = state.activeId;
     if (previousId) rememberRetry(previousId);
     if (options.preserveActiveView !== false && previousId) cacheSessionView(previousId);
+    const draftPreview = options.preserveDraftPreview ? state.draftPromptPreview : null;
     state.activeId = null;
     state.nativeState = null;
     state.generation += 1;
-    state.messages = [];
+    state.messages = draftPreview ? [draftPreview] : [];
     state.workspaceFiles = [];
     state.workspaceMention = '@';
     state.attachments = [];
@@ -205,12 +224,14 @@
     retryPromptText = '';
     retryContext = null;
     clearPrototypeData();
+    if (draftPreview) { $('chatStream')?.append(messageNode(draftPreview)); hideGreeting(); }
     renderSessions();
     renderWorkspaceFiles();
     setSendState();
     if ($('ompMemoryStatus')) void loadOmpMemory(sessionGuard());
   }
   function beginLocalDraft() {
+    state.draftPromptPreview = null;
     state.draftWorkspaceCwd = '';
     prewarmDraftWorker();
     setNeutralSelection();
@@ -1361,11 +1382,14 @@
     notify('Đã nạp prompt vào ô nhập; gửi sẽ tạo lượt mới.');
   }
 
-  function replaceQueuedUserMessage(messages, queueId, user) {
+  function replaceQueuedUserMessage(messages, queueId, user, draftId = null) {
     const next = Array.isArray(messages) ? [...messages] : [];
-    const index = queueId ? next.findIndex((message) => message.queueId === queueId) : -1;
+    const index = queueId ? next.findIndex((message) => message.queueId === queueId) : draftId ? next.findIndex((message) => message.draftId === draftId) : -1;
     if (index >= 0) next[index] = user;
-    else if (!next.some((message) => message.requestId === user.requestId)) next.push(user);
+    else if (!next.some((message) => message.requestId === user.requestId)) {
+      const firstQueued = next.findIndex((message) => message.queueId && !message.requestId);
+      if (firstQueued >= 0) next.splice(firstQueued, 0, user); else next.push(user);
+    }
     return next;
   }
   function upsertAssistantMessage(messages, requestId, assistant) {
@@ -1382,9 +1406,11 @@
       const wrap = document.createElement('div'); wrap.className = 'user-msg-wrap';
       if (message.requestId) wrap.dataset.requestId = message.requestId;
       if (message.queueId && !message.requestId) wrap.dataset.queuePreviewId = message.queueId;
+      if (message.draftId) wrap.dataset.draftPreviewId = message.draftId;
       renderMessageAttachments(wrap, message.attachments);
       if (text(message.content).trim()) { const bubble = document.createElement('div'); bubble.className = 'user-msg-bubble'; bubble.textContent = text(message.content); wrap.append(bubble); }
       const footer = document.createElement('div'); footer.className = 'user-msg-footer'; const time = document.createElement('span'); time.className = 'user-msg-time'; time.textContent = new Date(message.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      if (message.queueId && !message.requestId) { const queueStatus = document.createElement('span'); queueStatus.className = 'user-msg-queue-status'; queueStatus.textContent = 'Đang chờ web gửi'; queueStatus.setAttribute('aria-label', 'Đang chờ web gửi'); footer.append(queueStatus); }
       const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'user-msg-act-btn'; copy.textContent = '⧉'; copy.title = 'Sao chép prompt'; copy.setAttribute('aria-label', 'Sao chép prompt'); copy.addEventListener('click', () => void copyText(message.content, 'prompt'));
       const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'user-msg-act-btn'; edit.textContent = '✎'; edit.title = 'Chỉnh prompt trong ô nhập'; edit.setAttribute('aria-label', edit.title); edit.addEventListener('click', () => editUserPrompt(message));
       footer.append(time, copy, edit); wrap.append(footer); return wrap;
@@ -1436,7 +1462,8 @@
   function syncWorkspaceMeta(session) {
     const isDraft = !session && !state.activeId;
     const cwd = session?.cwd || (isDraft ? state.draftWorkspaceCwd : '');
-    const name = cwd ? workspaceName(cwd) : isDraft ? 'General' : 'Workspace chưa xác định';
+    const projectName = session?.folderName?.trim() || '';
+    const name = projectName || (isDraft ? (cwd ? workspaceName(cwd) : 'General') : 'Workspace chung');
     const label = $('promptCurrentWsLabel'); if (label) label.textContent = name;
     const wrapper = $('promptWsWrapper'); const trigger = $('promptWorkspaceTrigger'); const dropdown = $('promptWsDropdown'); const chevron = $('promptWsChevron');
     if (wrapper) { wrapper.classList.toggle('is-picker', isDraft); wrapper.classList.toggle('is-info-only', !isDraft); }
@@ -1444,8 +1471,8 @@
       trigger.disabled = !isDraft;
       trigger.setAttribute('aria-haspopup', 'dialog');
       trigger.setAttribute('aria-controls', 'projectFolderModal');
-      trigger.title = isDraft ? `Workspace chat mới: ${cwd || 'General'}` : `Workspace chat: ${cwd || 'chưa xác định'}`;
-      trigger.setAttribute('aria-label', isDraft ? `Chọn workspace cho chat mới. Hiện tại: ${name}` : `Workspace chat: ${name}`);
+      trigger.title = isDraft ? `Workspace chat mới: ${cwd || 'General'}` : projectName ? `Folder dự án: ${projectName}` : `Workspace chung: ${cwd || 'General'}`;
+      trigger.setAttribute('aria-label', isDraft ? `Chọn workspace cho chat mới. Hiện tại: ${name}` : projectName ? `Folder dự án: ${projectName}` : `Workspace chung: ${name}`);
       if (isDraft) trigger.removeAttribute('aria-disabled'); else trigger.setAttribute('aria-disabled', 'true');
     }
     if (dropdown) { dropdown.hidden = true; dropdown.classList.remove('show'); }
@@ -1473,6 +1500,7 @@
   async function selectSession(id, quiet = false, options = {}) {
     const session = state.sessions.find((item) => item.id === id);
     if (!session) { if (!quiet) notify('Không tìm thấy cuộc trò chuyện được chọn.', true); return false; }
+    if (state.editingQueueId && state.activeId !== id) cancelQueueEdit(true);
     const previousId = state.activeId;
     if (previousId && previousId !== id) {
       rememberRetry(previousId);
@@ -1496,8 +1524,10 @@
       restoreRetry(id);
     }
     if (Array.isArray(session.tools)) {
-      state.selectedTools = [...session.tools];
-      localStorage.setItem('omp.tools', JSON.stringify(state.selectedTools));
+      const selectable = new Set(selectableTools());
+      state.selectedTools = session.tools.filter((id) => selectable.has(id));
+      if (!state.selectedTools.length) state.selectedTools = selectableTools();
+      saveSelectedTools();
       renderOmpTools();
     }
     renderSessions();
@@ -1553,7 +1583,7 @@
     if (state.createPromise) return state.createPromise;
     const title = options.title || DEFAULT_SESSION_TITLE;
     const cwd = options.cwd || (!options.folderId ? state.draftWorkspaceCwd : '');
-    setNeutralSelection();
+    setNeutralSelection({ preserveDraftPreview: Boolean(state.draftPromptPreview) });
     state.createPromise = (async () => {
       try {
         const { payload } = await readJson(`${API}/sessions`, { method: 'POST', body: JSON.stringify({ title, ...(options.folderId ? { folderId: options.folderId } : {}), ...(cwd ? { cwd } : {}), browserMode: state.browserMode, approvalMode: state.approvalMode, ...(state.selectedTools.length ? { tools: state.selectedTools } : {}) }) });
@@ -1607,9 +1637,14 @@
     let item = context.queueId ? state.pendingPrompts.find((candidate) => candidate.id === context.queueId) : null;
     if (!item) {
       item = enqueuePrompt(prompt, context.sessionId, { settings: context.settings, attachments: context.attachments });
-      state.pendingPrompts = [item, ...state.pendingPrompts.filter((candidate) => candidate.id !== item.id)];
     }
-    state.queuePaused = false;
+    if (!item) return;
+    item.prompt = prompt;
+    item.settings = cloneSnapshot(context.settings);
+    item.attachments = cloneSnapshot(context.attachments);
+    item.status = 'priority';
+    state.pendingPrompts = [item, ...state.pendingPrompts.filter((candidate) => candidate.id !== item.id)];
+    resumeQueue(context.sessionId);
     renderQueueTray();
     void drainQueue(context.sessionId);
   }
@@ -1913,13 +1948,15 @@
     const serverItems = serverQueueItems();
     const localItems = state.pendingPrompts.filter((item) => item.sessionId === state.activeId || (!state.activeId && !item.sessionId));
     const serverPaused = serverItems.some((request) => request.queueState?.phase === 'paused');
-    const visible = serverItems.length > 0 || localItems.length > 0 || state.queuePaused;
+    const localPaused = queueIsPaused(state.activeId) || localItems.some((item) => item.status === 'paused');
+    const localRequest = activeRequest();
+    const visible = serverItems.length > 0 || localItems.length > 0 || localPaused;
     tray.hidden = !visible; tray.style.display = visible ? '' : 'none'; list.replaceChildren();
     const banner = $('queueStatusBanner');
     if (banner) {
       const bannerText = document.createElement('span');
       bannerText.className = 'queue-status-banner-text';
-      bannerText.textContent = serverPaused ? 'Hàng chờ tạm dừng sau lỗi/lượt bị dừng' : state.queuePaused ? 'Hàng chờ đang tạm dừng sau khi lượt trước dừng/lỗi' : 'Hàng chờ server FIFO của chat này';
+      bannerText.textContent = serverPaused ? 'Hàng chờ server tạm dừng sau lỗi/lượt bị dừng' : localPaused ? 'Hàng chờ web tạm dừng sau lỗi/lượt bị dừng' : localRequest && localItems.length ? `Đang gửi lên OMP · ${localItems.length} lượt đang chờ web` : localItems.length ? 'Hàng chờ web' : 'Hàng chờ server FIFO của chat này';
       const bannerLeft = document.createElement('div');
       bannerLeft.className = 'queue-status-banner-left';
       bannerLeft.append(bannerText);
@@ -1949,7 +1986,7 @@
     localItems.forEach((item, index) => {
       const settings = item.settings || {};
       const attachments = item.attachments || [];
-      const statusLabel = { queued: 'Đang chờ', paused: 'Tạm dừng', running: 'Đang gửi' }[item.status] || item.status || 'Đang chờ';
+      const statusLabel = { queued: 'Đang chờ web', priority: 'Đang được ưu tiên', paused: 'Tạm dừng sau lỗi', editing: 'Đang chỉnh sửa', running: 'Đang gửi lên OMP' }[item.status] || item.status || 'Đang chờ web';
       const sessionLabel = item.sessionId || 'đang tạo session…';
       const technicalMeta = `Session ${sessionLabel} · ${item.status || 'queued'} · ${settings.model || 'model mặc định'} · ${settings.thinking || 'mặc định'} · browser ${settings.browserMode || 'mặc định'} · approval ${settings.approvalMode || 'mặc định'} · tools ${(settings.tools || []).length} · tệp: ${queueAttachmentSummary(attachments)}`;
       const row = document.createElement('div');
@@ -1967,16 +2004,63 @@
       });
       content.append(prompt, meta); if (attachments.length) content.append(previews);
       const actions = document.createElement('div'); actions.className = 'queue-turn-actions';
-      const firstForSession = state.pendingPrompts.find((candidate) => candidate.sessionId === item.sessionId);
       const order = serverItems.length + index + 1;
       const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'btn-queue-inline-save'; edit.textContent = 'Sửa'; edit.setAttribute('aria-label', `Sửa order ${order}`); edit.addEventListener('click', () => editQueuedPrompt(item));
-      const send = document.createElement('button'); send.type = 'button'; send.className = 'btn-queue-steer'; send.textContent = 'Gửi ngay'; send.disabled = Boolean(activeRequest()) || Boolean(item.sessionId && firstForSession?.id !== item.id); send.addEventListener('click', () => void sendQueuedPrompt(item));
+      const send = document.createElement('button'); send.type = 'button'; send.className = 'btn-queue-steer'; send.textContent = item.status === 'priority' ? 'Đã ưu tiên' : 'Gửi ngay'; send.disabled = item.status === 'editing' || item.status === 'priority'; send.addEventListener('click', () => void sendQueuedPrompt(item));
       const discard = document.createElement('button'); discard.type = 'button'; discard.className = 'btn-queue-icon-action btn-queue-trash'; discard.textContent = '×'; discard.title = 'Bỏ order'; discard.setAttribute('aria-label', `Bỏ order ${order}`); discard.addEventListener('click', () => discardQueuedPrompt(item.id));
       actions.append(edit, send, discard); row.append(content, actions); list.append(row);
     });
   }
   function renderQueuedPreview(item) {
-    item.previewRendered = false;
+    if (!item?.sessionId) return;
+    const message = { role: 'user', content: item.prompt, createdAt: item.createdAt, attachments: cloneSnapshot(item.attachments), queueId: item.id };
+    const append = (messages) => (messages || []).some((candidate) => candidate.queueId === item.id) ? messages : [...(messages || []), message];
+    if (state.activeId === item.sessionId) {
+      if (!state.messages.some((candidate) => candidate.queueId === item.id)) state.messages = append(state.messages);
+      const stream = $('chatStream');
+      if (stream && ![...(stream.children || [])].some((node) => node.dataset.queuePreviewId === item.id)) stream.append(messageNode(message));
+    } else {
+      const view = state.sessionViews.get(item.sessionId) || { messages: [], transientNodes: [], volatile: true, scrollTop: 0 };
+      view.messages = append(view.messages);
+      view.volatile = true;
+      state.sessionViews.set(item.sessionId, view);
+    }
+    item.previewRendered = true;
+    syncGreeting();
+  }
+  function updateQueuedPreview(item) {
+    const message = { role: 'user', content: item.prompt, createdAt: item.createdAt, attachments: cloneSnapshot(item.attachments), queueId: item.id };
+    if (state.activeId === item.sessionId) {
+      state.messages = state.messages.map((candidate) => candidate.queueId === item.id ? message : candidate);
+      const stream = $('chatStream');
+      const node = [...(stream?.children || [])].find((candidate) => candidate.dataset.queuePreviewId === item.id);
+      if (node) node.replaceWith(messageNode(message));
+      else renderQueuedPreview(item);
+    } else if (item.sessionId) {
+      const view = state.sessionViews.get(item.sessionId) || { messages: [], transientNodes: [], volatile: true, scrollTop: 0 };
+      view.messages = (view.messages || []).map((candidate) => candidate.queueId === item.id ? message : candidate);
+      view.volatile = true;
+      state.sessionViews.set(item.sessionId, view);
+    }
+    item.previewRendered = true;
+    syncGreeting();
+  }
+  function renderDraftPromptPreview(prompt, attachments, draftId) {
+    const message = { role: 'user', content: prompt, createdAt: new Date().toISOString(), attachments: cloneSnapshot(attachments), draftId };
+    state.draftPromptPreview = message;
+    state.messages = [message];
+    const stream = $('chatStream');
+    stream?.replaceChildren(messageNode(message));
+    hideGreeting();
+    syncGreeting();
+  }
+  function removeDraftPromptPreview() {
+    const draftId = state.draftPromptPreview?.draftId;
+    if (!draftId) return;
+    [...($('chatStream')?.children || [])].filter((node) => node.dataset.draftPreviewId === draftId).forEach((node) => node.remove());
+    state.messages = state.messages.filter((message) => message.draftId !== draftId);
+    state.draftPromptPreview = null;
+    syncGreeting();
   }
   function renderSessionQueuePreviews(sessionId) {
     if (state.activeId !== sessionId) return;
@@ -1987,7 +2071,7 @@
       if (!item.sessionId) return;
       const view = state.sessionViews.get(item.sessionId);
       if (!view) return;
-      view.messages = (view.messages || []).filter((message) => message.queueId !== item.id);
+      view.messages = (view.messages || []).filter((message) => message.queueId !== item.id && message.requestId !== item.lastRequestId);
       view.volatile = Boolean(
         requestsForSession(item.sessionId).length
         || state.startedSessions.has(item.sessionId)
@@ -2002,18 +2086,19 @@
       return;
     }
     const stream = $('chatStream');
-    [...(stream?.children || [])].find((node) => node.dataset.queuePreviewId === item.id)?.remove();
-    state.messages = state.messages.filter((message) => message.queueId !== item.id);
+    [...(stream?.children || [])].filter((node) => node.dataset.queuePreviewId === item.id || node.dataset.requestId === item.lastRequestId).forEach((node) => node.remove());
+    state.messages = state.messages.filter((message) => message.queueId !== item.id && message.requestId !== item.lastRequestId);
     clearCachedPreview();
     item.previewRendered = false;
     syncGreeting();
   }
   function enqueuePrompt(prompt, sessionId = null, options = {}) {
+    if (state.pendingPrompts.filter((item) => item.sessionId === sessionId).length >= MAX_WEB_PENDING_PROMPTS) { notify(`Hàng chờ tối đa ${MAX_WEB_PENDING_PROMPTS} order cho chat này.`, true); return null; }
     const item = { id: nextRequestId('queue'), prompt, sessionId, status: 'queued', createdAt: new Date().toISOString(), attachments: cloneSnapshot(options.attachments ?? state.attachments), settings: cloneSnapshot(options.settings ?? snapshotSettings()), previewRendered: false };
     state.pendingPrompts.push(item);
     if (!options.deferPreview) renderQueuedPreview(item);
     renderQueueTray();
-    notify(`Đã nhận lượt thứ ${state.pendingPrompts.length} vào hàng chờ`);
+    notify(`Đã nhận lượt thứ ${state.pendingPrompts.filter((candidate) => candidate.sessionId === sessionId).length} vào hàng chờ web`);
     return item;
   }
   function discardQueuedPrompt(id) {
@@ -2025,10 +2110,27 @@
   function editQueuedPrompt(item) {
     if (item.sessionId && state.activeId !== item.sessionId) { notify('Không sửa order sang session khác; hãy chọn đúng session trước.', true); return; }
     const input = $('chatInput'); if (!input) return;
-    input.value = item.prompt; input.focus();
-    removeQueuedPreview(item);
-    state.pendingPrompts = state.pendingPrompts.filter((candidate) => candidate.id !== item.id);
-    renderQueueTray(); notify('Đã đưa order về ô nhập để sửa; chưa gửi lại.');
+    state.editingQueueId = item.id;
+    item.status = 'editing';
+    input.value = item.prompt;
+    state.attachments = cloneSnapshot(item.attachments || []);
+    renderAttachmentStrip();
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.focus();
+    renderQueueTray(); notify('Đang sửa order; gửi lại sẽ giữ nguyên vị trí. Nhấn Esc để hủy.');
+  }
+  function cancelQueueEdit(silent = false) {
+    if (!state.editingQueueId) return false;
+    const item = state.pendingPrompts.find((candidate) => candidate.id === state.editingQueueId);
+    if (item) item.status = 'queued';
+    state.editingQueueId = null;
+    const input = $('chatInput');
+    if (input) input.value = '';
+    state.attachments = [];
+    renderAttachmentStrip();
+    renderQueueTray();
+    if (!silent) notify('Đã hủy sửa order.');
+    return true;
   }
   function attachUnboundPrompts(sessionId) {
     const items = state.pendingPrompts.filter((candidate) => !candidate.sessionId);
@@ -2044,46 +2146,47 @@
     const created = await createSession({ title: deriveSessionTitle(item.prompt) || DEFAULT_SESSION_TITLE });
     if (!created?.id) return false;
     attachUnboundPrompts(created.id);
-    state.queuePaused = false;
+    resumeQueue(created.id);
+    state.pendingPrompts.filter((candidate) => candidate.sessionId === created.id).forEach(renderQueuedPreview);
     renderQueueTray();
     void drainQueue(created.id);
     return true;
   }
-  async function startInitialPrompt(prompt, settings, attachments) {
+  async function startInitialPrompt(prompt, settings, attachments, draftId) {
     const created = await createSession({ title: deriveSessionTitle(prompt) || DEFAULT_SESSION_TITLE });
     if (!created?.id) {
+      removeDraftPromptPreview();
       state.pendingPrompts.forEach((item) => { if (!item.sessionId) item.status = 'paused'; });
-      state.queuePaused = state.pendingPrompts.length > 0;
+      if (state.pendingPrompts.some((item) => !item.sessionId)) pauseQueue(null, 'session_create_failed');
       renderQueueTray();
       const input = $('chatInput');
       if (input && !input.value) { input.value = prompt; input.focus(); }
       return false;
     }
     const queued = attachUnboundPrompts(created.id);
-    state.queuePaused = false;
+    resumeQueue(created.id);
     renderQueueTray();
-    void startPrompt(prompt, created.id, settings, attachments);
+    void startPrompt(prompt, created.id, settings, attachments, { draftId });
     queued.forEach(renderQueuedPreview);
     return true;
   }
   async function sendQueuedPrompt(item) {
     if (!item.sessionId) { void ensureQueuedSession(item); return; }
-    if (activeRequest()) { notify('Đang có lượt khác; order vẫn giữ nguyên trong hàng chờ.', true); return; }
-    if (state.activeId !== item.sessionId) { notify('Không gửi order sang session khác; hãy chọn đúng session trước.', true); return; }
-    const firstForSession = state.pendingPrompts.find((candidate) => candidate.sessionId === item.sessionId);
-    if (firstForSession?.id !== item.id) { notify('Giữ đúng thứ tự FIFO: hãy chờ lượt trước.', true); return; }
-    const originalIndex = state.pendingPrompts.indexOf(item);
-    state.pendingPrompts = state.pendingPrompts.filter((candidate) => candidate.id !== item.id);
-    state.queuePaused = false; renderQueueTray();
-    const normal = await startPrompt(item.prompt, item.sessionId, item.settings, item.attachments, { fromQueue: true, item });
-    if (!normal && !state.pendingPrompts.some((candidate) => candidate.id === item.id)) {
-      item.status = 'paused';
-      state.pendingPrompts.splice(Math.min(originalIndex, state.pendingPrompts.length), 0, item);
-      renderQueueTray();
+    const sessionItems = state.pendingPrompts.filter((candidate) => candidate.sessionId === item.sessionId);
+    const itemIndex = state.pendingPrompts.indexOf(item);
+    const sessionFirstIndex = state.pendingPrompts.findIndex((candidate) => candidate.sessionId === item.sessionId);
+    if (itemIndex >= 0 && itemIndex !== sessionFirstIndex) {
+      state.pendingPrompts.splice(itemIndex, 1);
+      state.pendingPrompts.splice(sessionFirstIndex < 0 ? state.pendingPrompts.length : sessionFirstIndex, 0, item);
     }
+    item.status = 'priority';
+    resumeQueue(item.sessionId);
+    renderQueueTray();
+    notify(sessionItems.length > 1 ? 'Đã ưu tiên order; sẽ gửi ngay sau lượt đang chạy.' : 'Đã ưu tiên order.');
+    void drainQueue(item.sessionId);
   }
   async function drainQueue(sessionId) {
-    if (state.queueDrainingSessions.has(sessionId) || state.queuePaused || requestsForSession(sessionId).length) return;
+    if (state.queueDrainingSessions.has(sessionId) || queueIsPaused(sessionId) || requestsForSession(sessionId).length) return;
     const item = state.pendingPrompts.find((candidate) => candidate.sessionId === sessionId);
     if (!item) { renderQueueTray(); return; }
     state.queueDrainingSessions.add(sessionId);
@@ -2096,8 +2199,9 @@
     if (!normal) {
       item.status = 'paused';
       if (!state.pendingPrompts.some((candidate) => candidate.id === item.id)) state.pendingPrompts.splice(Math.min(originalIndex, state.pendingPrompts.length), 0, item);
+      pauseQueue(sessionId, 'previous_turn_failed');
     }
-    if (normal && !state.queuePaused) void drainQueue(sessionId);
+    if (normal && !queueIsPaused(sessionId)) void drainQueue(sessionId);
     else renderQueueTray();
   }
   async function startPrompt(prompt, sessionId, settings = snapshotSettings(), attachments = [], options = {}) {
@@ -2105,11 +2209,12 @@
     const modelSource = settings.modelSource || state.modelSource;
     const modelProvider = settings.modelProvider || (model === state.activeModel ? state.activeModelProvider : null);
     const accessError = modelAccessError(model, modelSource, modelProvider);
-    if (accessError) { notify(accessError, true); return false; }
+    if (accessError) { if (options.draftId) removeDraftPromptPreview(); notify(accessError, true); return false; }
     const capabilityError = imageGenerationModelError(prompt, model, modelProvider);
-    if (capabilityError) { notify(capabilityError, true); return false; }
+    if (capabilityError) { if (options.draftId) removeDraftPromptPreview(); notify(capabilityError, true); return false; }
     const guard = sessionGuard(sessionId, state.generation);
-    const request = { sessionId, requestId: nextRequestId(), controller: new AbortController(), status: 'running', guard, settings: cloneSnapshot({ ...settings, model, modelProvider, modelSource }), prompt, attachments: cloneSnapshot(attachments), createdAt: new Date().toISOString(), mounted: false, queueState: { phase: 'fifo', queueAhead: 1, queuedTurns: 0, retryAfterSeconds: 0 }, queueStateReceived: false, dom: null };
+    const request = { sessionId, requestId: nextRequestId(), controller: new AbortController(), status: 'running', guard, settings: cloneSnapshot({ ...settings, model, modelProvider, modelSource }), prompt, attachments: cloneSnapshot(attachments), createdAt: new Date().toISOString(), mounted: false, queueState: { phase: 'fifo', queueAhead: 0, queuedTurns: 0, retryAfterSeconds: 0 }, queueStateReceived: false, dom: null };
+    if (options.item) options.item.lastRequestId = request.requestId;
     const visibleStream = () => isCurrentSession(guard) ? $('chatStream') : null;
     state.requests.set(request.requestId, request);
     syncRequestAliases();
@@ -2165,20 +2270,30 @@
       if (request.mounted) return;
       request.mounted = true;
       const stream = visibleStream();
-      const preview = queueItem && [...(stream?.children || [])].find((node) => node.dataset.queuePreviewId === queueItem.id);
+      const preview = queueItem
+        ? [...(stream?.children || [])].find((node) => node.dataset.queuePreviewId === queueItem.id)
+        : options.draftId ? [...(stream?.children || [])].find((node) => node.dataset.draftPreviewId === options.draftId) : null;
       const user = { role: 'user', content: prompt, requestId: request.requestId, createdAt: request.createdAt, attachments: cloneSnapshot(attachments), ...(queueItem ? { queueId: queueItem.id } : {}) };
-      if (preview) delete preview.dataset.queuePreviewId;
       if (isCurrentSession(guard)) {
-        state.messages = replaceQueuedUserMessage(state.messages, queueItem?.id, user);
-        if (!preview) stream?.append(messageNode(user));
-        stream?.append(wrap);
+        state.messages = replaceQueuedUserMessage(state.messages, queueItem?.id, user, options.draftId);
+        if (options.draftId && state.draftPromptPreview?.draftId === options.draftId) state.draftPromptPreview = null;
+        const userNode = messageNode(user);
+        if (preview) {
+          preview.replaceWith(userNode);
+        } else {
+          const firstQueuedPreview = [...(stream?.children || [])].find((node) => node.dataset.queuePreviewId);
+          if (firstQueuedPreview) firstQueuedPreview.before(userNode); else stream?.append(userNode);
+        }
+        userNode.after(wrap);
       } else {
         const view = state.sessionViews.get(sessionId) || { messages: [], transientNodes: [], volatile: true, scrollTop: 0 };
-        view.messages = replaceQueuedUserMessage(view.messages, queueItem?.id, user);
+        view.messages = replaceQueuedUserMessage(view.messages, queueItem?.id, user, options.draftId);
         view.volatile = true;
         state.sessionViews.set(sessionId, view);
       }
     };
+    mountChatTurn();
+    setStreamStatus('Đang gửi lên OMP…', 'waiting');
     let normalEnd = false;
     try {
       const response = await fetch(`${API}/chat/stream`, { method: 'POST', headers: { Accept: 'text/event-stream', 'content-type': 'application/json' }, signal: request.controller.signal, body: JSON.stringify({ sessionId, prompt, model, modelProvider, modelSource, requestId: request.requestId, thinking: settings.thinking, browserMode: settings.browserMode, approvalMode: settings.approvalMode, tools: settings.tools?.length ? settings.tools : undefined, attachments }) });
@@ -2354,11 +2469,13 @@
       syncRequestAliases();
       if (!requestsForSession(sessionId).length) {
         state.startedSessions.delete(sessionId);
-        if (normalEnd) state.sessionViews.delete(sessionId);
+        if (normalEnd && !sessionHasQueuedPrompt(sessionId)) state.sessionViews.delete(sessionId);
       }
       if (normalEnd && retryQueued && retryPromptText && retryContext && !activeRequest()) { retryQueued = false; setTimeout(() => void retryLastPrompt(), 0); }
+      if (!normalEnd && sessionHasQueuedPrompt(sessionId)) pauseQueue(sessionId, request.controller.signal.aborted ? 'previous_turn_stopped' : 'previous_turn_failed');
       renderQueueTray();
       setSendState();
+      if (normalEnd && !state.queueDrainingSessions.has(sessionId)) queueMicrotask(() => void drainQueue(sessionId));
     }
     return normalEnd;
   }
@@ -2372,23 +2489,44 @@
       const capabilityError = imageGenerationModelError(prompt, promptSettings.model, promptSettings.modelProvider);
       if (capabilityError) { notify(capabilityError, true); return; }
     }
+    const editingQueueId = state.editingQueueId;
     clearRetry(state.activeId);
     const attachments = state.attachments.splice(0);
     const settings = snapshotSettings();
     input.value = '';
     renderAttachmentStrip();
-    if (!state.activeId) {
-      if (firstPromptPromise) {
-        firstPromptPromise = firstPromptPromise.then(() => {
-          const sessionId = state.activeId;
-          return sessionId ? startPrompt(prompt, sessionId, settings, attachments) : false;
-        }).catch((error) => { notify(`Không tạo được session OMP: ${error.message}`, true); return false; });
+    if (editingQueueId) {
+      const item = state.pendingPrompts.find((candidate) => candidate.id === editingQueueId);
+      state.editingQueueId = null;
+      if (item) {
+        item.prompt = prompt;
+        item.attachments = cloneSnapshot(attachments);
+        item.settings = cloneSnapshot(settings);
+        item.status = 'queued';
+        updateQueuedPreview(item);
+        renderQueueTray();
+        notify('Đã cập nhật order trong hàng chờ.');
+        if (item.sessionId && !requestsForSession(item.sessionId).length && !queueIsPaused(item.sessionId)) void drainQueue(item.sessionId);
         return;
       }
-      firstPromptPromise = startInitialPrompt(prompt, settings, attachments).finally(() => { firstPromptPromise = null; });
+    }
+    if (!state.activeId) {
+      if (firstPromptPromise) {
+        enqueuePrompt(prompt, null, { settings, attachments });
+        return;
+      }
+      const draftId = nextRequestId('draft');
+      renderDraftPromptPreview(prompt, attachments, draftId);
+      firstPromptPromise = startInitialPrompt(prompt, settings, attachments, draftId).finally(() => { firstPromptPromise = null; });
       return;
     }
-    void startPrompt(prompt, state.activeId, settings, attachments);
+    const sessionId = state.activeId;
+    if (requestsForSession(sessionId).length || state.queueDrainingSessions.has(sessionId) || sessionHasQueuedPrompt(sessionId) || queueIsPaused(sessionId)) {
+      const item = enqueuePrompt(prompt, sessionId, { settings, attachments });
+      if (item && !requestsForSession(sessionId).length && !queueIsPaused(sessionId)) void drainQueue(sessionId);
+      return;
+    }
+    void startPrompt(prompt, sessionId, settings, attachments);
   }
 
   function updateHeaderQuota(overview, accounts) {
@@ -2816,47 +2954,61 @@
     const tools = $('toolsContentArea'); const catalog = state.capabilities?.tools || []; if (!tools) return; tools.replaceChildren();
     if (!catalog.length) { tools.append(emptyNode('OMP chưa công bố capability')); return; }
     tools.setAttribute('aria-label', 'Công cụ OMP. Gửi thêm order giữ nguyên trạng thái; chat mới dùng lựa chọn hiện tại; đổi toggle áp dụng từ lượt kế tiếp.');
-    const basicIds = new Set(['read', 'write', 'edit', 'ast_edit', 'grep', 'glob']);
-    const groups = [['CÔNG CỤ CƠ BẢN', catalog.filter((item) => basicIds.has(item.id))], ['CÔNG CỤ NÂNG CAO', catalog.filter((item) => !basicIds.has(item.id))]];
-    const glyphs = { read: '↳', write: '□', edit: '✎', ast_edit: '⌘', grep: '⌕', glob: '⋯', bash: '>_', eval: '∑', lsp: '⌁', debug: '⌁', task: '↳', hub: '◎', web_search: '⌕', todo: '✓', goal: '◇', init_experiment: '↗', run_experiment: '▶', log_experiment: '▤', update_notes: '≡' };
+    const metadata = state.capabilities?.catalog || {}; const statuses = { supported: 'Tắt', unavailable: 'Chưa khả dụng', blocked: 'Bị chặn', probe_error: 'Lỗi kiểm tra', stale: 'Cần cập nhật', unmapped: 'Chờ map' };
+    const summary = document.createElement('div'); summary.className = 'tool-group-label'; summary.textContent = `OMP ${metadata.audit?.ompVersion || 'chưa kiểm tra'} · ${metadata.counts?.supported || 0} tool dùng được`;
+    const sync = document.createElement('button'); sync.type = 'button'; sync.className = 'btn-secondary'; sync.textContent = state.toolsUpdating ? 'Đang đồng bộ…' : 'Đồng bộ OMP'; sync.disabled = state.toolsUpdating; sync.addEventListener('click', () => void syncOmpCatalog()); tools.append(summary, sync);
+    const listedGroups = metadata.groups || []; const groupIds = new Set(listedGroups.map((item) => item.id)); const groups = [...listedGroups, { id: 'history', label: 'THEO DÕI OMP' }].filter((group, index, all) => all.findIndex((item) => item.id === group.id) === index).map((group) => [group.label, catalog.filter((item) => item.group === group.id)]);
+    const leftovers = catalog.filter((item) => !groupIds.has(item.group)); if (leftovers.length) groups.push(['KHÁC', leftovers]);
     const renderRow = (item) => {
-      const checked = item.status === 'supported' && state.selectedTools.includes(item.id);
+      const checked = item.canToggle && state.selectedTools.includes(item.id);
       const row = document.createElement('div'); row.className = 'tool-item-row production-tool-row'; row.dataset.toolId = item.id;
       const left = document.createElement('div'); left.className = 'tool-item-left';
-      const icon = document.createElement('div'); icon.className = 'tool-icon-avatar'; icon.setAttribute('aria-hidden', 'true'); icon.textContent = glyphs[item.id] || '•';
+      const icon = document.createElement('div'); icon.className = 'tool-icon-avatar'; icon.setAttribute('aria-hidden', 'true'); icon.textContent = item.icon || '•';
       const info = document.createElement('div'); info.className = 'tool-item-info';
       const nameWrap = document.createElement('div'); nameWrap.className = 'tool-item-name-wrap';
       const title = document.createElement('span'); title.className = 'tool-item-name'; title.textContent = item.label || item.id;
-      const status = document.createElement('span'); status.className = `tool-item-status-tag${checked ? ' tag-active' : ''}`; status.textContent = item.status === 'supported' ? (checked ? 'Bật' : 'Tắt') : 'Chưa khả dụng'; status.dataset.status = item.status;
-      const description = document.createElement('div'); description.className = 'tool-item-desc'; description.textContent = item.description || 'OMP chưa cung cấp mô tả.';
+      const status = document.createElement('span'); status.className = `tool-item-status-tag${checked ? ' tag-active' : ''}`; status.textContent = checked ? 'Bật' : (statuses[item.status] || item.status || 'Chưa rõ'); status.dataset.status = item.status;
+      const description = document.createElement('div'); description.className = 'tool-item-desc'; description.textContent = item.status === 'supported' ? (item.description || 'OMP chưa cung cấp mô tả.') : (item.reason || item.description || 'OMP chưa cung cấp mô tả.');
       nameWrap.append(title, status); info.append(nameWrap, description); left.append(icon, info);
-      const toggle = document.createElement('div'); toggle.className = 'omp-tool-switch'; if (checked) toggle.classList.add('on'); toggle.dataset.toolId = item.id; toggle.setAttribute('role', 'switch'); toggle.setAttribute('aria-checked', String(checked)); toggle.setAttribute('aria-label', `${item.label || item.id}: bật/tắt`); toggle.setAttribute('title', `${item.label || item.id}: ${item.status === 'supported' ? 'bật/tắt' : 'chưa khả dụng'}`); toggle.tabIndex = item.status === 'supported' && !state.toolsUpdating ? 0 : -1; if (item.status !== 'supported' || state.toolsUpdating) toggle.setAttribute('aria-disabled', 'true');
+      const toggle = document.createElement(item.canToggle ? 'button' : 'div'); if (item.canToggle) toggle.type = 'button'; toggle.className = 'toggle-switch omp-tool-switch'; if (checked) toggle.classList.add('on'); toggle.dataset.toolId = item.id; toggle.setAttribute('role', 'switch'); toggle.setAttribute('aria-checked', String(checked)); toggle.setAttribute('aria-label', `${item.label || item.id}: ${item.canToggle ? 'bật/tắt' : statuses[item.status] || 'chưa khả dụng'}`); toggle.setAttribute('title', `${item.label || item.id}: ${item.reason || statuses[item.status] || 'chưa khả dụng'}`); if (!item.canToggle || state.toolsUpdating) toggle.setAttribute('aria-disabled', 'true');
       const knob = document.createElement('div'); knob.className = 'toggle-knob'; toggle.append(knob); row.append(left, toggle);
-      const activate = (event) => { event.preventDefault(); event.stopPropagation(); if (item.status === 'supported' && !state.toolsUpdating) setOmpTools(item.id, !checked); };
-      toggle.addEventListener('click', activate); toggle.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') activate(event); });
+      if (item.canToggle) toggle.addEventListener('click', () => { if (!state.toolsUpdating) void setOmpTools(item.id, !checked); });
       return row;
     };
     groups.forEach(([label, items]) => { if (!items.length) return; const group = document.createElement('div'); group.className = 'tool-section-group production-tool-group'; const heading = document.createElement('div'); heading.className = 'tool-group-label'; heading.textContent = label; group.append(heading, ...items.map(renderRow)); tools.append(group); });
     const badge = $('drawerTabToolsBtn')?.querySelector('.drawer-tab-badge'); if (badge) badge.textContent = String(catalog.filter((item) => item.status === 'supported').length);
   }
   async function setOmpTools(toolId, enabled) {
-    const supported = new Set((state.capabilities?.tools || []).filter((item) => item.status === 'supported').map((item) => item.id));
+    const supported = new Set(selectableTools());
     const previous = [...state.selectedTools]; const next = previous.filter((id) => id !== toolId); if (enabled) next.push(toolId);
     if (!next.length) { notify('OMP cần ít nhất một công cụ đang bật.', true); renderOmpTools(); return; }
     if (!supported.has(toolId)) { notify('Công cụ này chưa khả dụng trong OMP.', true); renderOmpTools(); return; }
-    state.selectedTools = [...new Set(next)]; localStorage.setItem('omp.tools', JSON.stringify(state.selectedTools)); state.toolsUpdating = true; renderOmpTools();
+    state.selectedTools = [...new Set(next)]; saveSelectedTools(); state.toolsUpdating = true; renderOmpTools();
     const guard = sessionGuard();
     if (!guard.sessionId) { state.toolsUpdating = false; renderOmpTools(); prewarmDraftWorker(); notify('Đã lưu cho session mới; gửi thêm order sẽ giữ nguyên danh sách tool.'); return; }
     try {
       await readJson(`${API}/sessions/${encodeURIComponent(guard.sessionId)}/action`, { method: 'POST', body: JSON.stringify({ action: 'tools', tools: state.selectedTools }) });
       if (isCurrentSession(guard)) notify('Đã cập nhật công cụ OMP cho phiên; áp dụng từ lượt kế tiếp.');
     } catch (error) {
-      if (isCurrentSession(guard)) { state.selectedTools = previous; localStorage.setItem('omp.tools', JSON.stringify(previous)); notify(`Không cập nhật được công cụ OMP: ${error.message}`, true); }
+      if (isCurrentSession(guard)) { state.selectedTools = previous; saveSelectedTools(); notify(`Không cập nhật được công cụ OMP: ${error.message}`, true); }
     } finally { state.toolsUpdating = false; renderOmpTools(); }
+  }
+  async function syncOmpCatalog() {
+    if (state.toolsUpdating) return; state.toolsUpdating = true; renderOmpTools();
+    try {
+      const { payload } = await readJson(`${API}/omp/capabilities/audit`, { method: 'POST', body: '{}' });
+      if (payload?.catalog?.tools) state.capabilities = { ...state.capabilities, ...payload.catalog };
+      await loadCapabilities();
+      const drift = payload?.catalog?.catalog?.drift; const changed = [...(drift?.added || []), ...(drift?.removed || []), ...(drift?.changed || [])];
+      notify(changed.length ? `Đã đồng bộ OMP: ${changed.length} thay đổi cần đối chiếu map.` : 'Đã đồng bộ catalog OMP.');
+    } catch (error) { notify(`Không đồng bộ được OMP: ${error.message}`, true); }
+    finally { state.toolsUpdating = false; renderOmpTools(); }
   }
   async function loadAgentHub(guard = sessionGuard()) {
     const host = $('ompAgentHubStatus'); if (!host) return;
     host.replaceChildren(); const title = document.createElement('div'); title.className = 'settings-section-title'; title.textContent = 'OMP Agent Hub'; host.append(title);
+    const hub = state.capabilities?.tools?.find((item) => item.id === 'hub');
+    if (!hub?.canToggle) { host.append(emptyNode(hub?.reason || 'Agent Hub chưa được OMP công bố.')); return; }
     if (!guard.sessionId || !isCurrentSession(guard)) { host.append(emptyNode('Chọn session để xem task/subagent thật.')); return; }
     if (state.capabilities?.featureStatus?.['agent-hub'] === 'unavailable') { host.append(emptyNode('Agent Hub chưa khả dụng qua ACP; OMP không công bố dữ liệu subagent cho dashboard.')); return; }
     try {
@@ -3059,10 +3211,9 @@
         video: { status: media.video?.status || 'unavailable' },
       };
       state.capabilities = { ...payload, imageGenerationModels, media: state.media };
-      const supported = (payload.tools || []).filter((item) => item.status === 'supported').map((item) => item.id);
-      let stored = []; try { stored = JSON.parse(localStorage.getItem('omp.tools') || '[]'); } catch {}
-      state.selectedTools = stored.length && stored.every((id) => supported.includes(id)) ? stored : supported;
-      localStorage.setItem('omp.tools', JSON.stringify(state.selectedTools));
+      const supported = selectableTools();
+      state.selectedTools = restoreSelectedTools(supported);
+      saveSelectedTools();
       renderOmpTools(); ensureOmpSettings(); syncBrowserPill();
     } catch (error) { state.capabilities = {}; syncBrowserPill(); notify(`OMP capability lỗi: ${error.message}`, true); }
   }
@@ -3335,7 +3486,7 @@
       syncBrowserPill();
       notify(state.browserMode === 'ego-browser' ? 'Ego Browser skill đã bật · Gõ order trong ô chat.' : 'Ego Browser skill đã tắt · Prompt gửi như chat thường.');
     }, true);
-    $('newSessionBtn')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); beginLocalDraft(); }, true);
+    $('newSessionBtn')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); void createSession(); }, true);
     $('promptWorkspaceTrigger')?.addEventListener('click', async (event) => {
       event.preventDefault(); event.stopImmediatePropagation();
       if (state.activeId) return;
@@ -3347,7 +3498,7 @@
       notify(state.draftWorkspaceCwd ? `Workspace chat mới: ${workspaceName(state.draftWorkspaceCwd)}` : 'Chat mới dùng General workspace.');
     }, true);
     $('sendBtn')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); if (event.altKey && visibleRequest()) void stopStream(); else void sendPrompt(); }, true);
-    $('chatInput')?.addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.stopImmediatePropagation(); void sendPrompt(); } }, true);
+    $('chatInput')?.addEventListener('keydown', (event) => { if (event.key === 'Escape' && state.editingQueueId) { event.preventDefault(); event.stopImmediatePropagation(); cancelQueueEdit(); return; } if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.stopImmediatePropagation(); void sendPrompt(); } }, true);
     ['sidebarSearchInput', 'sessionSearchInput'].forEach((id) => $(id)?.addEventListener('input', renderSessions, true));
     $('connectionStatusPill')?.addEventListener('click', async (event) => {
       event.preventDefault(); event.stopImmediatePropagation(); setConnectionStatus('Đang kiểm tra…', 'syncing');
