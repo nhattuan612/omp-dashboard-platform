@@ -90,3 +90,21 @@
 ### Checkpoint — before implementation
 
 - [ ] Síp reviews and approves `tasks/plan.md`; no code changes before approval.
+
+---
+
+## Catalog OMP → `/chat` và sidebar Công cụ — 2026-09-29
+
+- [x] Backup validated state vào commit `92512fc` trên `codex/omp-tools-sidebar-map`; không push.
+- [x] Audit OMP 18.3.2: default RPC, explicit-tool roster, combo ACP 14 tool và `hub` blocked.
+- [x] Đánh dấu `tasks/omp-capability-map.md` là historical; ghi kế hoạch chi tiết tại `tasks/omp-tools-sidebar-plan-2026-09-29.md`.
+- [ ] **P0 — Map source + validator**
+  - Acceptance: `config/omp-tool-map.json` là nguồn duy nhất; status state machine và migration v1→v2 fail-closed.
+- [ ] **P1 — Audit + drift detector**
+  - Acceptance: nhận ra version/roster/schema đổi, phân loại builtin/MCP và không gửi prompt/model.
+- [ ] **P2 — API + session selection**
+  - Acceptance: server chỉ nhận tool verified, combo advertised pass ACP, failure rollback selection.
+- [ ] **P3 — Sidebar data-driven**
+  - Acceptance: bỏ hardcode groups/icons/status; có detail, drift, disabled state đúng và Agent Hub dùng chung catalog.
+- [ ] **P4 — QA + release**
+  - Acceptance: contract/integration/ACP/Ego Browser 360-1440 pass; deploy/restart chỉ sau review.
