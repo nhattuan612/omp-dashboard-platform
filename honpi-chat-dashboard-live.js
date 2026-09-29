@@ -2971,7 +2971,7 @@
     tools.setAttribute('aria-label', 'Công cụ OMP. Gửi thêm order giữ nguyên trạng thái; chat mới dùng lựa chọn hiện tại; đổi toggle áp dụng từ lượt kế tiếp.');
     const metadata = state.capabilities?.catalog || {}; const statuses = { supported: 'Tắt' };
     const summary = document.createElement('div'); summary.className = 'tool-group-label'; summary.textContent = `OMP ${text(metadata.audit?.ompVersion || 'chưa kiểm tra').replace(/^omp\//i, '')} · ${metadata.counts?.supported || 0} tool dùng được`;
-    const sync = document.createElement('button'); sync.type = 'button'; sync.className = 'btn-secondary'; sync.textContent = state.toolsUpdating ? 'Đang đồng bộ…' : 'Đồng bộ OMP'; sync.disabled = state.toolsUpdating; sync.addEventListener('click', () => void syncOmpCatalog()); tools.append(summary, sync);
+    const sync = document.createElement('button'); sync.type = 'button'; sync.className = 'tool-sync-button'; sync.textContent = state.toolsUpdating ? 'Đang đồng bộ…' : 'Đồng bộ OMP'; sync.disabled = state.toolsUpdating; sync.setAttribute('aria-label', sync.textContent); sync.addEventListener('click', () => void syncOmpCatalog()); tools.append(summary, sync);
     const planMode = state.capabilities?.sessionModes?.find((item) => item.id === 'plan-yolo');
     if (planMode?.status === 'supported') {
       const group = document.createElement('section'); group.className = 'tool-section-group'; group.setAttribute('aria-label', 'Chế độ Plan YOLO');
