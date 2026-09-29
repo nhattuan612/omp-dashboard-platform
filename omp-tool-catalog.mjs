@@ -38,19 +38,19 @@ function validateMap(map) {
   return map;
 }
 
-function runText(ompBin, args, env) {
+function runText(ompBin, args, env, limit = 4096) {
   return new Promise((resolve, reject) => {
     const child = spawn(ompBin, args, { env, stdio: ["ignore", "pipe", "ignore"] }); let output = ""; let settled = false;
     const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
     const timer = setTimeout(() => { child.kill("SIGTERM"); finish(reject, new Error("OMP audit timeout")); }, AUDIT_TIMEOUT_MS);
-    child.stdout.on("data", (chunk) => { if (output.length < 4096) output += chunk; });
+    child.stdout.on("data", (chunk) => { if (output.length < limit) output += chunk; });
     child.on("error", (error) => finish(reject, error));
     child.on("close", (code) => code === 0 ? finish(resolve, output.trim()) : finish(reject, new Error("OMP audit không khả dụng")));
   });
 }
 
 function runConfig(ompBin, env) {
-  return runText(ompBin, ["config", "list", "--json"], env).then((output) => {
+  return runText(ompBin, ["config", "list", "--json"], env, 1_000_000).then((output) => {
     try { return JSON.parse(output); } catch { throw new Error("OMP config trả JSON không hợp lệ"); }
   });
 }
