@@ -868,7 +868,7 @@
     .sidebar-section-group.collapsed .group-content { display: none; }
     .sidebar-group-count { font-size: 11px; font-family: var(--font-body); color: var(--meta); padding: 0 3px; background: transparent; border: none; font-weight: 400; opacity: 0.6; }
     .sidebar-group-actions { display: flex; align-items: center; gap: 2px; }
-    .sidebar-group-actions .tool-icon-btn { width: 18px; height: 18px; min-width: 18px; border-radius: 4px; padding: 0; color: var(--meta); background: transparent; border: none; }
+    .sidebar-group-actions .tool-icon-btn { width: 24px; height: 24px; min-width: 24px; border-radius: 4px; padding: 0; color: var(--meta); background: transparent; border: none; }
     .sidebar-group-actions .tool-icon-btn:hover { color: var(--fg); background: color-mix(in oklab, var(--fg), transparent 90%); }
 
     .pinned-sessions-list, .unassigned-sessions-list { display: flex; flex-direction: column; gap: 1px; }
@@ -887,7 +887,7 @@
     .folder-count-badge { font-family: var(--font-body); font-size: 11px; padding: 0 2px; background: transparent; color: var(--meta); border: none; margin-left: 2px; flex-shrink: 0; opacity: 0.55; font-weight: 400; }
     .folder-header-actions { display: flex; align-items: center; gap: 2px; opacity: 0; transition: opacity var(--motion-fast) ease; }
     .folder-header-row:hover .folder-header-actions { opacity: 1; }
-    .folder-header-actions .tool-icon-btn, .folder-add-btn { width: 18px; height: 18px; min-width: 18px; border-radius: 4px; padding: 0; color: var(--meta); background: transparent; border: none; }
+    .folder-header-actions .tool-icon-btn, .folder-add-btn { width: 24px; height: 24px; min-width: 24px; border-radius: 4px; padding: 0; color: var(--meta); background: transparent; border: none; }
     .folder-header-actions .tool-icon-btn:hover, .folder-add-btn:hover { color: var(--fg); background: color-mix(in oklab, var(--fg), transparent 90%); }
     .folder-sessions-container { display: flex; flex-direction: column; gap: 1px; padding-left: 20px; margin-left: 0; border-left: none; margin-top: 1px; margin-bottom: 2px; }
     .project-folder.collapsed .folder-sessions-container { display: none; }
@@ -1167,7 +1167,7 @@
     .header-session-folder-icon { color: var(--muted); flex-shrink: 0; transition: color var(--motion-fast) var(--ease-standard); }
     .header-session-pill:hover .header-session-folder-icon { color: var(--accent); }
     .header-session-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-    .header-session-edit-btn { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 4px; color: var(--muted); background: transparent; border: none; cursor: pointer; opacity: 0.6; transition: all var(--motion-fast) var(--ease-standard); padding: 0; flex-shrink: 0; }
+    .header-session-edit-btn { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 4px; color: var(--muted); background: transparent; border: none; cursor: pointer; opacity: 0.6; transition: all var(--motion-fast) var(--ease-standard); padding: 0; flex-shrink: 0; }
     .header-session-pill:hover .header-session-edit-btn { opacity: 1; }
     .header-session-edit-btn:hover { color: var(--accent); background: var(--accent-soft); }
     .header-session-rename-input { height: 26px; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 0 6px; font-size: 13px; color: var(--fg); font-family: inherit; outline: none; box-shadow: none; width: 180px; }
@@ -4228,6 +4228,9 @@
     .project-folder-form-error { margin: 2px 0 0; color: var(--danger); font-size: 12px; line-height: 1.45; }
     .project-folder-modal-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 16px 24px 20px; border-top: 1px solid var(--border); }
     .project-folder-modal-actions .btn { min-width: 108px; min-height: 38px; }
+    @media (max-width: 920px) {
+      .folder-header-actions { opacity: 1; }
+    }
     @media (max-width: 680px) {
       .modal-kpi-grid {
         grid-template-columns: repeat(2, 1fr) !important;
@@ -4253,6 +4256,10 @@
       .project-folder-modal-actions { flex-direction: column-reverse; }
     }
     /* ─── Active Account Switcher & Telemetry in Quota Modal ─── */
+    .quota-table-mobile-hint { display: none; }
+    @media (max-width: 680px) {
+      .quota-table-mobile-hint { display: block; padding: 7px 10px; border-bottom: 1px solid var(--border); color: var(--muted); background: var(--surface-subtle); font-size: 10.5px; line-height: 1.35; }
+    }
     .active-account-strip {
       display: flex;
       justify-content: space-between;
@@ -5518,7 +5525,7 @@
           </button>
 
           <!-- 5. Toggle Right Panel [|] from image-6.png (replaces old wrench icon) -->
-          <button type="button" class="header-action-btn active" id="toggleToolsBtn" title="Bật/tắt Ngăn công cụ bên phải" aria-label="Bật/tắt Ngăn công cụ bên phải" data-od-id="header-tools-drawer-toggle">
+          <button type="button" class="header-action-btn active" id="toggleToolsBtn" title="Bật/tắt Ngăn công cụ bên phải" aria-label="Bật/tắt Ngăn công cụ bên phải" aria-controls="toolsDrawer" aria-expanded="false" data-od-id="header-tools-drawer-toggle">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="3" y="3" width="18" height="18" rx="3"></rect>
               <line x1="16" y1="3" x2="16" y2="21"></line>
@@ -6051,7 +6058,7 @@
 
                 <!-- Full Access Approval Wrapper & Badge (from image-9, 10 & 71) -->
                 <div class="full-access-wrapper" id="fullAccessWrapper">
-                  <div class="full-access-badge" id="fullAccessBadge" role="button" aria-haspopup="true" aria-expanded="false" title="Chế độ cấp quyền: Nhấp để chọn phương thức phê duyệt (từ ảnh 71)">
+                  <div class="full-access-badge" id="fullAccessBadge" role="button" tabindex="0" aria-haspopup="true" aria-controls="approvalPopover" aria-expanded="false" title="Chế độ cấp quyền: Nhấp để chọn phương thức phê duyệt (từ ảnh 71)">
                     <span class="full-access-icon" id="fullAccessIcon">
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
                     </span>
@@ -6129,12 +6136,12 @@
                     <div class="model-popover-inner">
                       <!-- 1. Section: Model -->
                       <div class="model-popover-section">
-                        <div class="model-popover-label">Model</div>
+                        <div class="model-popover-label">Mô hình AI</div>
                         <div class="model-cli-option" id="modelCliOption" title="Sử dụng cấu hình CLI mặc định">
                           <div class="model-cli-icon">
                             <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="18" height="18" rx="4" fill="#000"/><path d="M7 8h10v2.5H13v6h-2.5v-6H7V8z" fill="#fff"/></svg>
                           </div>
-                          <span class="model-cli-text">Default (CLI config)</span>
+                          <span class="model-cli-text">Cấu hình CLI mặc định</span>
                         </div>
 
                         <div class="model-select-field" id="modelSelectField">
@@ -6153,7 +6160,7 @@
 
                       <!-- 2. Section: Reasoning -->
                       <div class="model-popover-section">
-                        <div class="model-popover-label">Reasoning</div>
+                        <div class="model-popover-label">Mức độ tư duy (Reasoning)</div>
                         <div class="model-select-field" id="reasoningSelectField">
                           <span class="model-field-name" id="reasoningActiveName">XHigh</span>
                           <svg class="model-field-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
@@ -6169,9 +6176,9 @@
 
                       <!-- 3. Footer: Open execution settings -->
                       <div class="model-popover-footer">
-                        <button type="button" class="model-footer-settings-btn" id="openExecSettingsFromPopover">
+                        <button type="button" class="model-footer-settings-btn" id="openExecSettingsFromPopover" aria-label="Mở cài đặt thực thi" title="Mở cài đặt thực thi">
                           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-                          <span>Open execution settings</span>
+                          <span>Mở cài đặt thực thi</span>
                         </button>
                       </div>
                     </div>
@@ -6933,7 +6940,8 @@
         </div>
 
         <!-- Resilient Accounts Table Grid with Dedicated Column Allocations & Switch Actions -->
-        <div class="quick-table-scroll-wrap" style="border: 1px solid var(--border); border-radius: var(--radius-sm); overflow-x: auto; -webkit-overflow-scrolling: touch; min-width: 0; margin-bottom: 14px;">
+        <div class="quick-table-scroll-wrap" role="region" tabindex="0" aria-label="Bảng tài khoản OMP, vuốt ngang để xem đủ cột" style="border: 1px solid var(--border); border-radius: var(--radius-sm); overflow-x: auto; -webkit-overflow-scrolling: touch; min-width: 0; margin-bottom: 14px;">
+          <div class="quota-table-mobile-hint">Vuốt ngang để xem đủ cột tài khoản</div>
           <div style="min-width: 620px;">
             <div style="display: grid; grid-template-columns: 34px minmax(200px, 1fr) 64px 64px 70px 88px 96px; gap: 8px; padding: 8px 12px; background: color-mix(in oklab, var(--surface), var(--bg) 30%); border-bottom: 1px solid var(--border); font-size: 11px; font-weight: 600; color: var(--muted); align-items: center;">
               <span style="text-align: center;">STT</span>
@@ -7914,7 +7922,9 @@
 html[data-conversation-display="compact"] .chat-markdown{gap:6px;line-height:1.55}
 html[data-conversation-display="expanded"] .chat-markdown{gap:12px;line-height:1.78}
 @media (max-width:600px){.sidebar-scroll{padding:8px 8px 12px}.folder-header-row,.session-item{min-height:28px;padding:4px 7px}.chat-markdown{font-size:var(--chat-content-font-size,14px);line-height:1.65}.chat-markdown h3{font-size:15px}}
-@media (max-width:600px){.approval-popover{left:auto;right:-12px;width:328px;max-width:calc(100vw - 24px)}}
+@media (max-width:600px){.approval-popover{position:fixed;left:12px;right:12px;bottom:130px;width:auto;max-width:none}}
+@media (max-width:600px){.model-reasoning-popover{left:auto;right:0}}
+@media (max-width:600px){.header-dropdown-menu{position:fixed;top:48px;right:8px;left:auto;max-height:calc(100vh - 56px);overflow-y:auto}}
 @media (max-width:600px){.prompt-bottom-bar{flex-wrap:wrap;row-gap:4px}.bottom-bar-left{flex:1 1 100%;flex-wrap:wrap;min-width:0}.bottom-bar-right{order:2;margin-left:auto}.ego-browser-toggle{max-width:118px;overflow:hidden;text-overflow:ellipsis}.full-access-wrapper,.full-access-badge{max-width:128px;overflow:hidden}.model-popover-wrapper{margin-left:auto}}
 .production-tool-group{gap:4px}.production-tool-group + .production-tool-group{margin-top:14px;padding-top:2px}.production-tool-row{align-items:flex-start;min-height:0;padding:10px;border-radius:var(--radius-sm);border:1px solid transparent;border-bottom:1px solid var(--border)}.production-tool-row:hover{background:var(--surface-hover);border-color:color-mix(in oklab,var(--border),transparent 30%)}.production-tool-row .tool-item-left{min-width:0}.production-tool-row .tool-item-info{min-width:0}.production-tool-row .tool-item-name-wrap{min-width:0}.production-tool-row .tool-item-name{overflow-wrap:anywhere}.production-tool-row .tool-item-status-tag{white-space:nowrap}.production-tool-row .tool-item-status-tag[data-status="unavailable"]{color:var(--warn)}.production-tool-row .tool-item-desc{overflow-wrap:anywhere}.omp-tool-switch{position:relative;width:38px;height:22px;flex-shrink:0;margin-top:2px;border-radius:var(--radius-full);background:color-mix(in oklab,var(--border),var(--fg) 14%);cursor:pointer;transition:background-color var(--motion-fast) var(--ease-standard),box-shadow var(--motion-fast) var(--ease-standard);user-select:none;-webkit-tap-highlight-color:transparent}.omp-tool-switch.on{background:var(--accent)}.omp-tool-switch .toggle-knob{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:var(--accent-on);box-shadow:0 1px 3px rgba(0,0,0,.35),0 0 1px rgba(0,0,0,.2);transition:transform var(--motion-fast) var(--ease-standard),box-shadow var(--motion-fast) var(--ease-standard);pointer-events:none}.omp-tool-switch.on .toggle-knob{transform:translateX(16px)}.omp-tool-switch[aria-disabled="true"]{opacity:.48;cursor:not-allowed}.omp-tool-switch:focus-visible{outline:none;box-shadow:var(--focus-ring)}@media(max-width:600px){.production-tool-row{padding:10px 8px;gap:8px}.production-tool-row .tool-item-left{gap:8px}.production-tool-row .tool-item-name{font-size:12.5px}.production-tool-row .tool-item-desc{font-size:11px;line-height:1.38}.production-tool-row .tool-icon-avatar{width:26px;height:26px}.production-tool-row .tool-item-status-tag{font-size:9px}.production-tool-row .omp-tool-switch{margin-top:1px}}
 </style>
