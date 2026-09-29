@@ -469,3 +469,9 @@ Thêm hai thao tác thật vào Chat: mic dùng Speech Recognition của trình 
 - [x] Terminal nhúng xterm + PTY thật; chat dự án dùng CWD workspace, chat chưa phân loại dùng General.
 - [x] Live smoke trên macOS và checksum backup đã xác minh; backup mới nhất: `/Users/trannhattuan/.omp/usage-dashboard/backups/deploy/20260929-152014-18220`.
 - [ ] Chờ host Windows/Linux để xác minh runtime trên các hệ điều hành đó.
+
+---
+
+## Kế hoạch nâng cấp UI Neuratalk — 2026-09-29
+
+Kế hoạch triển khai có map từng state mẫu (ảnh, tệp, queue, lifecycle, approval, quota, terminal) sang dữ liệu OMP thật tại [neuratalk-ui-upgrade-plan-2026-09-29.md](neuratalk-ui-upgrade-plan-2026-09-29.md). UI mẫu là chuẩn trình bày; runtime hiện hữu tiếp tục là nguồn sự thật và `/chat` chỉ cutover sau preview parity.
