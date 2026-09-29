@@ -294,6 +294,7 @@ async function fakeOmp(args) {
       "debug.enabled": { value: true },
       "web_search.enabled": { value: true },
       "todo.enabled": { value: true },
+      "test.filler": { value: "x".repeat(6000) },
     })}\n`);
     return;
   }
