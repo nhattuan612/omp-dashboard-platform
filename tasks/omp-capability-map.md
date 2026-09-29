@@ -1,5 +1,7 @@
 # OMP 18.2.7 capability map
 
+> **Historical only — không dùng làm source of truth cho `/chat` kể từ 2026-09-29.** Binary hiện tại là OMP 18.3.2; kế hoạch thay thế và audit mới ở `tasks/omp-tools-sidebar-plan-2026-09-29.md`.
+
 Ngày kiểm chứng: 2026-09-22  
 Binary: `/Users/trannhattuan/.bun/bin/omp` (`omp/18.2.7`)  
 Runtime: `/Users/trannhattuan/.omp/usage-dashboard/server.mjs` + `console-bridge.mjs`  
