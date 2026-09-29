@@ -2484,6 +2484,7 @@ function chatSessionView(session) {
     isPinned: Boolean(session.isPinned),
     isUnread: Boolean(session.isUnread),
     ...(Array.isArray(session.tools) ? { tools: session.tools } : {}),
+    ...(session.planYolo === true ? { planYolo: true, planYoloModel: session.planYoloModel || null } : {}),
     ...(folderId ? { folderId } : {}),
     ...(folderName ? { folderName } : {}),
     updatedAgo: shortAge(updatedAt),
