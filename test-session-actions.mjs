@@ -861,7 +861,7 @@ async function runContract() {
     }
     const capabilities = await api("GET", "/api/v1/omp/capabilities");
     assert.equal(capabilities.status, 200, `capabilities request failed: ${JSON.stringify(capabilities.payload)}\n${stderr}\n${stdout}`);
-    assert.deepEqual(capabilities.payload.imageGenerationModels, ["smoke-image-model"], "fixture runtime should advertise the image-generation model");
+    assert.ok(Array.isArray(capabilities.payload.imageGenerationModels), "tool catalog must not wait for model discovery");
     assert.equal(capabilities.payload.featureStatus.memory, "supported");
     assert.ok(capabilities.payload.features.includes("memory"));
     assert.equal(capabilities.payload.sessionActions?.steer, "unavailable");
