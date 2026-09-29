@@ -2717,13 +2717,18 @@
   async function syncQuota() { const button = $('forceSyncAllOmpBtn'); if (button) button.disabled = true; try { await readJson(`${API}/quota/sync`, { method: 'POST', body: JSON.stringify({}) }); await Promise.all([loadQuota(), loadModels()]); notify('Đã đồng bộ quota'); } catch (error) { notify(`Đồng bộ quota lỗi: ${error.message}`, true); } finally { if (button) button.disabled = false; } }
   const modelOptionValue = (model) => JSON.stringify([model.provider || '', model.id]);
   function syncPlanYoloModelControl() {
-    const select = $('settingsPlanYoloModelSelect'); if (!select) return;
+    const select = $('toolsPlanYoloModelSelect'); if (!select) return;
     const models = [...new Map(state.models.filter((item) => item?.id).map((item) => [item.id, item])).values()];
     const selected = models.find((item) => item.id === state.planYoloModel) || models.find((item) => item.id === state.activeModel) || models[0];
     if (!selected) { select.replaceChildren(new Option('Chưa có model OMP khả dụng', '')); select.disabled = true; return; }
     if (state.planYoloModel !== selected.id) { state.planYoloModel = selected.id; localStorage.setItem('omp.planYoloModel', selected.id); }
     select.replaceChildren(...models.map((item) => new Option(item.name || item.id, item.id, false, item.id === selected.id)));
     select.disabled = false;
+  }
+  function setPlanYoloModel(value, notifyUser = true) {
+    if (!value) return;
+    state.planYoloModel = value; localStorage.setItem('omp.planYoloModel', value); syncPlanYoloPill();
+    if (notifyUser) notify(`Plan YOLO sẽ dùng ${value}.`);
   }
   function syncModelControls(selected) {
     const model = selected && state.models.find((item) => item.id === selected.id && item.provider === selected.provider);
@@ -2967,6 +2972,26 @@
     const metadata = state.capabilities?.catalog || {}; const statuses = { supported: 'Tắt' };
     const summary = document.createElement('div'); summary.className = 'tool-group-label'; summary.textContent = `OMP ${text(metadata.audit?.ompVersion || 'chưa kiểm tra').replace(/^omp\//i, '')} · ${metadata.counts?.supported || 0} tool dùng được`;
     const sync = document.createElement('button'); sync.type = 'button'; sync.className = 'btn-secondary'; sync.textContent = state.toolsUpdating ? 'Đang đồng bộ…' : 'Đồng bộ OMP'; sync.disabled = state.toolsUpdating; sync.addEventListener('click', () => void syncOmpCatalog()); tools.append(summary, sync);
+    const planMode = state.capabilities?.sessionModes?.find((item) => item.id === 'plan-yolo');
+    if (planMode?.status === 'supported') {
+      const group = document.createElement('section'); group.className = 'tool-section-group'; group.setAttribute('aria-label', 'Chế độ Plan YOLO');
+      const heading = document.createElement('div'); heading.className = 'tool-group-label'; heading.textContent = 'CHẾ ĐỘ OMP';
+      const card = document.createElement('div'); card.className = 'plan-yolo-tool-card';
+      const head = document.createElement('div'); head.className = 'plan-yolo-tool-head';
+      const left = document.createElement('div'); left.className = 'tool-item-left';
+      const icon = document.createElement('div'); icon.className = 'tool-icon-avatar'; icon.setAttribute('aria-hidden', 'true'); icon.textContent = '◈';
+      const info = document.createElement('div'); info.className = 'tool-item-info';
+      const name = document.createElement('div'); name.className = 'tool-item-name-wrap';
+      const title = document.createElement('span'); title.className = 'tool-item-name'; title.textContent = 'Plan YOLO';
+      const status = document.createElement('span'); status.id = 'toolsPlanYoloStatus'; status.className = `tool-item-status-tag${state.planYolo ? ' tag-active' : ''}`; status.textContent = state.planYolo ? 'Bật' : 'Tắt';
+      const description = document.createElement('div'); description.className = 'tool-item-desc'; description.id = 'toolsPlanYoloHint'; description.textContent = 'Lập kế hoạch chỉ đọc, tự duyệt rồi thực thi bằng model đã chọn.';
+      name.append(title, status); info.append(name, description); left.append(icon, info);
+      const toggle = document.createElement('button'); toggle.id = 'toolsPlanYoloToggle'; toggle.type = 'button'; toggle.className = `toggle-switch${state.planYolo ? ' on' : ''}`; toggle.setAttribute('role', 'switch'); toggle.setAttribute('aria-checked', String(state.planYolo)); toggle.setAttribute('aria-label', 'Bật hoặc tắt Plan YOLO'); toggle.title = state.planYolo ? 'Tắt Plan YOLO' : 'Bật Plan YOLO'; const knob = document.createElement('div'); knob.className = 'toggle-knob'; toggle.append(knob); toggle.addEventListener('click', () => { togglePlanYolo(); renderOmpTools(); });
+      const modelWrap = document.createElement('div'); modelWrap.className = 'plan-yolo-tool-select-wrap';
+      const modelLabel = document.createElement('label'); modelLabel.className = 'plan-yolo-tool-select-label'; modelLabel.htmlFor = 'toolsPlanYoloModelSelect'; modelLabel.textContent = 'MODEL MẶC ĐỊNH PLAN YOLO';
+      const model = document.createElement('select'); model.id = 'toolsPlanYoloModelSelect'; model.className = 'plan-yolo-tool-select'; model.setAttribute('aria-describedby', 'toolsPlanYoloHint'); model.disabled = true; model.append(new Option('Đang tải model từ OMP…', '')); model.addEventListener('change', () => setPlanYoloModel(model.value));
+      head.append(left, toggle); modelWrap.append(modelLabel, model); card.append(head, modelWrap); group.append(heading, card); tools.append(group); syncPlanYoloModelControl();
+    }
     const available = catalog.length; const toolsTab = $('drawerTabToolsBtn'); const badge = toolsTab?.querySelector('.drawer-tab-badge'); if (badge) badge.textContent = String(available); if (toolsTab) toolsTab.setAttribute('aria-label', `Công cụ OMP: ${available} tool khả dụng`);
     if (!catalog.length) { tools.append(emptyNode('Không có công cụ OMP dùng được; hãy đồng bộ lại.')); return; }
     const listedGroups = metadata.groups || []; const groupIds = new Set(listedGroups.map((item) => item.id)); const groups = listedGroups.map((group) => [group.label, catalog.filter((item) => item.group === group.id)]);
@@ -3208,15 +3233,14 @@
     toggle.setAttribute('aria-label', toggle.title); toggle.setAttribute('aria-pressed', String(enabled)); toggle.hidden = false; toggle.removeAttribute('aria-hidden');
   }
   function syncPlanYoloPill() {
-    const toggle = $('planYoloToggle'); if (!toggle) return;
     const mode = state.capabilities?.sessionModes?.find((item) => item.id === 'plan-yolo');
     const enabled = state.planYolo && mode?.status === 'supported';
-    toggle.hidden = mode?.status !== 'supported';
-    toggle.classList.toggle('active', enabled);
-    const label = toggle.querySelector('span'); if (label) label.textContent = enabled ? 'Plan YOLO · Bật' : 'Plan YOLO · Tắt';
     const model = state.planYoloModel || state.activeModel || 'chưa chọn';
-    toggle.title = enabled ? `Plan chỉ đọc, tự duyệt rồi thực thi với ${model}.` : `Bật Plan YOLO với ${model} cho lượt kế tiếp.`;
-    toggle.setAttribute('aria-label', toggle.title); toggle.setAttribute('aria-pressed', String(enabled));
+    const title = enabled ? `Plan chỉ đọc, tự duyệt rồi thực thi với ${model}.` : `Bật Plan YOLO với ${model} cho lượt kế tiếp.`;
+    const composerToggle = $('planYoloToggle');
+    if (composerToggle) { composerToggle.hidden = mode?.status !== 'supported'; composerToggle.classList.toggle('active', enabled); const label = composerToggle.querySelector('span'); if (label) label.textContent = enabled ? 'Plan YOLO · Bật' : 'Plan YOLO · Tắt'; composerToggle.title = title; composerToggle.setAttribute('aria-label', title); composerToggle.setAttribute('aria-pressed', String(enabled)); }
+    const toolsToggle = $('toolsPlanYoloToggle'); if (toolsToggle) { toolsToggle.classList.toggle('on', enabled); toolsToggle.setAttribute('aria-checked', String(enabled)); toolsToggle.title = enabled ? 'Tắt Plan YOLO' : 'Bật Plan YOLO'; }
+    const toolsStatus = $('toolsPlanYoloStatus'); if (toolsStatus) { toolsStatus.textContent = enabled ? 'Bật' : 'Tắt'; toolsStatus.classList.toggle('tag-active', enabled); }
   }
   function togglePlanYolo() {
     if (!state.planYolo && !(state.planYoloModel || state.activeModel)) { notify('Chọn model Plan YOLO trước khi bật.', true); return; }
@@ -3534,7 +3558,6 @@
     }, true);
     $('promptModelSelect')?.addEventListener('change', (event) => { const selected = state.models.find((item) => modelOptionValue(item) === event.target.value); if (selected) syncModelControls(selected); }, true);
     $('settingsDefaultModelSelect')?.addEventListener('change', (event) => { const selected = state.models.find((item) => modelOptionValue(item) === event.target.value); if (selected) syncModelControls(selected); }, true);
-    $('settingsPlanYoloModelSelect')?.addEventListener('change', (event) => { state.planYoloModel = event.target.value; localStorage.setItem('omp.planYoloModel', state.planYoloModel); syncPlanYoloPill(); notify(`Plan YOLO sẽ dùng ${state.planYoloModel}.`); }, true);
     $('modelCliOption')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); notify('Model Chat có thể bị giới hạn theo account Quota hoặc dùng toàn bộ catalog OMP, tùy Nguồn model Chat.', true); }, true);
     $('quotaRefreshBtn')?.addEventListener('click', async (event) => { event.preventDefault(); event.stopImmediatePropagation(); const button = $('quotaRefreshBtn'); if (button?.disabled) return; if (button) { button.disabled = true; button.classList.add('spinning'); button.setAttribute('aria-busy', 'true'); } try { await Promise.all([loadQuota(), loadModels()]); } finally { if (button) { button.disabled = false; button.classList.remove('spinning'); button.removeAttribute('aria-busy'); } } }, true);
     $('forceSyncAllOmpBtn')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); void syncQuota(); }, true);

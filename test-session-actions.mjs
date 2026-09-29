@@ -819,7 +819,7 @@ async function runContract() {
     assert.match(chatClient, /syncOmpCatalog/);
     assert.match(chatClient, /omp\.planYoloModel/);
     assert.match(chatClient, /function syncPlanYoloModelControl\(\)/);
-    assert.match(chatDashboard, /id="settingsPlanYoloModelSelect"/);
+    assert.match(chatClient, /id = 'toolsPlanYoloModelSelect'/);
     assert.doesNotMatch(chatClient, /const basicIds/);
     assert.doesNotMatch(chatClient, /const glyphs/);
     assert.doesNotMatch(chatClient, /\[data-production-unsupported\],\.toggle-switch/);

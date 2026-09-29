@@ -3765,6 +3765,35 @@
       color: var(--muted);
       line-height: 1.4;
     }
+    .plan-yolo-tool-card {
+      display: grid;
+      gap: 10px;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface-subtle);
+    }
+    .plan-yolo-tool-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .plan-yolo-tool-select-wrap { display: grid; gap: 5px; }
+    .plan-yolo-tool-select-label { font-size: 10.5px; font-family: var(--font-mono); color: var(--muted); }
+    .plan-yolo-tool-select {
+      width: 100%;
+      min-width: 0;
+      min-height: 32px;
+      padding: 6px 8px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      color: var(--fg);
+      font: inherit;
+      font-size: 12px;
+    }
+    .plan-yolo-tool-select:focus-visible { outline: none; box-shadow: var(--focus-ring); }
     /* ─── Toggle Switch (Hòn π DS 1.0 - 2 Color Parts & Sliding Knob) ─── */
     .toggle-switch {
       position: relative;
@@ -5836,11 +5865,6 @@
                   <span>Ego Browser · Tắt</span>
                 </button>
 
-                <button type="button" class="ego-browser-toggle" id="planYoloToggle" aria-pressed="false" title="Bật Plan YOLO cho lượt kế tiếp">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18h6"></path><path d="M10 22h4"></path><path d="M12 2a7 7 0 0 0-7 7c0 2.38 1.19 4.47 3 5.74V17a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1v-2.26c1.81-1.27 3-3.36 3-5.74a7 7 0 0 0-7-7z"></path></svg>
-                  <span>Plan YOLO · Tắt</span>
-                </button>
-
                 <!-- Full Access Approval Wrapper & Badge (from image-9, 10 & 71) -->
                 <div class="full-access-wrapper" id="fullAccessWrapper">
                   <div class="full-access-badge" id="fullAccessBadge" role="button" aria-haspopup="true" aria-expanded="false" title="Chế độ cấp quyền: Nhấp để chọn phương thức phê duyệt (từ ảnh 71)">
@@ -7165,18 +7189,6 @@
                 </div>
                 <select class="settings-select" id="settingsDefaultModelSelect">
                   <option value="" selected>Đang tải model từ OMP…</option>
-                </select>
-              </div>
-            </div>
-
-            <div class="settings-row">
-              <div class="settings-row-header">
-                <div>
-                  <label class="settings-row-label" for="settingsPlanYoloModelSelect">Model mặc định Plan YOLO</label>
-                  <div class="settings-row-subtext" id="settingsPlanYoloModelHint">Model lập kế hoạch chỉ đọc và thực thi sau khi Plan YOLO tự duyệt.</div>
-                </div>
-                <select class="settings-select" id="settingsPlanYoloModelSelect" aria-describedby="settingsPlanYoloModelHint" disabled>
-                  <option value="">Đang tải model từ OMP…</option>
                 </select>
               </div>
             </div>
