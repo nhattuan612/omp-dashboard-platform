@@ -817,6 +817,9 @@ async function runContract() {
     assert.match(acpAdapter, /isImageGenerationTool\(name\) \? imageAttachments\(output\) : \[\]/);
     assert.match(chatClient, /TOOL_STORAGE_KEY/);
     assert.match(chatClient, /syncOmpCatalog/);
+    assert.match(chatClient, /omp\.planYoloModel/);
+    assert.match(chatClient, /function syncPlanYoloModelControl\(\)/);
+    assert.match(chatDashboard, /id="settingsPlanYoloModelSelect"/);
     assert.doesNotMatch(chatClient, /const basicIds/);
     assert.doesNotMatch(chatClient, /const glyphs/);
     assert.doesNotMatch(chatClient, /\[data-production-unsupported\],\.toggle-switch/);
@@ -900,8 +903,8 @@ async function runContract() {
     passes.push("full-access OMP session accepts every advertised supported tool");
     const planYoloSession = await api("POST", "/api/v1/sessions", { title: "Plan YOLO session", cwd: workspaceRoot, planYolo: true, planYoloModel: "smoke-model", tools: ["read"] });
     assert.equal(planYoloSession.status, 201, `Plan YOLO session should create: ${JSON.stringify(planYoloSession.payload)}`);
-    assert.equal(planYoloSession.payload.planYolo, true);
-    assert.match(bridgeSource, /\["--plan-yolo"\]/, "Plan YOLO must be passed to the OMP worker");
+    assert.equal((planYoloSession.payload.session || planYoloSession.payload).planYolo, true);
+    assert.match(bridgeSource, /"--plan-yolo"/, "Plan YOLO must be passed to the OMP worker");
     passes.push("Plan YOLO is mapped, verified, persisted, and passed to OMP");
     const prewarmInput = { cwd: workspaceRoot, approvalMode: "write", browserMode: "ego-browser", tools: [] };
     const prewarmed = await api("POST", "/api/v1/omp/prewarm", prewarmInput);

@@ -7172,6 +7172,18 @@
             <div class="settings-row">
               <div class="settings-row-header">
                 <div>
+                  <label class="settings-row-label" for="settingsPlanYoloModelSelect">Model mặc định Plan YOLO</label>
+                  <div class="settings-row-subtext" id="settingsPlanYoloModelHint">Model lập kế hoạch chỉ đọc và thực thi sau khi Plan YOLO tự duyệt.</div>
+                </div>
+                <select class="settings-select" id="settingsPlanYoloModelSelect" aria-describedby="settingsPlanYoloModelHint" disabled>
+                  <option value="">Đang tải model từ OMP…</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="settings-row">
+              <div class="settings-row-header">
+                <div>
                   <div class="settings-row-label">Mức độ suy nghĩ mặc định (Reasoning)</div>
                   <div class="settings-row-subtext">Mức độ phân bổ ngân sách tư duy và suy luận trước khi xuất phản hồi</div>
                 </div>
