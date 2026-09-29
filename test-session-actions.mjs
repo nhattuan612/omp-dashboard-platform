@@ -206,7 +206,7 @@ async function fakeOmp(args) {
     return;
   }
   if (args[0] === "--help") {
-    process.stdout.write("  --plan-yolo  Plan before implementation\n");
+    process.stdout.write("  --plan-yolo  Plan before implementation\n  --advisor  Passive review runtime\n");
     return;
   }
   if (args[0] === "usage") {
@@ -298,6 +298,12 @@ async function fakeOmp(args) {
       "debug.enabled": { value: true },
       "web_search.enabled": { value: true },
       "todo.enabled": { value: true },
+      "advisor.syncBacklog": { value: "off" },
+      "advisor.immuneTurns": { value: 3 },
+      "advisor.maxNotesPerUpdate": { value: 4 },
+      "advisor.evictStaleResults": { value: true },
+      "modelRoles": { value: { advisor: "smoke-advisor" } },
+      "tier.advisor": { value: "none" },
       "test.filler": { value: "x".repeat(6000) },
     })}\n`);
     return;
@@ -819,7 +825,8 @@ async function runContract() {
     assert.match(chatClient, /syncOmpCatalog/);
     assert.match(chatClient, /omp\.planYoloModel/);
     assert.match(chatClient, /function syncPlanYoloModelControl\(\)/);
-    assert.match(chatClient, /id = 'toolsPlanYoloModelSelect'/);
+    assert.match(chatClient, /id = 'modesPlanYoloModelSelect'/);
+    assert.match(chatClient, /function renderOmpModes\(\)/);
     assert.doesNotMatch(chatClient, /const basicIds/);
     assert.doesNotMatch(chatClient, /const glyphs/);
     assert.doesNotMatch(chatClient, /\[data-production-unsupported\],\.toggle-switch/);
@@ -875,8 +882,9 @@ async function runContract() {
     assert.ok(capabilities.payload.features.includes("memory"));
     assert.equal(capabilities.payload.sessionActions?.steer, "unavailable");
     assert.equal(capabilities.payload.featureStatus["agent-hub"], "unavailable");
-    assert.equal(capabilities.payload.catalog?.mapVersion, "2026-09-29.2", "capabilities must identify the checked-in OMP-to-Chat map");
+    assert.equal(capabilities.payload.catalog?.mapVersion, "2026-09-29.3", "capabilities must identify the checked-in OMP-to-Chat map");
     assert.equal(capabilities.payload.sessionModes?.find((item) => item.id === "plan-yolo")?.status, "supported", "Plan YOLO must be verified from OMP help");
+    assert.equal(capabilities.payload.sessionModes?.find((item) => item.id === "advisor")?.status, "supported", "Advisor must be verified from OMP help");
     const waitTool = capabilities.payload.tools.find((item) => item.id === "wait");
     assert.equal(waitTool?.status, "supported", "the ACP-verified wait tool must be visible to Chat");
     assert.equal(waitTool?.canToggle, true, "verified native tools must remain selectable");
@@ -905,6 +913,10 @@ async function runContract() {
     assert.equal(planYoloSession.status, 201, `Plan YOLO session should create: ${JSON.stringify(planYoloSession.payload)}`);
     assert.equal((planYoloSession.payload.session || planYoloSession.payload).planYolo, true);
     assert.match(bridgeSource, /"--plan-yolo"/, "Plan YOLO must be passed to the OMP worker");
+    const advisorSession = await api("POST", "/api/v1/sessions", { title: "Advisor session", cwd: workspaceRoot, advisor: true, tools: ["read"] });
+    assert.equal(advisorSession.status, 201, `Advisor session should create: ${JSON.stringify(advisorSession.payload)}`);
+    assert.equal((advisorSession.payload.session || advisorSession.payload).advisor, true);
+    assert.match(bridgeSource, /"--advisor"/, "Advisor must be passed to the OMP worker");
     passes.push("Plan YOLO is mapped, verified, persisted, and passed to OMP");
     const prewarmInput = { cwd: workspaceRoot, approvalMode: "write", browserMode: "ego-browser", tools: [] };
     const prewarmed = await api("POST", "/api/v1/omp/prewarm", prewarmInput);
