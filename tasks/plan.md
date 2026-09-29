@@ -297,3 +297,28 @@ Files: `📚-OMP-DASHBOARD-TECHNICAL-REPORTS-IMPORTANT-🔒/02-API-AND-CAPABILIT
 |---|---|
 | Package cũ mất quota/auth fixes | Mirror exact source assets, then byte-compare. |
 | Test pass bằng asset sai | Assert route HTML contract trực tiếp, không fetch asset đã xoá. |
+
+---
+
+## Kế hoạch: Catalog OMP → `/chat` và sidebar Công cụ — 2026-09-29
+
+Kế hoạch chi tiết và evidence audit: [omp-tools-sidebar-plan-2026-09-29.md](omp-tools-sidebar-plan-2026-09-29.md).
+
+### Quyết định đã chốt
+
+- `config/omp-tool-map.json` sẽ là source-controlled map duy nhất giữa ID OMP và presentation/selection `/chat`.
+- Snapshot audit redacted nằm ngoài Git tại `~/.omp/usage-dashboard/tool-audits/`; map không chứa secret hay suy đoán status live.
+- Server và sidebar chỉ tin catalog đã compile từ map + audit. Tool `unmapped`, `stale`, MCP dynamic hoặc `blocked` không có switch và không được gửi vào `--tools`.
+- Danh sách hiện đã ACP-verified là 14: `read, write, edit, ast_edit, grep, glob, bash, eval, lsp, debug, task, todo, wait, web_search`. `hub` bị block do `UPSTREAM_ERROR`.
+
+### Lát triển khai
+
+1. **P0 Map + validator:** source map, historical marker cho map 18.2.7, schema/status state machine và migration selection v1→v2.
+2. **P1 Audit/drift:** RPC no-session, digest/version, source builtin/MCP, ACP probe chỉ khi isolate session storage được xác minh.
+3. **P2 Backend:** thay hardcode catalog, server validation/combo verification/effective roster và API contract.
+4. **P3 Sidebar:** render groups/row/detail/drift từ API; thống nhất Agent Hub với cùng catalog.
+5. **P4 QA/release:** contract + ACP combo + Ego Browser bốn viewport; deploy chỉ sau checkpoint và review drift.
+
+### Completion gate
+
+Không tool nào được UI quảng cáo toggleable nếu chưa pass toàn bộ combo ACP hiện hành. OMP update phải tạo drift visible và fail-closed, không tự bật tool mới.
