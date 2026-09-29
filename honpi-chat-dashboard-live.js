@@ -1376,9 +1376,68 @@
     });
     return rows.slice(0, 12);
   }
-  function renderFileChangeCard(host, blocks) {
+  function ensureFileChangeReviewStyles() {
+    if ($('runtimeFileChangeReviewStyles')) return;
+    const style = document.createElement('style'); style.id = 'runtimeFileChangeReviewStyles';
+    style.textContent = '.runtime-file-change-modal{position:fixed;inset:0;z-index:1200;display:flex;align-items:center;justify-content:center;padding:20px;background:color-mix(in oklab,#000,transparent 34%)}.runtime-file-change-panel{display:flex;flex-direction:column;gap:14px;width:min(960px,100%);max-height:min(88vh,820px);overflow:hidden;background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--radius-lg);box-shadow:0 24px 80px rgba(0,0,0,.36);color:var(--fg)}.runtime-file-change-head,.runtime-file-change-foot{display:flex;align-items:center;gap:10px;padding:16px 18px;border-bottom:1px solid var(--border)}.runtime-file-change-foot{border-top:1px solid var(--border);border-bottom:0;justify-content:flex-end}.runtime-file-change-title{font-size:16px;font-weight:700;flex:1}.runtime-file-change-close,.runtime-file-change-action{border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-raised);color:var(--fg);padding:7px 11px;cursor:pointer}.runtime-file-change-action.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-on)}.runtime-file-change-action.danger{color:var(--danger);border-color:color-mix(in oklab,var(--danger),var(--border) 55%)}.runtime-file-change-body{overflow:auto;padding:0 18px 18px;display:grid;gap:12px}.runtime-file-change-file{border:1px solid var(--border);border-radius:var(--radius-md);overflow:hidden}.runtime-file-change-file>summary{cursor:pointer;list-style:none;padding:10px 12px;font-weight:650;background:var(--surface-raised)}.runtime-file-change-file>summary::-webkit-details-marker{display:none}.runtime-file-change-path{font-family:var(--font-mono);font-size:12px;overflow-wrap:anywhere}.runtime-file-change-status{float:right;color:var(--muted);font-size:11px}.runtime-file-change-diff{margin:0;padding:10px 12px;overflow:auto;background:var(--canvas);font:12px/1.55 var(--font-mono)}.runtime-file-change-line{display:block;white-space:pre-wrap;overflow-wrap:anywhere}.runtime-file-change-line.add{color:var(--success);background:color-mix(in oklab,var(--success),transparent 90%)}.runtime-file-change-line.del{color:var(--danger);background:color-mix(in oklab,var(--danger),transparent 90%)}.runtime-file-change-line.meta{color:var(--muted);font-style:italic}.runtime-file-change-note{color:var(--muted);font-size:12px}@media(max-width:600px){.runtime-file-change-modal{padding:8px}.runtime-file-change-panel{max-height:94vh}.runtime-file-change-head,.runtime-file-change-foot{padding:12px}.runtime-file-change-body{padding:0 12px 12px}}';
+    document.head.append(style);
+  }
+  function renderFileChangeDiff(parent, before, after) {
+    const oldLines = text(before || '').split('\n'); const newLines = text(after || '').split('\n');
+    if (!text(before) && !text(after)) { const empty = document.createElement('span'); empty.className = 'runtime-file-change-line meta'; empty.textContent = '(tệp rỗng)'; parent.append(empty); return; }
+    let prefix = 0; while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) prefix += 1;
+    let suffix = 0; while (suffix < oldLines.length - prefix && suffix < newLines.length - prefix && oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]) suffix += 1;
+    const add = (value, kind) => { const line = document.createElement('span'); line.className = `runtime-file-change-line ${kind}`; line.textContent = `${kind === 'add' ? '+ ' : kind === 'del' ? '- ' : '  '}${value}`; parent.append(line); };
+    oldLines.slice(0, prefix).forEach((line) => add(line, 'same'));
+    oldLines.slice(prefix, oldLines.length - suffix || undefined).forEach((line) => add(line, 'del'));
+    newLines.slice(prefix, newLines.length - suffix || undefined).forEach((line) => add(line, 'add'));
+    oldLines.slice(oldLines.length - suffix).forEach((line) => add(line, 'same'));
+  }
+  async function actOnFileChanges(snapshot, action) {
+    if (!snapshot?.id || !['apply', 'revert'].includes(action)) return;
+    if (!window.confirm(action === 'revert' ? 'Hoàn tác các thay đổi này trên workspace?' : 'Xác nhận giữ các thay đổi này?')) return;
+    try {
+      const { payload } = await readJson(`${API}/sessions/${encodeURIComponent(snapshot.sessionId || state.activeId)}/file-changes/action`, { method: 'POST', body: JSON.stringify({ action, snapshotId: snapshot.id, confirmed: true }) });
+      const next = payload?.snapshot || payload;
+      state.messages = state.messages.map((message) => message.fileChanges?.id === snapshot.id ? { ...message, fileChanges: next } : message);
+      renderMessages(state.messages);
+      notify(action === 'revert' ? 'Đã hoàn tác file-change bằng snapshot runtime.' : 'Đã xác nhận file-change runtime.');
+      $('runtimeFileChangeModal')?.remove();
+    } catch (error) { notify(`Không thể ${action === 'revert' ? 'hoàn tác' : 'xác nhận'} file-change: ${error.message}`, true); }
+  }
+  async function openFileChangeReview(snapshot) {
+    let current = snapshot;
+    if (!current?.id || !Array.isArray(current.files)) {
+      if (!state.activeId) return notify('Chưa chọn cuộc trò chuyện.', true);
+      try { const { payload } = await readJson(`${API}/sessions/${encodeURIComponent(state.activeId)}/file-changes`); current = payload?.snapshot; }
+      catch (error) { return notify(`Không tải được snapshot file-change: ${error.message}`, true); }
+    }
+    if (!current?.files?.length) return notify(current?.reason || 'Phiên này chưa có snapshot file-change để xem.', true);
+    ensureFileChangeReviewStyles();
+    $('runtimeFileChangeModal')?.remove();
+    const modal = document.createElement('div'); modal.id = 'runtimeFileChangeModal'; modal.className = 'runtime-file-change-modal'; modal.setAttribute('role', 'dialog'); modal.setAttribute('aria-modal', 'true'); modal.setAttribute('aria-labelledby', 'runtimeFileChangeTitle');
+    const panel = document.createElement('div'); panel.className = 'runtime-file-change-panel';
+    const head = document.createElement('div'); head.className = 'runtime-file-change-head';
+    const title = document.createElement('strong'); title.id = 'runtimeFileChangeTitle'; title.className = 'runtime-file-change-title'; title.textContent = `${current.files.length} tệp thay đổi`;
+    const close = document.createElement('button'); close.type = 'button'; close.className = 'runtime-file-change-close'; close.textContent = 'Đóng'; close.addEventListener('click', () => modal.remove()); head.append(title, close);
+    const body = document.createElement('div'); body.className = 'runtime-file-change-body';
+    current.files.forEach((file) => {
+      const details = document.createElement('details'); details.className = 'runtime-file-change-file'; details.open = true;
+      const summary = document.createElement('summary'); const path = document.createElement('span'); path.className = 'runtime-file-change-path'; path.textContent = file.path; const status = document.createElement('span'); status.className = 'runtime-file-change-status'; status.textContent = file.status || 'changed'; summary.append(path, status);
+      const diff = document.createElement('pre'); diff.className = 'runtime-file-change-diff'; renderFileChangeDiff(diff, file.before?.text, file.after?.text); details.append(summary, diff); body.append(details);
+      if (file.before?.truncated || file.after?.truncated) { const note = document.createElement('div'); note.className = 'runtime-file-change-note'; note.textContent = 'Nội dung hiển thị đã rút gọn; hash đầy đủ vẫn được kiểm tra ở backend.'; details.append(note); }
+    });
+    const foot = document.createElement('div'); foot.className = 'runtime-file-change-foot';
+    const note = document.createElement('span'); note.className = 'runtime-file-change-note'; note.textContent = current.complete === true && current.status === 'ready' ? 'Backend sẽ kiểm tra hash trước khi thao tác.' : (current.reason || 'Chỉ xem được snapshot này.'); note.style.marginRight = 'auto'; foot.append(note);
+    const revert = document.createElement('button'); revert.type = 'button'; revert.className = 'runtime-file-change-action danger'; revert.textContent = 'Hoàn tác'; revert.disabled = !(current.complete === true && current.status === 'ready'); revert.addEventListener('click', () => void actOnFileChanges(current, 'revert'));
+    const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'runtime-file-change-action primary'; apply.textContent = 'Giữ thay đổi'; apply.disabled = !(current.complete === true && current.status === 'ready'); apply.addEventListener('click', () => void actOnFileChanges(current, 'apply'));
+    foot.append(revert, apply); panel.append(head, body, foot); modal.append(panel); modal.addEventListener('click', (event) => { if (event.target === modal) modal.remove(); }); modal.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); modal.remove(); } }); document.body.append(modal); close.focus();
+  }
+  function renderFileChangeCard(host, blocks, fileChanges = null) {
     if (!host) return [];
-    const rows = fileChangeRows(blocks); host.replaceChildren(); host.hidden = !rows.length;
+    const rows = fileChangeRows(blocks);
+    if (!rows.length && Array.isArray(fileChanges?.files)) fileChanges.files.forEach((file) => rows.push({ path: text(file.path), status: text(file.status || 'changed'), toolName: 'OMP' }));
+    host.replaceChildren(); host.hidden = !rows.length;
     if (!rows.length) return rows;
     const running = rows.some((row) => row.status === 'running');
     const failed = rows.every((row) => row.status === 'error');
@@ -1388,9 +1447,9 @@
     const icon = document.createElement('span'); icon.className = 'file-change-icon-box'; icon.setAttribute('aria-hidden', 'true'); icon.textContent = '±';
     const meta = document.createElement('div'); meta.className = 'file-change-meta';
     const title = document.createElement('strong'); title.className = 'file-change-title'; title.textContent = failed ? 'Chỉnh sửa tệp chưa hoàn tất' : running ? `Đang chỉnh sửa ${rows.length} tệp` : `Đã chỉnh sửa ${rows.length} tệp`;
-    const detail = document.createElement('span'); detail.className = 'file-change-stats'; detail.textContent = 'Nguồn: hoạt động OMP';
+    const detail = document.createElement('span'); detail.className = 'file-change-stats'; detail.textContent = fileChanges?.id ? 'Nguồn: snapshot runtime' : 'Nguồn: hoạt động OMP';
     meta.append(title, detail); left.append(icon, meta);
-    const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'btn-diff-review'; toggle.textContent = 'Xem hoạt động'; toggle.setAttribute('aria-expanded', 'false');
+    const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'btn-diff-review'; toggle.textContent = fileChanges?.id ? 'Xem diff' : 'Xem hoạt động'; toggle.setAttribute('aria-expanded', 'false');
     const list = document.createElement('div'); list.className = 'file-change-list'; list.hidden = true;
     rows.forEach((row) => {
       const item = document.createElement('div'); item.className = 'file-change-row';
@@ -1398,21 +1457,22 @@
       const status = document.createElement('span'); status.className = 'file-diff-stats'; status.textContent = row.status === 'error' ? 'lỗi' : row.status === 'running' ? 'đang xử lý' : 'đã xong';
       item.append(path, status); list.append(item);
     });
-    toggle.addEventListener('click', () => { list.hidden = !list.hidden; toggle.setAttribute('aria-expanded', String(!list.hidden)); toggle.textContent = list.hidden ? 'Xem hoạt động' : 'Thu gọn'; });
+    toggle.addEventListener('click', () => { if (fileChanges?.id) { void openFileChangeReview(fileChanges); return; } list.hidden = !list.hidden; toggle.setAttribute('aria-expanded', String(!list.hidden)); toggle.textContent = list.hidden ? 'Xem hoạt động' : 'Thu gọn'; });
     header.append(left, toggle); card.append(header, list); host.append(card);
     return rows;
   }
   function syncFileChangeFloatingBar(messages = state.messages) {
     const bar = $('fileChangeFloatingBar'); const pill = $('fileChangeFloatingPill');
     if (!bar || !pill) return;
-    const latest = [...(Array.isArray(messages) ? messages : [])].reverse().map((message) => fileChangeRows(message?.role === 'user' ? [] : message?.body)).find((rows) => rows.length);
+    const latestMessage = [...(Array.isArray(messages) ? messages : [])].reverse().find((message) => fileChangeRows(message?.role === 'user' ? [] : message?.body).length || message?.fileChanges?.files?.length);
+    const latest = latestMessage ? fileChangeRows(latestMessage.role === 'user' ? [] : latestMessage.body) : [];
     const visible = Boolean(latest?.length);
     bar.hidden = !visible; bar.classList.toggle('is-visible', visible); bar.style.removeProperty('display');
     if (!visible) return;
     pill.hidden = false; pill.disabled = false; pill.removeAttribute('aria-hidden'); pill.removeAttribute('onclick');
     pill.replaceChildren(Object.assign(document.createElement('span'), { className: 'file-change-pill-text', textContent: `${latest.length} tệp đã thay đổi` }));
     pill.title = 'Nhấp để xem hoạt động chỉnh sửa tệp'; pill.setAttribute('aria-label', pill.title);
-    pill.onclick = () => document.querySelector('[data-file-change-card="true"]')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    pill.onclick = () => latestMessage?.fileChanges?.id ? void openFileChangeReview(latestMessage.fileChanges) : document.querySelector('[data-file-change-card="true"]')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
   function editUserPrompt(message) {
     const input = $('chatInput');
@@ -1470,7 +1530,7 @@
     const card = document.createElement('div');
     card.className = 'ai-message-card';
     renderMessageBody(card, message.body);
-    const fileChanges = document.createElement('div'); fileChanges.className = 'message-file-changes'; renderFileChangeCard(fileChanges, message.body); card.append(fileChanges);
+    const fileChanges = document.createElement('div'); fileChanges.className = 'message-file-changes'; renderFileChangeCard(fileChanges, message.body, message.fileChanges); card.append(fileChanges);
     if (text(message.content).trim()) {
       const content = document.createElement('div');
       content.className = 'chat-markdown';
@@ -2401,6 +2461,7 @@
           completionPayload = payload;
           if (!payload.aborted) mountChatTurn();
           if (Array.isArray(payload.body)) payload.body.forEach(pushBodyBlock);
+          renderFileChangeCard(fileChangesNode, streamedBody, payload.fileChanges);
           setStreamStatus(payload.totalDuration ? `Đã hoàn tất · ${payload.totalDuration}` : 'Đã hoàn tất', 'done');
         }
         if (event === 'body' && payload.block) {
@@ -2483,8 +2544,9 @@
         ...(completionPayload?.totalTokens ? { totalTokens: completionPayload.totalTokens } : {}),
         ...(streamedBody.length ? { body: cloneSnapshot(streamedBody) } : {}),
         ...(streamedAttachments.length ? { attachments: cloneSnapshot(streamedAttachments) } : {}),
+        ...(completionPayload?.fileChanges ? { fileChanges: cloneSnapshot(completionPayload.fileChanges) } : {}),
       };
-      if (streamedText || streamedBody.length || streamedAttachments.length) {
+      if (streamedText || streamedBody.length || streamedAttachments.length || completedAssistant.fileChanges) {
         if (isCurrentSession(guard)) state.messages = upsertAssistantMessage(state.messages, request.requestId, completedAssistant);
         else {
           const view = state.sessionViews.get(sessionId) || { messages: [], transientNodes: [], volatile: true, scrollTop: 0 };

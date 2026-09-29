@@ -164,7 +164,7 @@ Chi tiết và acceptance: [neuratalk-ui-upgrade-plan-2026-09-29.md](neuratalk-u
 - [x] U1: Shell/tokens/assets với CSP hiện hữu.
 - [x] U2: Session/conversation/attachment/image renderer an toàn.
 - [x] U3: SSE, lifecycle, approval, queue, lỗi/reconnect.
-- [x] U4: Workspace composer, tools, Agent Hub và file-change activity; diff Apply/Revert chờ adapter snapshot.
+- [x] U4: Workspace composer, tools, Agent Hub, file-change snapshot và Apply/Revert hash-guarded atomic rollback.
 - [x] U5: Quota, settings, Memory, mic, terminal và share.
 - [x] U6: A11y, responsive và regression matrix hiện tại.
 - [ ] U7: Cutover, product-release parity, backup/deploy/rollback.

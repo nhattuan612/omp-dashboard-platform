@@ -469,6 +469,16 @@ async function fakeOmp(args) {
         emit({ type: "message_end", message: { role: "toolResult", toolCallId: "tool-body-1", toolName: "read", content: [{ type: "text", text: "tool result text" }], details: { exitCode: 0 }, isError: false } });
         emit({ type: "message_end", message: assistant });
         emit({ type: "agent_end", isTerminal: true, messages: [assistant], message: assistant });
+      } else if (frame.type === "prompt" && String(frame.message || "").includes("FILE_CHANGE_CONTRACT")) {
+        const target = join(process.cwd(), "src", "change.js");
+        const current = await readFile(target, "utf8");
+        emit({ type: "turn_start" });
+        emit({ type: "tool_execution_start", toolCallId: "tool-file-change-1", toolName: "apply_patch", args: { path: "src/change.js" }, intent: "apply patch to src/change.js" });
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        await writeFile(target, `${current}const runtimeChange = true;\n`, { mode: 0o600 });
+        emit({ type: "tool_execution_end", toolCallId: "tool-file-change-1", toolName: "apply_patch", result: "updated src/change.js", isError: false });
+        emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "file-change-response" } });
+        emit({ type: "agent_end", isTerminal: true, message: { role: "assistant", content: "file-change-response", model: "smoke-model" } });
       } else if (frame.type === "prompt" && String(frame.message || "").includes("RPC_V2_CONTRACT")) {
         emit({ type: "turn_start" });
         const delta = { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "rpc-v2-working" } };
@@ -642,6 +652,7 @@ async function runContract() {
     await mkdir(legacyRoot, { recursive: true, mode: 0o700 });
     await mkdir(join(workspaceRoot, ".git"), { recursive: true, mode: 0o700 });
     await writeFile(join(sourceDir, "good.txt"), "Attachment from isolated workspace.\n", { mode: 0o600 });
+    await writeFile(join(sourceDir, "change.js"), "const before = true;\n", { mode: 0o600 });
     const secretsDir = join(workspaceRoot, "secrets");
     await mkdir(secretsDir, { recursive: true, mode: 0o700 });
     await writeFile(join(secretsDir, "config.json"), JSON.stringify({ token: "SUPER_SECRET" }), { mode: 0o600 });
@@ -2146,6 +2157,38 @@ async function runContract() {
       assert.equal(assistant.body.some((block) => block.kind === "todo"), true);
       assert.equal(assistant.body.some((block) => block.kind === "tool_result"), true);
       passes.push("OMP thinking, todo, tool execution, and tool result persist as collapsed-body blocks");
+    }
+    {
+      const { reader } = await openStream(parent.id, "FILE_CHANGE_CONTRACT apply-patch", "file-change");
+      await reader.waitFor((event) => event.event === "start", "file-change stream start");
+      const ended = await reader.waitFor((event) => event.event === "end", "file-change stream completion");
+      assert.equal(ended.data.fileChanges?.status, "ready");
+      assert.deepEqual(ended.data.fileChanges.files.map((item) => item.path), ["src/change.js"]);
+      const snapshot = await api("GET", `/api/v1/sessions/${encodeURIComponent(parent.id)}/file-changes`);
+      assert.equal(snapshot.status, 200);
+      assert.equal(snapshot.payload.snapshot.id, ended.data.fileChanges.id);
+      const unconfirmed = await api("POST", `/api/v1/sessions/${encodeURIComponent(parent.id)}/file-changes/action`, { action: "apply", snapshotId: snapshot.payload.snapshot.id });
+      assert.equal(unconfirmed.status, 400);
+      const changed = await readFile(join(sourceDir, "change.js"), "utf8");
+      assert.match(changed, /runtimeChange/);
+      await writeFile(join(sourceDir, "change.js"), "tampered outside review\n", { mode: 0o600 });
+      const conflict = await api("POST", `/api/v1/sessions/${encodeURIComponent(parent.id)}/file-changes/action`, { action: "apply", snapshotId: snapshot.payload.snapshot.id, confirmed: true });
+      assert.equal(conflict.status, 409);
+      await writeFile(join(sourceDir, "change.js"), changed, { mode: 0o600 });
+      const applied = await api("POST", `/api/v1/sessions/${encodeURIComponent(parent.id)}/file-changes/action`, { action: "apply", snapshotId: snapshot.payload.snapshot.id, confirmed: true });
+      assert.equal(applied.status, 200);
+      assert.equal(applied.payload.action, "apply");
+      assert.equal(applied.payload.snapshot.audit.at(-1).hashChecked, true);
+      const { reader: revertReader } = await openStream(parent.id, "FILE_CHANGE_CONTRACT revert", "file-change-revert");
+      await revertReader.waitFor((event) => event.event === "start", "file-change revert start");
+      const revertEnded = await revertReader.waitFor((event) => event.event === "end", "file-change revert completion");
+      assert.equal(revertEnded.data.fileChanges?.status, "ready");
+      const reverted = await api("POST", `/api/v1/sessions/${encodeURIComponent(parent.id)}/file-changes/action`, { action: "revert", snapshotId: revertEnded.data.fileChanges.id, confirmed: true });
+      assert.equal(reverted.status, 200);
+      assert.equal(reverted.payload.action, "revert");
+      assert.equal(reverted.payload.snapshot.audit.at(-1).hashChecked, true);
+      assert.equal(await readFile(join(sourceDir, "change.js"), "utf8"), changed);
+      passes.push("file-change snapshot validates hashes and supports Apply/Revert");
     }
     {
       const transcriptBody = await createFixture("Persisted body transcript");
