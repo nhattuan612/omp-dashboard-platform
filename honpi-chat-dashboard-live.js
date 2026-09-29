@@ -6,7 +6,7 @@
   const TOOL_STORAGE_KEY = 'omp.tools.v2';
   const BROWSER_MODE_PREFERENCE_VERSION = 'manual-v1';
   const initialBrowserMode = localStorage.getItem('omp.browserModePreferenceVersion') === BROWSER_MODE_PREFERENCE_VERSION ? localStorage.getItem('omp.browserMode') : 'none';
-  const state = { sessions: [], nextCursor: null, activeId: null, generation: 0, messages: [], models: [], activeModel: null, controller: null, requestId: null, activeRequest: null, createPromise: null, menu: null, folderMenu: null, quota: null, accounts: [], attachments: [], workspaceFiles: [], workspaceMention: '@', capabilities: null, selectedTools: [], toolsUpdating: false, folderExpanded: new Set(), folderCollapsed: new Set(), thinking: localStorage.getItem('omp.thinking') || 'max', browserMode: initialBrowserMode === 'ego-browser' ? 'ego-browser' : 'none', planYolo: localStorage.getItem('omp.planYolo') === 'true', shareMode: localStorage.getItem('omp.shareMode') || 'encrypted', approvalMode: localStorage.getItem('omp.approvalMode') || 'always-ask', enterBehavior: localStorage.getItem('omp.enterBehavior') || 'queue', conversationDisplay: localStorage.getItem('omp.conversationDisplay') || 'compact', pendingPrompts: [], queuePausedSessions: new Map(), editingQueueId: null, draftPromptPreview: null, browserAction: null, browserStatus: null, media: { screenCapture: { status: 'unavailable', reason: 'Native screen capture is not provided by OMP dashboard.' }, camera: { status: 'unavailable' }, microphone: { status: 'unavailable' }, video: { status: 'unavailable' } } };
+  const state = { sessions: [], nextCursor: null, activeId: null, generation: 0, messages: [], models: [], activeModel: null, controller: null, requestId: null, activeRequest: null, createPromise: null, menu: null, folderMenu: null, quota: null, accounts: [], attachments: [], workspaceFiles: [], workspaceMention: '@', capabilities: null, selectedTools: [], toolsUpdating: false, folderExpanded: new Set(), folderCollapsed: new Set(), thinking: localStorage.getItem('omp.thinking') || 'max', browserMode: initialBrowserMode === 'ego-browser' ? 'ego-browser' : 'none', planYolo: localStorage.getItem('omp.planYolo') === 'true', planYoloModel: localStorage.getItem('omp.planYoloModel') || '', shareMode: localStorage.getItem('omp.shareMode') || 'encrypted', approvalMode: localStorage.getItem('omp.approvalMode') || 'always-ask', enterBehavior: localStorage.getItem('omp.enterBehavior') || 'queue', conversationDisplay: localStorage.getItem('omp.conversationDisplay') || 'compact', pendingPrompts: [], queuePausedSessions: new Map(), editingQueueId: null, draftPromptPreview: null, browserAction: null, browserStatus: null, media: { screenCapture: { status: 'unavailable', reason: 'Native screen capture is not provided by OMP dashboard.' }, camera: { status: 'unavailable' }, microphone: { status: 'unavailable' }, video: { status: 'unavailable' } } };
   state.enterBehavior = 'send';
   state.modelAccess = null;
   state.modelAccessInitialized = false;
@@ -258,7 +258,7 @@
     }).catch(() => {});
   }
   function snapshotSettings() {
-    return { model: state.activeModel || null, modelProvider: state.activeModelProvider, modelSource: state.modelSource, thinking: state.thinking, browserMode: state.browserMode, planYolo: state.planYolo, planYoloModel: state.activeModel || null, approvalMode: state.approvalMode, tools: [...state.selectedTools] };
+    return { model: state.activeModel || null, modelProvider: state.activeModelProvider, modelSource: state.modelSource, thinking: state.thinking, browserMode: state.browserMode, planYolo: state.planYolo, planYoloModel: state.planYoloModel || state.activeModel || null, approvalMode: state.approvalMode, tools: [...state.selectedTools] };
   }
   function setBrowserMode(value) {
     state.browserMode = value === 'ego-browser' ? 'ego-browser' : 'none';
@@ -1586,7 +1586,7 @@
     setNeutralSelection({ preserveDraftPreview: Boolean(state.draftPromptPreview) });
     state.createPromise = (async () => {
       try {
-        const { payload } = await readJson(`${API}/sessions`, { method: 'POST', body: JSON.stringify({ title, ...(options.folderId ? { folderId: options.folderId } : {}), ...(cwd ? { cwd } : {}), browserMode: state.browserMode, planYolo: state.planYolo, ...(state.planYolo ? { planYoloModel: state.activeModel } : {}), approvalMode: state.approvalMode, ...(state.selectedTools.length ? { tools: state.selectedTools } : {}) }) });
+        const { payload } = await readJson(`${API}/sessions`, { method: 'POST', body: JSON.stringify({ title, ...(options.folderId ? { folderId: options.folderId } : {}), ...(cwd ? { cwd } : {}), browserMode: state.browserMode, planYolo: state.planYolo, ...(state.planYolo ? { planYoloModel: state.planYoloModel || state.activeModel } : {}), approvalMode: state.approvalMode, ...(state.selectedTools.length ? { tools: state.selectedTools } : {}) }) });
         const created = payload?.session || payload;
         if (!created?.id) throw new Error('Backend không trả id session hợp lệ');
         state.sessionLoadRequestId += 1;
@@ -2716,6 +2716,15 @@
   async function switchAccount(accountId) { try { const { payload } = await readJson(`${API}/quota/switch`, { method: 'POST', body: JSON.stringify({ accountId, ...(state.activeId ? { sessionId: state.activeId } : {}) }) }); await Promise.all([loadQuota(), loadModels()]); notify(payload?.scope === 'session' ? 'Đã ghim account Gemini cho chat này' : 'Đã đặt account Gemini mặc định'); } catch (error) { notify(`Không thể chọn tài khoản Gemini: ${error.message}`, true); } }
   async function syncQuota() { const button = $('forceSyncAllOmpBtn'); if (button) button.disabled = true; try { await readJson(`${API}/quota/sync`, { method: 'POST', body: JSON.stringify({}) }); await Promise.all([loadQuota(), loadModels()]); notify('Đã đồng bộ quota'); } catch (error) { notify(`Đồng bộ quota lỗi: ${error.message}`, true); } finally { if (button) button.disabled = false; } }
   const modelOptionValue = (model) => JSON.stringify([model.provider || '', model.id]);
+  function syncPlanYoloModelControl() {
+    const select = $('settingsPlanYoloModelSelect'); if (!select) return;
+    const models = [...new Map(state.models.filter((item) => item?.id).map((item) => [item.id, item])).values()];
+    const selected = models.find((item) => item.id === state.planYoloModel) || models.find((item) => item.id === state.activeModel) || models[0];
+    if (!selected) { select.replaceChildren(new Option('Chưa có model OMP khả dụng', '')); select.disabled = true; return; }
+    if (state.planYoloModel !== selected.id) { state.planYoloModel = selected.id; localStorage.setItem('omp.planYoloModel', selected.id); }
+    select.replaceChildren(...models.map((item) => new Option(item.name || item.id, item.id, false, item.id === selected.id)));
+    select.disabled = false;
+  }
   function syncModelControls(selected) {
     const model = selected && state.models.find((item) => item.id === selected.id && item.provider === selected.provider);
     const account = state.modelSource === 'quota' ? state.modelAccess?.account : null;
@@ -2759,6 +2768,7 @@
       select.disabled = !state.models.length || (state.modelSource === 'quota' && !account?.canUse);
       select.title = sourceStatus;
     });
+    syncPlanYoloModelControl();
   }
   async function loadModels() {
     const source = state.modelSource;
@@ -3204,11 +3214,12 @@
     toggle.hidden = mode?.status !== 'supported';
     toggle.classList.toggle('active', enabled);
     const label = toggle.querySelector('span'); if (label) label.textContent = enabled ? 'Plan YOLO · Bật' : 'Plan YOLO · Tắt';
-    toggle.title = enabled ? 'Plan chỉ đọc, tự duyệt rồi thực thi ở lượt kế tiếp.' : 'Bật Plan YOLO cho lượt kế tiếp.';
+    const model = state.planYoloModel || state.activeModel || 'chưa chọn';
+    toggle.title = enabled ? `Plan chỉ đọc, tự duyệt rồi thực thi với ${model}.` : `Bật Plan YOLO với ${model} cho lượt kế tiếp.`;
     toggle.setAttribute('aria-label', toggle.title); toggle.setAttribute('aria-pressed', String(enabled));
   }
   function togglePlanYolo() {
-    if (!state.planYolo && !state.activeModel) { notify('Chọn model trước khi bật Plan YOLO.', true); return; }
+    if (!state.planYolo && !(state.planYoloModel || state.activeModel)) { notify('Chọn model Plan YOLO trước khi bật.', true); return; }
     state.planYolo = !state.planYolo; localStorage.setItem('omp.planYolo', String(state.planYolo)); syncPlanYoloPill();
     notify(`Plan YOLO ${state.planYolo ? 'đã bật' : 'đã tắt'}; áp dụng từ lượt kế tiếp.`);
   }
@@ -3523,6 +3534,7 @@
     }, true);
     $('promptModelSelect')?.addEventListener('change', (event) => { const selected = state.models.find((item) => modelOptionValue(item) === event.target.value); if (selected) syncModelControls(selected); }, true);
     $('settingsDefaultModelSelect')?.addEventListener('change', (event) => { const selected = state.models.find((item) => modelOptionValue(item) === event.target.value); if (selected) syncModelControls(selected); }, true);
+    $('settingsPlanYoloModelSelect')?.addEventListener('change', (event) => { state.planYoloModel = event.target.value; localStorage.setItem('omp.planYoloModel', state.planYoloModel); syncPlanYoloPill(); notify(`Plan YOLO sẽ dùng ${state.planYoloModel}.`); }, true);
     $('modelCliOption')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); notify('Model Chat có thể bị giới hạn theo account Quota hoặc dùng toàn bộ catalog OMP, tùy Nguồn model Chat.', true); }, true);
     $('quotaRefreshBtn')?.addEventListener('click', async (event) => { event.preventDefault(); event.stopImmediatePropagation(); const button = $('quotaRefreshBtn'); if (button?.disabled) return; if (button) { button.disabled = true; button.classList.add('spinning'); button.setAttribute('aria-busy', 'true'); } try { await Promise.all([loadQuota(), loadModels()]); } finally { if (button) { button.disabled = false; button.classList.remove('spinning'); button.removeAttribute('aria-busy'); } } }, true);
     $('forceSyncAllOmpBtn')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); void syncQuota(); }, true);
