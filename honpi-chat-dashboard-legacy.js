@@ -255,10 +255,20 @@
         toolsDrawer.classList.toggle('collapsed', !nextOpen);
         toolsDrawer.classList.toggle('mobile-open', mobile && nextOpen);
         if (!mobile) toolsDrawer.classList.remove('mobile-open');
-        if (toggleToolsBtn) toggleToolsBtn.classList.toggle('active', nextOpen);
+        if (toggleToolsBtn) {
+          toggleToolsBtn.classList.toggle('active', nextOpen);
+          toggleToolsBtn.setAttribute('aria-expanded', String(nextOpen));
+        }
       }
       if (toggleToolsBtn) toggleToolsBtn.addEventListener('click', () => toggleDrawer());
       if (closeToolsDrawerBtn) closeToolsDrawerBtn.addEventListener('click', () => toggleDrawer(false));
+      if (toggleToolsBtn && toolsDrawer) {
+        toggleToolsBtn.setAttribute('aria-controls', 'toolsDrawer');
+        const mobile = window.matchMedia('(max-width: 920px)').matches;
+        const initialOpen = mobile ? toolsDrawer.classList.contains('mobile-open') : !toolsDrawer.classList.contains('collapsed');
+        toggleToolsBtn.classList.toggle('active', initialOpen);
+        toggleToolsBtn.setAttribute('aria-expanded', String(initialOpen));
+      }
 
       // ─── Drawer Tab Switching (Công cụ / Tệp tin) ───
       const drawerTabs = document.querySelectorAll('.drawer-tab');
@@ -862,13 +872,22 @@
       setPermissionMode(savedPermMode, false);
 
       if (fullAccessBadge && approvalPopover) {
-        fullAccessBadge.addEventListener('click', (e) => {
-          e.stopPropagation();
+        const toggleApprovalPopover = () => {
           const willShow = !approvalPopover.classList.contains('show');
           closePromptPopovers(approvalPopover);
           approvalPopover.classList.toggle('show', willShow);
           fullAccessBadge.classList.toggle('active-popover', willShow);
           fullAccessBadge.setAttribute('aria-expanded', willShow ? 'true' : 'false');
+        };
+        fullAccessBadge.addEventListener('click', (e) => {
+          e.stopPropagation();
+          toggleApprovalPopover();
+        });
+        fullAccessBadge.addEventListener('keydown', (e) => {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          e.preventDefault();
+          e.stopPropagation();
+          toggleApprovalPopover();
         });
 
         const optionItems = approvalPopover.querySelectorAll('.approval-option-item');
