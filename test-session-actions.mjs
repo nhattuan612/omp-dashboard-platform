@@ -852,7 +852,15 @@ async function runContract() {
     assert.ok(capabilities.payload.features.includes("memory"));
     assert.equal(capabilities.payload.sessionActions?.steer, "unavailable");
     assert.equal(capabilities.payload.featureStatus["agent-hub"], "unavailable");
-    assert.equal(capabilities.payload.tools.find((item) => item.id === "hub")?.status, "unavailable");
+    assert.equal(capabilities.payload.catalog?.mapVersion, "2026-09-29.1", "capabilities must identify the checked-in OMP-to-Chat map");
+    const waitTool = capabilities.payload.tools.find((item) => item.id === "wait");
+    assert.equal(waitTool?.status, "supported", "the ACP-verified wait tool must be visible to Chat");
+    assert.equal(waitTool?.canToggle, true, "verified native tools must remain selectable");
+    assert.equal(waitTool?.group, "orchestration", "tool grouping must come from the OMP-to-Chat map");
+    const hubTool = capabilities.payload.tools.find((item) => item.id === "hub");
+    assert.equal(hubTool?.status, "blocked", "Agent Hub must report the measured ACP startup failure");
+    assert.equal(hubTool?.canToggle, false, "blocked tools must never reach --tools");
+    assert.ok(capabilities.payload.observedToolIds.includes("wait"), "observed IDs must derive from the compiled catalog");
     const supportedTools = capabilities.payload.tools.filter((item) => item.status === "supported").map((item) => item.id);
     const fullAccessSession = await api("POST", "/api/v1/sessions", { title: "Full OMP tool catalog", cwd: workspaceRoot, approvalMode: "yolo", tools: supportedTools });
     assert.equal(fullAccessSession.status, 201, `full OMP tool catalog should create a session: ${JSON.stringify(fullAccessSession.payload)}`);
