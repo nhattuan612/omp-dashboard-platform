@@ -130,15 +130,14 @@ function createSseReader(response) {
 }
 
 
-async function seedOmpSession(home, sessionId, cwd, title) {
+async function seedOmpSession(home, sessionId, cwd, title, { titleFirst = false } = {}) {
   const sessionRoot = homePath(home, "agent", "sessions");
   await mkdir(sessionRoot, { recursive: true, mode: 0o700 });
   const path = join(sessionRoot, `fixture_${sessionId}.jsonl`);
   const now = new Date().toISOString();
-  const lines = [
-    { type: "session", id: sessionId, cwd, timestamp: now },
-    { type: "title", title },
-  ];
+  const lines = titleFirst
+    ? [{ type: "title", title }, { type: "session", id: sessionId, cwd, timestamp: now }]
+    : [{ type: "session", id: sessionId, cwd, timestamp: now }, { type: "title", title }];
   await writeFile(path, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`, { mode: 0o600 });
   const sessions = await readFakeSessions(home);
   if (!sessions.some((item) => item.sessionId === sessionId)) {
@@ -799,6 +798,7 @@ async function runContract() {
     assert.match(chatClient, /function readAttachment\(file\)/);
     assert.match(chatClient, /const BROWSER_MODE_PREFERENCE_VERSION = 'manual-v1';/);
     assert.match(chatClient, /function setBrowserMode\(value\)/);
+    assert.match(chatClient, /newSessionBtn.*void createSession\(\)/);
     assert.match(chatClient, /aria-pressed/);
     assert.match(acpAdapter, /isImageGenerationTool\(name\) \? imageAttachments\(output\) : \[\]/);
     passes.push("frontend exposes attachment, copy, prompt-revision, branch, markdown-table, and OMP file-change controls");
@@ -852,8 +852,13 @@ async function runContract() {
     assert.ok(capabilities.payload.features.includes("memory"));
     assert.equal(capabilities.payload.sessionActions?.steer, "unavailable");
     assert.equal(capabilities.payload.featureStatus["agent-hub"], "unavailable");
+    assert.equal(capabilities.payload.tools.find((item) => item.id === "hub")?.status, "unavailable");
+    const supportedTools = capabilities.payload.tools.filter((item) => item.status === "supported").map((item) => item.id);
+    const fullAccessSession = await api("POST", "/api/v1/sessions", { title: "Full OMP tool catalog", cwd: workspaceRoot, approvalMode: "yolo", tools: supportedTools });
+    assert.equal(fullAccessSession.status, 201, `full OMP tool catalog should create a session: ${JSON.stringify(fullAccessSession.payload)}`);
     assert.ok(!capabilities.payload.commands.includes("set_session_name"), "ACP capability catalog must exclude unimplemented commands");
     passes.push("ACP capability catalog excludes steer, Agent Hub and unsupported session naming");
+    passes.push("full-access OMP session accepts every advertised supported tool");
     const prewarmInput = { cwd: workspaceRoot, approvalMode: "write", browserMode: "ego-browser", tools: [] };
     const prewarmed = await api("POST", "/api/v1/omp/prewarm", prewarmInput);
     assert.equal(prewarmed.status, 202, `ACP prewarm should start a worker: ${JSON.stringify(prewarmed.payload)}`);
@@ -866,12 +871,12 @@ async function runContract() {
     assert.ok(prewarmState.payload.acpWorkers.some((worker) => worker.pid === prewarmed.payload.worker.pid && worker.contexts === 0), "prewarm must not allocate an ACP session");
     passes.push("ACP prewarm starts and reuses one context-free worker");
 
-    async function createFixture(title, cwd = workspaceRoot) {
+    async function createFixture(title, cwd = workspaceRoot, options) {
       const created = await api("POST", "/api/v1/sessions", { title, cwd, tools: ["read"] });
       assert.equal(created.status, 201, `session creation failed: ${JSON.stringify(created.payload)}`);
       const id = created.payload.id;
       assert.equal(typeof id, "string");
-      const path = await seedOmpSession(home, id, cwd, title);
+      const path = await seedOmpSession(home, id, cwd, title, options);
       return { id, path };
     }
 
@@ -1112,7 +1117,7 @@ async function runContract() {
     const preDefaultModels = await api("GET", `/api/v1/quota/models?sessionId=${encodeURIComponent(preDefaultSession.id)}`);
     assert.equal(preDefaultModels.status, 409);
     assert.equal(preDefaultModels.payload.error?.code, "ACCOUNT_SELECTION_REQUIRED", "a pre-existing chat without a pin or creation snapshot must never inherit a later default");
-    const parent = await createFixture("Contract parent");
+    const parent = await createFixture("Contract parent", workspaceRoot, { titleFirst: true });
     const changedDefault = await api("POST", "/api/v1/quota/switch", { accountId: googleAltAccount.id });
     assert.equal(changedDefault.status, 200, `Google Antigravity default change failed: ${JSON.stringify(changedDefault.payload)}`);
     const parentModelsAfterDefaultChange = await api("GET", `/api/v1/quota/models?sessionId=${encodeURIComponent(parent.id)}`);
