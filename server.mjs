@@ -1477,6 +1477,9 @@ async function advisorConfig() {
   const get = (key, fallback) => raw?.[key]?.value ?? fallback;
   const roles = get("modelRoles", {});
   return {
+    enabled: get("advisor.enabled", false) === true,
+    planYolo: false,
+    planYoloModel: typeof roles?.plan === "string" ? roles.plan : "",
     syncBacklog: get("advisor.syncBacklog", "off"), immuneTurns: get("advisor.immuneTurns", 3), maxNotesPerUpdate: get("advisor.maxNotesPerUpdate", 4), evictStaleResults: get("advisor.evictStaleResults", true),
     model: typeof roles?.advisor === "string" ? roles.advisor : "", tier: get("tier.advisor", "none"),
   };
