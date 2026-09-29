@@ -15,6 +15,7 @@
       const closeModalBtn = document.getElementById('closeModalBtn');
       const confirmUpgradeBtn = document.getElementById('confirmUpgradeBtn');
       const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+      const mobileSidebarCloseBtn = document.getElementById('mobileSidebarCloseBtn');
       const appSidebar = document.getElementById('appSidebar');
 
       let isSpeedMode = false;
@@ -248,14 +249,13 @@
       }
       function toggleDrawer(open) {
         if (!toolsDrawer) return;
-        const isOpen = open !== undefined ? open : toolsDrawer.classList.contains('collapsed');
-        if (isOpen) {
-          toolsDrawer.classList.remove('collapsed');
-          if (toggleToolsBtn) toggleToolsBtn.classList.add('active');
-        } else {
-          toolsDrawer.classList.add('collapsed');
-          if (toggleToolsBtn) toggleToolsBtn.classList.remove('active');
-        }
+        const mobile = window.matchMedia('(max-width: 920px)').matches;
+        const currentOpen = mobile ? toolsDrawer.classList.contains('mobile-open') : !toolsDrawer.classList.contains('collapsed');
+        const nextOpen = open !== undefined ? open : !currentOpen;
+        toolsDrawer.classList.toggle('collapsed', !nextOpen);
+        toolsDrawer.classList.toggle('mobile-open', mobile && nextOpen);
+        if (!mobile) toolsDrawer.classList.remove('mobile-open');
+        if (toggleToolsBtn) toggleToolsBtn.classList.toggle('active', nextOpen);
       }
       if (toggleToolsBtn) toggleToolsBtn.addEventListener('click', () => toggleDrawer());
       if (closeToolsDrawerBtn) closeToolsDrawerBtn.addEventListener('click', () => toggleDrawer(false));
@@ -534,6 +534,10 @@
       const promptPlusBtn = document.getElementById('promptPlusBtn');
       const promptPlusMenu = document.getElementById('promptPlusMenu');
       if (promptPlusBtn && promptPlusMenu) {
+        const closePlusMenu = () => {
+          promptPlusMenu.classList.remove('show');
+          promptPlusBtn.setAttribute('aria-expanded', 'false');
+        };
         const plusSearchInput = document.getElementById('plusMenuSearchInput');
         const plusEmptyState = document.getElementById('plusMenuEmpty');
 
@@ -552,6 +556,7 @@
         }
 
         promptPlusBtn.addEventListener('click', (e) => {
+          if (promptPlusBtn.dataset.productionBound === 'true') return;
           e.stopPropagation();
           const willShow = !promptPlusMenu.classList.contains('show');
           promptPlusMenu.classList.toggle('show', willShow);
@@ -596,7 +601,7 @@
 
           plusSearchInput.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
-              promptPlusMenu.classList.remove('show');
+              closePlusMenu();
             }
           });
         }
@@ -605,7 +610,7 @@
         const plusAttachFile = document.getElementById('plusAttachFile');
         if (plusAttachFile) {
           plusAttachFile.addEventListener('click', () => {
-            promptPlusMenu.classList.remove('show');
+            closePlusMenu();
             toggleTagByName('contact-page.html', 'emerald', 'file', false);
             showToast('Đã chọn tệp đính kèm: contact-page.html');
           });
@@ -614,7 +619,7 @@
         const plusAttachOpenDesign = document.getElementById('plusAttachOpenDesign');
         if (plusAttachOpenDesign) {
           plusAttachOpenDesign.addEventListener('click', () => {
-            promptPlusMenu.classList.remove('show');
+            closePlusMenu();
             toggleTagByName('Open Design Canvas', 'cyan', 'image', false);
             showToast('Đã đính kèm ảnh chụp bản vẽ Open Design vào ngữ cảnh');
           });
@@ -623,7 +628,7 @@
         const plusWorkInProject = document.getElementById('plusWorkInProject');
         if (plusWorkInProject) {
           plusWorkInProject.addEventListener('click', () => {
-            promptPlusMenu.classList.remove('show');
+            closePlusMenu();
             const wsDrop = document.getElementById('promptWsDropdown');
             if (wsDrop) wsDrop.classList.add('show');
             showToast('Chọn dự án làm việc cho cuộc trò chuyện mới');
@@ -633,7 +638,7 @@
         const plusSetGoal = document.getElementById('plusSetGoal');
         if (plusSetGoal) {
           plusSetGoal.addEventListener('click', () => {
-            promptPlusMenu.classList.remove('show');
+            closePlusMenu();
             toggleTagByName('Mục tiêu dự án', 'amber', 'target', false);
             showToast('Đã đặt mục tiêu để tiếp tục theo đuổi');
           });
@@ -642,7 +647,7 @@
         const plusPlanningMode = document.getElementById('plusPlanningMode');
         if (plusPlanningMode) {
           plusPlanningMode.addEventListener('click', () => {
-            promptPlusMenu.classList.remove('show');
+            closePlusMenu();
             toggleTagByName('Chế độ lập kế hoạch', 'violet', 'lightbulb', false);
             showToast('Đã bật chế độ lập kế hoạch (Planning Mode)');
           });
@@ -651,7 +656,7 @@
         const plusRecordSkill = document.getElementById('plusRecordSkill');
         if (plusRecordSkill) {
           plusRecordSkill.addEventListener('click', () => {
-            promptPlusMenu.classList.remove('show');
+            closePlusMenu();
             toggleTagByName('Ghi kỹ năng', 'cyan', 'disc', false);
             showToast('Đã kích hoạt chế độ Ghi lại một kỹ năng mới');
           });
@@ -660,7 +665,7 @@
         const plusDrawSketch = document.getElementById('plusDrawSketch');
         if (plusDrawSketch) {
           plusDrawSketch.addEventListener('click', () => {
-            promptPlusMenu.classList.remove('show');
+            closePlusMenu();
             showToast('Mở bảng vẽ phác thảo ý tưởng (Sketch Canvas)');
           });
         }
@@ -668,7 +673,7 @@
         // Section: Công cụ thực thi (Tools)
         promptPlusMenu.querySelectorAll('.plus-tool-action-item').forEach(item => {
           item.addEventListener('click', () => {
-            promptPlusMenu.classList.remove('show');
+            closePlusMenu();
             const toolName = item.getAttribute('data-tool');
             if (toolName && typeof toggleTool === 'function') {
               toggleTool(toolName);
@@ -679,7 +684,7 @@
         // Section 2: Plugins
         promptPlusMenu.querySelectorAll('.plus-plugin-item').forEach(item => {
           item.addEventListener('click', () => {
-            promptPlusMenu.classList.remove('show');
+            closePlusMenu();
             const pluginName = item.getAttribute('data-plugin') || 'Plugin';
             const cat = item.getAttribute('data-category') || 'blue';
             const icon = item.getAttribute('data-icon') || 'code';
@@ -691,7 +696,7 @@
         // Section 3: Ứng dụng
         promptPlusMenu.querySelectorAll('.plus-app-item').forEach(item => {
           item.addEventListener('click', () => {
-            promptPlusMenu.classList.remove('show');
+            closePlusMenu();
             const appName = item.getAttribute('data-app') || 'Ứng dụng';
             const cat = item.getAttribute('data-category') || 'emerald';
             const icon = item.getAttribute('data-icon') || 'shield';
@@ -703,7 +708,7 @@
         // Section 4: Hội thoại đã lưu
         promptPlusMenu.querySelectorAll('.plus-chat-item').forEach(item => {
           item.addEventListener('click', () => {
-            promptPlusMenu.classList.remove('show');
+            closePlusMenu();
             const chatName = item.getAttribute('data-chat') || 'Hội thoại';
             if (chatInput) {
               const prefix = `[Tham chiếu hội thoại: ${chatName}] `;
@@ -1088,7 +1093,10 @@
           if (promptWsDropdown) promptWsDropdown.classList.remove('show');
         }
         if (!e.target.closest('#promptPlusBtn') && !e.target.closest('#promptPlusMenu')) {
-          if (promptPlusMenu) promptPlusMenu.classList.remove('show');
+          if (promptPlusMenu) {
+            promptPlusMenu.classList.remove('show');
+            promptPlusBtn?.setAttribute('aria-expanded', 'false');
+          }
         }
         if (!e.target.closest('#addTagTriggerBtn') && !e.target.closest('#addTagPopover')) {
           const addTagPop = document.getElementById('addTagPopover');
@@ -1131,6 +1139,7 @@
           appSidebar.classList.toggle('mobile-open');
         });
       }
+      if (mobileSidebarCloseBtn) mobileSidebarCloseBtn.addEventListener('click', () => appSidebar.classList.remove('mobile-open'));
 
       // ─── Left Sidebar Collapse & Expand (from image) ───
       const collapseSidebarBtn = document.getElementById('collapseSidebarBtn');
