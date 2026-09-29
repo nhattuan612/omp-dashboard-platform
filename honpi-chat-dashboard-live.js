@@ -6,7 +6,7 @@
   const TOOL_STORAGE_KEY = 'omp.tools.v2';
   const BROWSER_MODE_PREFERENCE_VERSION = 'manual-v1';
   const initialBrowserMode = localStorage.getItem('omp.browserModePreferenceVersion') === BROWSER_MODE_PREFERENCE_VERSION ? localStorage.getItem('omp.browserMode') : 'none';
-  const state = { sessions: [], nextCursor: null, activeId: null, generation: 0, messages: [], models: [], activeModel: null, controller: null, requestId: null, activeRequest: null, createPromise: null, menu: null, folderMenu: null, quota: null, accounts: [], attachments: [], workspaceFiles: [], workspaceMention: '@', capabilities: null, selectedTools: [], toolsUpdating: false, advisor: false, advisorConfig: null, advisorConfigLoading: false, advisorConfigSaving: false, folderExpanded: new Set(), folderCollapsed: new Set(), thinking: localStorage.getItem('omp.thinking') || 'max', browserMode: initialBrowserMode === 'ego-browser' ? 'ego-browser' : 'none', planYolo: false, planYoloModel: '', shareMode: localStorage.getItem('omp.shareMode') || 'encrypted', approvalMode: localStorage.getItem('omp.approvalMode') || 'always-ask', enterBehavior: localStorage.getItem('omp.enterBehavior') || 'queue', conversationDisplay: localStorage.getItem('omp.conversationDisplay') || 'compact', pendingPrompts: [], queuePausedSessions: new Map(), editingQueueId: null, draftPromptPreview: null, browserAction: null, browserStatus: null, media: { screenCapture: { status: 'unavailable', reason: 'Native screen capture is not provided by OMP dashboard.' }, camera: { status: 'unavailable' }, microphone: { status: 'unavailable' }, video: { status: 'unavailable' } } };
+  const state = { sessions: [], nextCursor: null, activeId: null, generation: 0, messages: [], models: [], activeModel: null, controller: null, requestId: null, activeRequest: null, createPromise: null, menu: null, folderMenu: null, quota: null, accounts: [], attachments: [], workspaceFiles: [], workspaceMention: '@', capabilities: null, selectedTools: [], toolsUpdating: false, advisor: false, advisorConfig: null, advisorConfigLoading: false, advisorConfigSaving: false, folderExpanded: new Set(), folderCollapsed: new Set(), thinking: localStorage.getItem('omp.thinking') || 'max', browserMode: initialBrowserMode === 'ego-browser' ? 'ego-browser' : 'none', planYolo: false, planYoloModel: localStorage.getItem('omp.planYoloModel') || '', shareMode: localStorage.getItem('omp.shareMode') || 'encrypted', approvalMode: localStorage.getItem('omp.approvalMode') || 'always-ask', enterBehavior: localStorage.getItem('omp.enterBehavior') || 'queue', conversationDisplay: localStorage.getItem('omp.conversationDisplay') || 'compact', pendingPrompts: [], queuePausedSessions: new Map(), editingQueueId: null, draftPromptPreview: null, browserAction: null, browserStatus: null, media: { screenCapture: { status: 'unavailable', reason: 'Native screen capture is not provided by OMP dashboard.' }, camera: { status: 'unavailable' }, microphone: { status: 'unavailable' }, video: { status: 'unavailable' } } };
   let voiceRecognition = null;
   let voiceStopResolve = null;
   let voiceDisclosureShown = false;
@@ -1460,7 +1460,7 @@
   function clearPrototypeData() {
     ['pinnedSessionsList', 'projectFoldersTree', 'unassignedSessionsList'].forEach((id) => $(id)?.replaceChildren());
     $('chatStream')?.replaceChildren();
-    $('greetingSection')?.querySelector('.quick-grid')?.remove();
+    // Keep the six production quick actions; they are wired to the real composer by legacy.js.
     setGreetingVisible(!state.activeId && !state.pendingPrompts.length);
     const title = $('headerSessionTitle'); if (title) title.textContent = 'Chưa chọn cuộc trò chuyện';
     const pill = $('headerSessionPill'); if (pill) { pill.title = 'Chưa chọn cuộc trò chuyện'; pill.setAttribute('aria-label', 'Chưa chọn cuộc trò chuyện'); }
@@ -2892,13 +2892,13 @@
     const models = [...new Map((state.models.length ? state.models : state.capabilities?.models || []).filter((item) => item?.id).map((item) => [item.id, item])).values()];
     const selected = models.find((item) => item.id === state.planYoloModel) || models.find((item) => item.id === state.activeModel) || models[0];
     if (!selected) { select.replaceChildren(new Option('Chưa có model OMP khả dụng', '')); select.disabled = true; return; }
-    if (state.planYoloModel !== selected.id) state.planYoloModel = selected.id;
+    if (state.planYoloModel !== selected.id) { state.planYoloModel = selected.id; localStorage.setItem('omp.planYoloModel', selected.id); }
     select.replaceChildren(...models.map((item) => new Option(item.name || item.id, item.id, false, item.id === selected.id)));
     select.disabled = false;
   }
   function setPlanYoloModel(value, notifyUser = true) {
     if (!value) return;
-    state.planYoloModel = value; syncPlanYoloPill();
+    state.planYoloModel = value; localStorage.setItem('omp.planYoloModel', value); syncPlanYoloPill();
     if (notifyUser) notify(`Plan YOLO sẽ dùng ${value}.`);
   }
   function syncModelControls(selected) {
@@ -3199,7 +3199,7 @@
     }
     if (!supported.length) section.append(emptyNode('OMP chưa hỗ trợ chế độ nào trong catalog hiện tại.')); host.append(section);
   }
-  async function loadAdvisorConfig() { if (state.advisorConfigLoading) return; state.advisorConfigLoading = true; renderOmpModes(); try { const { payload } = await readJson(`${API}/omp/advisor-config`); const applyModeDefaults = state.advisorConfig === null; state.advisorConfig = payload; if (applyModeDefaults) { state.advisor = payload.enabled === true; state.planYolo = payload.planYolo === true; state.planYoloModel = payload.planYoloModel || ''; syncPlanYoloPill(); } } catch (error) { notify(`Không đọc được tuning Advisor từ OMP: ${error.message}`, true); } finally { state.advisorConfigLoading = false; renderOmpModes(); } }
+  async function loadAdvisorConfig() { if (state.advisorConfigLoading) return; state.advisorConfigLoading = true; renderOmpModes(); try { const { payload } = await readJson(`${API}/omp/advisor-config`); const applyModeDefaults = state.advisorConfig === null; state.advisorConfig = payload; if (applyModeDefaults) { state.advisor = payload.enabled === true; state.planYolo = payload.planYolo === true; state.planYoloModel = payload.planYoloModel || state.planYoloModel || ''; if (state.planYoloModel) localStorage.setItem('omp.planYoloModel', state.planYoloModel); syncPlanYoloPill(); } } catch (error) { notify(`Không đọc được tuning Advisor từ OMP: ${error.message}`, true); } finally { state.advisorConfigLoading = false; renderOmpModes(); } }
   async function saveAdvisorConfig(next) { state.advisorConfigSaving = true; renderOmpModes(); try { const { payload } = await readJson(`${API}/omp/advisor-config`, { method: 'POST', body: JSON.stringify(next) }); state.advisorConfig = payload; notify('Đã lưu tuning Advisor vào OMP; áp dụng khi tạo chat mới.'); } catch (error) { notify(`Không lưu được tuning Advisor: ${error.message}`, true); } finally { state.advisorConfigSaving = false; renderOmpModes(); } }
   async function setOmpTools(toolId, enabled) {
     const supported = new Set(selectableTools());
@@ -3801,7 +3801,7 @@
     document.addEventListener('visibilitychange', refreshQuotaModelAccess);
     $('headerParametersBtn')?.closest('.header-dropdown-wrap')?.remove();
     const pluginPane = $('settingsTabPlugins'); if (pluginPane) pluginPane.replaceChildren();
-    const pluginLabel = $('settingsNavPlugins')?.querySelector('span'); if (pluginLabel) pluginLabel.textContent = 'OMP';
+    const pluginLabel = $('settingsNavPlugins')?.querySelector('span'); if (pluginLabel) pluginLabel.textContent = 'Tích hợp';
     updateHeaderQuota({}, []); updateQuotaModal({}, [], {});
     bindOmpSurface();
     bindFileAttachment();
