@@ -108,3 +108,48 @@
   - Acceptance: bỏ hardcode groups/icons/status; có detail, drift, disabled state đúng và Agent Hub dùng chung catalog.
 - [ ] **P4 — QA + release**
   - Acceptance: contract/integration/ACP/Ego Browser 360-1440 pass; deploy/restart chỉ sau review.
+
+---
+
+## Mic voice-to-text + Terminal native — kế hoạch 2026-09-29
+
+- [x] **V1 — Mic từ Web Speech API (source)**
+  - Acceptance: UI mic hỗ trợ `SpeechRecognition`/`webkitSpeechRecognition`, chọn `vi-VN` hoặc `en-US` (mặc định `vi-VN`), chèn text vào draft/caret, không auto-submit, dừng đúng lúc; permission/error/unsupported rõ.
+  - Verify: Chrome, Edge, Safari, Firefox; allow/deny, speech, stop/send/session-switch; xác nhận dashboard không nhận audio.
+  - Files: `honpi-chat-dashboard-live.js`, `server.mjs`, `test-session-actions.mjs`.
+- [x] **T1 — Resolver Terminal CWD + API (source)**
+  - Acceptance: project folder → folder CWD; chat chưa phân loại → `GENERAL_CHAT_CWD`; draft → workspace đã chọn hoặc General. Session ID authoritative; mọi CWD canonicalize và check allowlist.
+  - Verify: project/general/custom draft/unknown ID/path traversal/symlink/outside root; API auth/Origin/CSRF.
+  - Files: `server.mjs`, `test-session-actions.mjs`.
+- [x] **T2 — Native terminal adapters (source)**
+  - Acceptance: mở terminal mặc định trên Windows/macOS/Linux bằng argv an toàn; không shell command từ UI; lỗi launcher rõ.
+  - Verify: smoke OS thật, path có Unicode/khoảng trắng, terminal thiếu; không rò env/credential.
+  - Files: `server.mjs`, có thể thêm `host-terminal.mjs`.
+  - Dependencies: T1.
+- [x] **T3 — Composer/header UI + checkpoint (source)**
+  - Acceptance: nút mic và nút Terminal thật, status/a11y/loading/error rõ; panel sandbox không bị nhận nhầm là host terminal; docs capability cập nhật.
+  - Verify: browser QA session project/general/draft + toàn voice flow; syntax, security smoke và focused contract pass.
+  - Files: `honpi-chat-dashboard-live.js`, `honpi-chat-dashboard-SKE.html`, docs feature matrix.
+  - Dependencies: V1, T2.
+- [x] **Deploy/restart:** Síp đã duyệt; backup `20260929-141256-5725`, health/pages/checksum pass.
+- [x] **Live smoke:** Síp xác nhận mic hoạt động; nút toolbar mở Terminal thật ở General trên macOS.
+- [ ] **QA còn lại:** xác minh runtime Windows/Linux khi có host tương ứng.
+
+---
+
+## Terminal nhúng PTY thật — kế hoạch 2026-09-29
+
+- [x] **E1 — Dependencies/assets:** `node-pty`, `ws`, xterm.js + fit addon khóa phiên bản, assets local; deploy/product-release có install và backup/rollback dependency.
+- [x] **E2 — PTY + WebSocket:** auth dashboard cookie và Origin/Host loopback; CWD server-derived; giới hạn payload/session/idle/output; cleanup; không lưu lệnh/output.
+- [x] **E3 — UI khung dưới:** mở/đóng, resize, trạng thái host/workspace, xterm keyboard/output; bỏ sandbox transcript và nối session CWD project/General/draft.
+- [x] **E4 — Source checkpoint:** syntax/whitespace và release sync pass.
+- [x] **E4 — macOS live checkpoint:** npm audit 0 vulnerabilities; `/healthz`, `/chat`, `/quota`, xterm asset HTTP 200; LaunchAgent running; UI mở/xterm nhận lệnh/đóng PTY; `pwd` xác nhận General và project “Open design”; đóng panel kết thúc PTY. Backup: `/Users/trannhattuan/.omp/usage-dashboard/backups/deploy/20260929-152014-18220` (checksum đã xác minh).
+- [ ] **OS remainder:** Windows/Linux cần host tương ứng để kiểm chứng.
+- [x] **Deploy gate:** Síp đã duyệt; deploy script đã backup package lock/dependencies và restart dashboard.
+
+
+## PHASE 1 — Mic và Terminal nhúng — HOÀN TẤT (2026-09-29)
+
+- [x] Mic voice-to-text (`vi-VN` / `en-US`) và Terminal nhúng PTY đã triển khai; CWD project/General đã xác minh trên macOS.
+- [x] Backup runtime đã tạo và checksum đã xác minh: `/Users/trannhattuan/.omp/usage-dashboard/backups/deploy/20260929-152014-18220`.
+- [ ] Chờ host Windows/Linux để xác minh runtime trên các hệ điều hành đó.

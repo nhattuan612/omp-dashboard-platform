@@ -322,3 +322,150 @@ Kế hoạch chi tiết và evidence audit: [omp-tools-sidebar-plan-2026-09-29.m
 ### Completion gate
 
 Không tool nào được UI quảng cáo toggleable nếu chưa pass toàn bộ combo ACP hiện hành. OMP update phải tạo drift visible và fail-closed, không tự bật tool mới.
+
+---
+
+# Kế hoạch: Nhập giọng nói và mở Terminal máy chủ — 2026-09-29
+
+## Mục tiêu
+
+Thêm hai thao tác thật vào Chat: mic dùng Speech Recognition của trình duyệt để đưa tiếng Việt thành bản nháp trong ô chat; nút Terminal mở ứng dụng terminal của máy đang chạy dashboard, bắt đầu ở thư mục đúng với cuộc trò chuyện. Đây là hai đường độc lập, triển khai và nghiệm thu riêng.
+
+## Hiện trạng đã kiểm tra
+
+- Composer đã có `#voiceRecordBtn`, nhưng `sanitizeProductionSurface()` đang ẩn nút. Server trả `Permissions-Policy: microphone=()` và capability hiện báo microphone unavailable.
+- Terminal trong ảnh là panel sandbox giả lập; `#terminalInput` production bị disable vì chưa có backend. Tính năng mới phải mở terminal native của host, không nối input sandbox vào shell.
+- Dashboard chỉ nghe loopback. `server.mjs` và `console-bridge.mjs` đã có workspace allowlist, `validateWorkspaceDirectory()`, CWD session, project folder và `GENERAL_CHAT_CWD`.
+- Chat mới chọn workspace có thể truyền CWD; chat dự án tạo từ folder dùng CWD của folder. Session đã lưu có `cwd` và có thể có `folderId`.
+- Terminal native chỉ mở trên host đang chạy local dashboard; mở terminal trên một máy browser khác không nằm trong khả năng của loopback server.
+
+## Quyết định thiết kế
+
+- Voice dùng `SpeechRecognition` hoặc `webkitSpeechRecognition`; mặc định `vi-VN`. Chỉ bắt đầu thu khi người dùng bấm mic. Chèn kết quả vào composer, không gửi tự động và không gửi audio lên API dashboard. Web Speech có giới hạn hỗ trợ trình duyệt; mặc định một số browser có thể chuyển audio tới dịch vụ nhận dạng của browser/vendor. UI phải thể hiện trạng thái nghe và giải thích quyền riêng tư; browser không hỗ trợ thì hiện unavailable rõ ràng, không giả lập.
+- Terminal mở ứng dụng native trên chính host chạy dashboard bằng launcher theo `process.platform`; gọi executable với argv, không ghép đường dẫn thành shell command. Chỉ mở đúng thư mục; không nhận lệnh shell từ request.
+- Resolve thư mục phía server từ dữ liệu có thẩm quyền: project folder được gán → CWD của folder; chat chưa phân loại → `GENERAL_CHAT_CWD`; draft → workspace đang chọn hoặc General. Canonicalize và kiểm tra lại bằng workspace allowlist trước khi mở.
+- Endpoint mở Terminal dùng API auth, Host/Origin loopback và CSRF protection hiện có. Request session chỉ nhận ID; path draft nếu có vẫn phải validate. Báo lỗi nếu chưa có terminal emulator tương thích.
+- Windows/macOS/Linux được hỗ trợ theo terminal mặc định có sẵn trên OS; không thêm dependency. Cần kiểm tra launcher trên từng OS thật trước khi gắn trạng thái supported.
+
+## Task list
+
+### Phase 1 — Nhập giọng nói trên trình duyệt
+
+1. **Bật mic có kiểm soát trong composer**
+   - Acceptance: nút mic hiển thị; feature detection cho hai tên API; bắt đầu/dừng theo click; có lựa chọn `vi-VN` và `en-US`; kết quả final chèn vào vị trí caret, interim không làm mất bản nháp; không auto-submit.
+   - Acceptance: xử lý unsupported, permission denied, no-speech, network/service error; trạng thái recording/aria-label rõ; dừng khi gửi prompt hoặc đổi session.
+   - Verify: browser QA Chrome, Edge, Safari và Firefox; quyền allow/deny, tiếng Việt, stop, giữ bản nháp và send flow; xác nhận không có request audio từ dashboard.
+   - Files dự kiến: `honpi-chat-dashboard-live.js`, `server.mjs`, `test-session-actions.mjs`.
+   - Scope: medium.
+
+### Checkpoint — Voice
+
+- [x] Mic không còn bị ẩn; policy cho phép microphone cùng origin.
+- [x] Có selector `vi-VN` / `en-US`; unsupported/permission/network/service errors có thông báo; audio không đi qua endpoint dashboard.
+- [x] Síp xác nhận mic hoạt động trên giao diện đã triển khai.
+- [ ] QA riêng quyền microphone, cả hai ngôn ngữ và send flow.
+
+### Phase 2 — Launcher Terminal native và định tuyến CWD
+
+2. **Resolver CWD theo chat/draft**
+   - Acceptance: chat gán project mở ở CWD folder; chat chưa phân loại mở `GENERAL_CHAT_CWD`; draft dùng workspace đã chọn hoặc General.
+   - Acceptance: session ID không tồn tại, folder thiếu CWD, path ngoài allowlist, symlink/path traversal trả lỗi có lý do; resolver không tin path client gửi cho session đã lưu.
+   - Verify: contract test với project, session custom workspace, general, draft, unknown session và path bị chặn.
+   - Files dự kiến: `server.mjs`, `test-session-actions.mjs`.
+   - Scope: medium.
+
+3. **Mở terminal theo OS**
+   - Acceptance: `POST` có auth mở terminal native trên macOS, Windows và Linux ở CWD resolver đã chọn; shell mặc định của OS khởi động sẵn tại thư mục đó.
+   - Acceptance: dùng argv an toàn, không chạy command tùy ý; lỗi spawn/không tìm thấy terminal trả trạng thái rõ; không làm lộ env/credential vào response.
+   - Verify: launcher smoke trên từng OS, đường dẫn có dấu cách/Unicode; lỗi không có emulator; command/path injection bị từ chối.
+   - Files dự kiến: `server.mjs`, `honpi-chat-dashboard-live.js`, có thể thêm `host-terminal.mjs` nếu launcher cần kiểm thử biệt lập.
+   - Scope: large, triển khai theo adapter OS nhỏ và chốt mỗi OS sau khi smoke pass.
+
+### Phase 3 — Nút Terminal và nghiệm thu tích hợp
+
+4. **Nối nút toolbar với terminal host**
+   - Acceptance: nút dễ nhận biết mở native terminal cho chat đang chọn; lúc chưa có session mở theo workspace draft/default; disable/loading/error được thông báo; UI không giả rằng panel sandbox là terminal máy.
+   - Verify: browser QA project chat, chat general, draft chọn custom workspace, nhấn liên tiếp, API unauthorized và launcher unavailable.
+   - Files dự kiến: `honpi-chat-dashboard-live.js`, `honpi-chat-dashboard-SKE.html`, `server.mjs`.
+   - Scope: medium.
+
+5. **Checkpoint release**
+   - Acceptance: syntax, security smoke, contract test, live browser flow và OS launcher matrix pass; cập nhật feature matrix/capability để phân biệt voice browser và terminal host.
+   - Deploy/restart chỉ sau khi review kết quả và backup theo `deploy-local-dashboard.sh --restart`.
+   - Scope: small.
+
+## Rủi ro và giới hạn
+
+| Rủi ro | Cách xử lý |
+|---|---|
+| SpeechRecognition không có mặt hoặc ngôn ngữ không được browser hỗ trợ | Feature detection, vi-VN mặc định, trạng thái unavailable/error rõ; không bắt mic qua server làm fallback ngầm. |
+| Browser xử lý giọng nói qua dịch vụ bên ngoài | Chỉ bật sau thao tác mic; hiển thị disclosure; không nói audio được xử lý local nếu API không chứng minh được. MDN mô tả API chưa Baseline và recognition mặc định có thể dùng service-based engine: [Web Speech API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Speech_API), [SpeechRecognition](https://developer.mozilla.org/en-US/docs/Web/API/SpeechRecognition). |
+| Endpoint mở terminal bị lạm dụng để chạy shell | Endpoint chỉ mở terminal, không nhận câu lệnh; auth loopback; CWD derive/validate server-side; spawn executable với argv. |
+| Mỗi OS có terminal launcher/cwd flag khác | Thăm dò binary theo OS, smoke từng OS, trả unsupported thay vì fallback mơ hồ. |
+| Runtime hiện cài/deploy theo môi trường macOS | Terminal adapter chỉ được coi là hỗ trợ trên OS đã chạy dashboard và OMP thật; cài đặt service/runtime Windows/Linux là scope triển khai riêng nếu Síp muốn host dashboard ở đó. |
+| Folder project thay đổi sau khi session tạo | Với chat đang gán project, dùng CWD folder hiện tại; chat chưa phân loại tiếp tục dùng General. |
+
+## Câu hỏi còn mở
+
+- Ngôn ngữ voice đã chốt: selector `vi-VN` / `en-US`, mặc định `vi-VN`.
+- Web Speech có thể dùng dịch vụ nhận dạng của browser/vendor. Bản đầu dùng API browser với disclosure; yêu cầu bắt buộc xử lý hoàn toàn offline sẽ cần scope riêng vì support model local phụ thuộc browser/ngôn ngữ.
+
+---
+
+# Kế hoạch: Terminal nhúng PTY thật — 2026-09-29
+
+## Mục tiêu
+
+Đổi khung terminal dưới chat từ mock sandbox thành terminal nhúng chạy shell thật của máy host, theo bố cục ảnh Síp gửi. Khi mở trong chat thuộc project, PTY khởi động tại CWD folder; chat chưa phân loại dùng General. Draft dùng workspace đã chọn hoặc General.
+
+## Quyết định kiến trúc
+
+- UI dùng xterm.js được đóng gói nội bộ; server chạy shell qua `node-pty`; truyền input/output/resize bằng WebSocket cùng origin, không tải script từ CDN.
+- WebSocket nằm trên HTTP server hiện tại, xác thực bằng dashboard cookie và Host/Origin loopback. Giới hạn payload, số PTY, buffer output, idle lifetime; đóng PTY khi đóng panel, đổi chat hoặc server dừng. Không lưu lệnh/output.
+- Server chỉ nhận chat ID và kích thước terminal. CWD được resolve từ metadata phía server và validate trước khi tạo PTY; client không được chọn CWD cho chat đã tồn tại.
+- Shell dùng quyền của tài khoản đang chạy dashboard. CWD là thư mục khởi động, không phải sandbox: lệnh shell có thể truy cập tài nguyên khác mà tài khoản OS được phép truy cập. UI phải thể hiện rõ điều này trước lần dùng đầu.
+- `node-pty` hỗ trợ POSIX và Windows ConPTY, nhưng native build/runtime và installer hiện tại của dashboard cần được kiểm tra riêng. Host hiện có là macOS; Windows/Linux không được đánh dấu live-verified khi chưa có host kiểm thử. Nguồn: [node-pty](https://github.com/microsoft/node-pty), [xterm.js fit addon](https://github.com/xtermjs/xterm.js/tree/master/addons/addon-fit), [ws](https://github.com/websockets/ws).
+
+## Task list
+
+1. **Dependency và static assets**
+   - Acceptance: khóa phiên bản `node-pty`, `ws`, xterm.js và addon fit; đóng gói client assets local; source/runtime và product release có install/rollback dependency rõ.
+   - Verify: native module load trên Node runtime hiện tại; lockfile audit trước release; no CDN dependency.
+
+2. **PTY manager + WebSocket auth**
+   - Acceptance: spawn đúng shell theo OS; cookie session + origin/host kiểm tra trước upgrade; CWD server-derived; input/resize có schema và giới hạn; session/process dọn deterministic; không ghi command/output.
+   - Verify: unauthorized/bad origin, invalid session, cwd outside allowlist, oversized frame, exit/close/reconnect và child cleanup.
+
+3. **Khung terminal nhúng**
+   - Acceptance: nút toolbar mở/đóng panel resizable như ảnh; xterm hiển thị output/màu và nhận bàn phím; trạng thái host/workspace thật; bỏ transcript sandbox giả và disable placeholder.
+   - Verify: chat project, chưa phân loại, draft custom/general; resize terminal; keyboard navigation; panel close / đổi chat dừng process.
+
+4. **Đóng gói, deploy và xác minh**
+   - Acceptance: deploy script backup package/lock/vendor; rollback khôi phục dependency; local macOS live smoke pass; không tuyên bố Windows/Linux đã xác minh khi chưa chạy host tương ứng.
+   - Verify: audit dependency, source/runtime checksums, `/healthz`, `/chat`, shell echo + `pwd` bằng UI, process cleanup.
+
+## Rủi ro
+
+| Rủi ro | Cách xử lý |
+|---|---|
+| PTY là shell thật với quyền tài khoản host | Xác thực loopback/session, chỉ mở theo thao tác người dùng; cảnh báo rõ, không gọi đây là sandbox. |
+| WebSocket mở rộng bề mặt lệnh | Kiểm tra Origin/Host/cookie ở handshake; giới hạn payload/rate/session và chỉ bind loopback hiện hữu. |
+| Native addon lệch ABI hoặc thiếu toolchain | Khóa runtime và dependency; xác minh Node production; rollback package lock cùng code. |
+| PTY mồ côi hoặc output tăng bộ nhớ | Giới hạn một terminal active, idle timeout, bounded buffer và cleanup khi panel/chat/server đóng. |
+| Runtime/dashboard installer hiện Mac-centric | Thiết kế adapter `node-pty` portable; nghiệm thu Windows/Linux riêng khi OMP dashboard host/install path sẵn sàng. |
+
+## Checkpoint
+
+- [x] Síp đã duyệt triển khai terminal nhúng; source hoàn thành.
+- [x] `node --check` cho server/frontend và `git diff --check` pass.
+- [x] Deploy/restart; `/healthz`, `/chat`, `/quota` trả `200`, LaunchAgent chạy và assets source/runtime trùng checksum.
+- [x] Live smoke trên macOS: General và project “Open design” mở đúng CWD; đóng panel kết thúc PTY.
+- [ ] Kiểm chứng Windows/Linux khi có host tương ứng.
+
+
+## PHASE 1 — Mic và Terminal nhúng — HOÀN TẤT (2026-09-29)
+
+- [x] Mic chuyển giọng nói thành bản nháp; có `vi-VN` / `en-US`, người dùng chủ động bật ghi âm.
+- [x] Terminal nhúng xterm + PTY thật; chat dự án dùng CWD workspace, chat chưa phân loại dùng General.
+- [x] Live smoke trên macOS và checksum backup đã xác minh; backup mới nhất: `/Users/trannhattuan/.omp/usage-dashboard/backups/deploy/20260929-152014-18220`.
+- [ ] Chờ host Windows/Linux để xác minh runtime trên các hệ điều hành đó.

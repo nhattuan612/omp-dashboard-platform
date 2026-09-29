@@ -1,9 +1,11 @@
 import http from "node:http";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import * as pty from "node-pty";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
+import { WebSocketServer, WebSocket } from "ws";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConsoleBridge } from "./console-bridge.mjs";
@@ -62,10 +64,10 @@ const rawChatRateLimit = process.env.OMP_CHAT_RATE_LIMIT;
 const configuredChatRateLimit = rawChatRateLimit == null || rawChatRateLimit.trim() === "" ? 30 : Number(rawChatRateLimit);
 const CHAT_RATE_LIMIT = Number.isSafeInteger(configuredChatRateLimit) && configuredChatRateLimit >= 0 ? configuredChatRateLimit : 30;
 const DASHBOARD_MARK_ASSET = "honpi-dashboard-mark-8138753b.png";
-const CSP_HEADER = "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' __NONCE__; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self'; font-src 'self' data:; form-action 'self'";
+const CSP_HEADER = `default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' __NONCE__; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' ws://127.0.0.1:${PORT} ws://localhost:${PORT}; font-src 'self' data:; form-action 'self'`;
 const PUBLIC_ERROR_CODES = new Set([
   "BAD_REQUEST", "MODEL_NOT_FOUND", "MODEL_NOT_ALLOWED_BY_QUOTA", "IMAGE_GENERATION_MODEL_REQUIRED", "NOT_FOUND", "CONFLICT", "ACCOUNT_NOT_FOUND", "ACCOUNT_UNAVAILABLE", "ACCOUNT_SELECTION_REQUIRED",
-  "RATE_LIMITED", "METHOD_NOT_ALLOWED", "UNAUTHORIZED", "FORBIDDEN", "FORBIDDEN_HOST", "FORBIDDEN_ORIGIN", "UPSTREAM_UNAVAILABLE",
+  "RATE_LIMITED", "METHOD_NOT_ALLOWED", "UNAUTHORIZED", "FORBIDDEN", "FORBIDDEN_HOST", "FORBIDDEN_ORIGIN", "UPSTREAM_UNAVAILABLE", "TERMINAL_UNAVAILABLE",
 ]);
 const pendingApprovalRequests = new Map();
 const DEFAULT_APPROVAL_TIMEOUT_MS = 600_000;
@@ -92,13 +94,18 @@ let historyCache = { loadedAt: 0, items: [] };
 const statusClients = new Map();
 let refreshTimer = null;
 const requestRateBuckets = new Map();
+const terminalSessions = new Map();
+const TERMINAL_MAX_SESSIONS = 4;
+const TERMINAL_IDLE_TIMEOUT_MS = 30 * 60_000;
+const TERMINAL_PENDING_OUTPUT_LIMIT = 64 * 1024;
+const TERMINAL_WEBSOCKET_BUFFER_LIMIT = 512 * 1024;
 
 function applySecurityHeaders(res) {
   const nonce = randomBytes(18).toString("base64");
   res.setHeader("x-content-type-options", "nosniff");
   res.setHeader("x-frame-options", "DENY");
   res.setHeader("referrer-policy", "no-referrer");
-  res.setHeader("permissions-policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
+  res.setHeader("permissions-policy", "camera=(), microphone=(self), geolocation=(), payment=(), usb=()");
   res.setHeader("content-security-policy", CSP_HEADER.replace("__NONCE__", `'nonce-${nonce}'`));
   res.setHeader("cache-control", "no-store");
   return nonce;
@@ -156,7 +163,8 @@ function enforceRateLimit(req, pathname) {
   if (!requiresApiAuth(pathname) || !["POST", "DELETE"].includes(req.method)) return null;
   const isLogin = pathname === "/api/login";
   const isChat = pathname === "/api/v1/chat/send" || pathname === "/api/v1/chat/stream";
-  const limit = isLogin ? 5 : isChat ? CHAT_RATE_LIMIT : 120;
+  const isTerminalOpen = pathname === "/api/v1/terminal/open";
+  const limit = isLogin ? 5 : isChat ? CHAT_RATE_LIMIT : isTerminalOpen ? 10 : 120;
   if (limit <= 0) return null;
   const windowMs = 60_000;
   const key = `${req.socket.remoteAddress || "loopback"}:${pathname}`;
@@ -205,6 +213,7 @@ function errorStatus(code) {
   if (["NOT_FOUND", "ACCOUNT_NOT_FOUND"].includes(code)) return 404;
   if (["CONFLICT", "ACCOUNT_UNAVAILABLE", "ACCOUNT_SELECTION_REQUIRED", "MODEL_NOT_ALLOWED_BY_QUOTA"].includes(code)) return 409;
   if (code === "RATE_LIMITED") return 429;
+  if (code === "TERMINAL_UNAVAILABLE") return 503;
   if (code === "UPSTREAM_TIMEOUT") return 504;
   if (["UNAUTHORIZED"].includes(code)) return 401;
   if (["FORBIDDEN", "FORBIDDEN_HOST", "FORBIDDEN_ORIGIN"].includes(code)) return 403;
@@ -1832,6 +1841,108 @@ async function updateChatFolderWorkspace(folderId, cwd) {
   });
   chatMetadataWrite = operation.catch(() => {});
   return operation;
+}
+
+function terminalEnvironment(extra = {}) {
+  const keys = process.platform === "win32"
+    ? ["PATH", "PATHEXT", "SystemRoot", "windir", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "COMSPEC"]
+    : ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TMPDIR", "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "XDG_SESSION_TYPE", "XAUTHORITY"];
+  return Object.fromEntries([
+    ...keys.filter((key) => typeof process.env[key] === "string").map((key) => [key, key === "PATH" ? OMP_ENV.PATH : process.env[key]]),
+    ["TERM", "xterm-256color"],
+    ["COLORTERM", "truecolor"],
+    ...(!process.env.LANG && process.platform !== "win32" ? [["LANG", "en_US.UTF-8"]] : []),
+    ...Object.entries(extra),
+  ]);
+}
+
+function terminalShell() {
+  if (process.platform === "win32") return { file: process.env.ComSpec || "powershell.exe", args: ["-NoLogo"] };
+  const fallback = process.platform === "darwin" ? "/bin/zsh" : "/bin/bash";
+  return { file: process.env.SHELL || fallback, args: ["-l"] };
+}
+
+function terminalTouch(session) {
+  clearTimeout(session.idleTimer);
+  session.idleTimer = setTimeout(() => closeTerminalSession(session.id, "idle"), TERMINAL_IDLE_TIMEOUT_MS);
+  session.idleTimer.unref?.();
+}
+
+function terminalSend(session, payload) {
+  if (session.socket?.readyState !== WebSocket.OPEN) return false;
+  if (session.socket.bufferedAmount > TERMINAL_WEBSOCKET_BUFFER_LIMIT) {
+    session.socket.close(1013, "Terminal output is backlogged");
+    closeTerminalSession(session.id, "backpressure");
+    return false;
+  }
+  session.socket.send(JSON.stringify(payload));
+  return true;
+}
+
+function closeTerminalSession(id, reason = "closed", kill = true) {
+  const session = terminalSessions.get(id);
+  if (!session) return;
+  terminalSessions.delete(id);
+  clearTimeout(session.idleTimer);
+  if (kill) { try { session.pty.kill(); } catch {} }
+  if (session.socket?.readyState === WebSocket.OPEN) {
+    terminalSend(session, { type: "closed", reason });
+    session.socket.close(1000, reason.slice(0, 100));
+  }
+}
+
+async function createTerminalSession(body) {
+  if (terminalSessions.size >= TERMINAL_MAX_SESSIONS) throw Object.assign(new Error("Đã đạt giới hạn terminal đang mở."), { code: "CONFLICT" });
+  const cwd = await terminalWorkspace(body);
+  if (terminalSessions.size >= TERMINAL_MAX_SESSIONS) throw Object.assign(new Error("Đã đạt giới hạn terminal đang mở."), { code: "CONFLICT" });
+  const { file, args } = terminalShell();
+  const id = randomUUID();
+  try {
+    const child = pty.spawn(file, args, { name: "xterm-256color", cols: 80, rows: 24, cwd, env: terminalEnvironment() });
+    const session = { id, cwd, pty: child, socket: null, pendingOutput: "", idleTimer: null };
+    terminalSessions.set(id, session);
+    terminalTouch(session);
+    child.onData((data) => {
+      terminalTouch(session);
+      if (session.socket?.readyState === WebSocket.OPEN) {
+        for (let offset = 0; offset < data.length; offset += 16_000) {
+          if (!terminalSend(session, { type: "output", data: data.slice(offset, offset + 16_000) })) break;
+        }
+      } else session.pendingOutput = (session.pendingOutput + data).slice(-TERMINAL_PENDING_OUTPUT_LIMIT);
+    });
+    child.onExit(({ exitCode, signal }) => {
+      terminalSend(session, { type: "exit", exitCode, signal });
+      closeTerminalSession(id, "exit", false);
+    });
+    return { terminalId: id, cwd };
+  } catch (error) {
+    throw Object.assign(new Error("Không thể khởi chạy shell trên máy này."), { code: "TERMINAL_UNAVAILABLE", cause: error });
+  }
+}
+
+async function terminalWorkspace(body) {
+  if (body.sessionId != null) {
+    if (body.cwd != null) throw Object.assign(new Error("Chỉ gửi sessionId khi mở Terminal cho chat đã có."), { code: "BAD_REQUEST" });
+    const id = gatewaySessionId(body.sessionId);
+    const metadata = await readChatMetadata();
+    const stored = metadata.sessions[id] || {};
+    if (stored.deleted || stored.archived) throw Object.assign(new Error("Cuộc trò chuyện không còn khả dụng."), { code: "NOT_FOUND" });
+    const record = liveGatewayRecord(id);
+    let persisted = null;
+    try { persisted = await readPersistedChatSession(id); }
+    catch (error) { if (error.message !== "Không tìm thấy session OMP") throw error; }
+    if (!record && !persisted && !Object.hasOwn(metadata.sessions, id)) throw Object.assign(new Error("Không tìm thấy cuộc trò chuyện."), { code: "NOT_FOUND" });
+    const folder = stored.folderId ? metadata.folders[stored.folderId] : null;
+    const cwd = folder?.cwd || GENERAL_CHAT_CWD;
+    if (!folder?.cwd) await mkdir(GENERAL_CHAT_CWD, { recursive: true, mode: 0o700 });
+    return consoleBridge.validateWorkspaceDirectory(cwd);
+  }
+  if (body.cwd != null) {
+    if (typeof body.cwd !== "string" || !body.cwd.trim() || body.cwd.length > 4096) throw Object.assign(new Error("Workspace draft không hợp lệ."), { code: "BAD_REQUEST", field: "cwd" });
+    return consoleBridge.validateWorkspaceDirectory(body.cwd);
+  }
+  await mkdir(GENERAL_CHAT_CWD, { recursive: true, mode: 0o700 });
+  return consoleBridge.validateWorkspaceDirectory(GENERAL_CHAT_CWD);
 }
 async function rememberGatewaySession(record, timeoutMs = 1500) {
   if (!record) return null;
@@ -3975,6 +4086,14 @@ async function readDashboardBinary(name) {
   }
 }
 
+async function readTerminalAsset(name) {
+  try { return await readFile(join(SOURCE_ROOT, "node_modules", name)); }
+  catch (error) {
+    if (ROOT === SOURCE_ROOT) throw error;
+    return readFile(join(ROOT, "node_modules", name));
+  }
+}
+
 async function jsonBody(req) {
   try { return await readJsonBody(req); }
   catch (error) { throw Object.assign(new Error(`JSON không hợp lệ: ${error.message}`), { code: "BAD_REQUEST" }); }
@@ -4890,6 +5009,22 @@ const server = http.createServer(async (req, res) => {
       return chatError(res, error);
     }
   }
+  if (requestUrl.pathname === "/api/v1/terminal/open") {
+    try {
+      if (req.method !== "POST") return json(res, 405, { ok: false, error: { code: "METHOD_NOT_ALLOWED", message: "Phương thức HTTP không được hỗ trợ." } });
+      const body = await jsonBody(req);
+      if (!body || Array.isArray(body) || typeof body !== "object") throw Object.assign(new Error("Payload phải là object JSON."), { code: "BAD_REQUEST" });
+      if (Object.keys(body).some((key) => !["sessionId", "cwd"].includes(key))) throw Object.assign(new Error("Payload terminal có trường không được hỗ trợ."), { code: "BAD_REQUEST" });
+      const { terminalId, cwd } = await createTerminalSession(body);
+      return json(res, 201, { ok: true, terminalId, workspace: basename(cwd) });
+    } catch (error) { return chatError(res, error); }
+  }
+  const terminalSessionMatch = requestUrl.pathname.match(/^\/api\/v1\/terminal\/sessions\/([0-9a-f-]{36})$/i);
+  if (terminalSessionMatch) {
+    if (req.method !== "DELETE") return json(res, 405, { ok: false, error: { code: "METHOD_NOT_ALLOWED", message: "Phương thức HTTP không được hỗ trợ." } });
+    closeTerminalSession(terminalSessionMatch[1], "closed");
+    return json(res, 200, { ok: true });
+  }
   if (requestUrl.pathname === "/api/v1/sessions" || requestUrl.pathname.startsWith("/api/v1/sessions/")) {
     try {
       if (requestUrl.pathname === "/api/v1/sessions" && req.method === "GET") {
@@ -5073,6 +5208,17 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "content-type": "application/javascript; charset=utf-8", "cache-control": "no-store" });
     return res.end(script);
   }
+  const terminalAssets = {
+    "/terminal-assets/xterm.js": ["@xterm/xterm/lib/xterm.js", "application/javascript; charset=utf-8"],
+    "/terminal-assets/xterm.css": ["@xterm/xterm/css/xterm.css", "text/css; charset=utf-8"],
+    "/terminal-assets/addon-fit.js": ["@xterm/addon-fit/lib/addon-fit.js", "application/javascript; charset=utf-8"],
+  };
+  if (req.method === "GET" && terminalAssets[requestUrl.pathname]) {
+    const [asset, type] = terminalAssets[requestUrl.pathname];
+    const content = await readTerminalAsset(asset);
+    res.writeHead(200, { "content-type": type, "cache-control": "no-store" });
+    return res.end(content);
+  }
   if (requestUrl.pathname === `/${DASHBOARD_MARK_ASSET}` && req.method === "GET") {
     const image = await readDashboardBinary(DASHBOARD_MARK_ASSET);
     res.writeHead(200, {
@@ -5116,7 +5262,7 @@ const server = http.createServer(async (req, res) => {
           imageGeneration,
           screenCapture: { status: "unavailable", note: "Native screen capture chưa có adapter." },
           camera: "unavailable",
-          microphone: "unavailable",
+          microphone: { status: "partial", provider: "browser-speech-recognition", languages: ["vi-VN", "en-US"], audioToDashboard: false },
           audio: "unavailable",
           video: "unavailable",
           browserRelay: "unavailable",
@@ -5378,6 +5524,51 @@ server.on("error", (error) => {
   process.exitCode = 1;
 });
 
+const terminalWebSockets = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024, perMessageDeflate: false });
+server.on("upgrade", (req, socket, head) => {
+  let url;
+  try { url = new URL(req.url || "/", `http://${req.headers.host || ""}`); }
+  catch { socket.destroy(); return; }
+  const reject = (status, label) => { socket.write(`HTTP/1.1 ${status} ${label}\r\nConnection: close\r\n\r\n`); socket.destroy(); };
+  if (url.pathname !== "/api/v1/terminal/stream" || req.method !== "GET") return reject(404, "Not Found");
+  if (!isAllowedHost(req)) return reject(403, "Forbidden");
+  if (!DASHBOARD_ORIGINS.has(String(req.headers.origin || ""))) return reject(403, "Forbidden");
+  if (!tokenMatches(readCookie(req, DASHBOARD_SESSION_COOKIE))) return reject(401, "Unauthorized");
+  const id = url.searchParams.get("terminalId") || "";
+  const session = terminalSessions.get(id);
+  if (!/^[0-9a-f-]{36}$/i.test(id) || !session || session.socket) return reject(404, "Not Found");
+  terminalWebSockets.handleUpgrade(req, socket, head, (ws) => {
+    session.socket = ws;
+    terminalTouch(session);
+    if (session.pendingOutput) {
+      terminalSend(session, { type: "output", data: session.pendingOutput });
+      session.pendingOutput = "";
+    }
+    let messageWindow = Date.now();
+    let messageCount = 0;
+    ws.on("message", (raw, binary) => {
+      if (binary) { ws.close(1003, "Text messages only"); return; }
+      const now = Date.now();
+      if (now - messageWindow >= 1000) { messageWindow = now; messageCount = 0; }
+      if (++messageCount > 120) { ws.close(1008, "Rate limit"); return; }
+      let message;
+      try { message = JSON.parse(raw.toString()); } catch { ws.close(1007, "Invalid JSON"); return; }
+      if (message?.type === "input" && typeof message.data === "string" && message.data.length <= 16_000) {
+        terminalTouch(session);
+        session.pty.write(message.data);
+      } else if (message?.type === "resize" && Number.isInteger(message.cols) && Number.isInteger(message.rows) && message.cols >= 2 && message.cols <= 500 && message.rows >= 2 && message.rows <= 300) {
+        terminalTouch(session);
+        session.pty.resize(message.cols, message.rows);
+      } else if (message?.type === "close") closeTerminalSession(id, "closed");
+      else ws.close(1008, "Unsupported terminal message");
+    });
+    ws.on("close", () => closeTerminalSession(id, "disconnected"));
+    ws.on("error", () => closeTerminalSession(id, "socket-error"));
+    terminalWebSockets.emit("connection", ws, req);
+  });
+});
+
 server.listen(PORT, "127.0.0.1", () => { refresh(); setInterval(refresh, 60000); });
-process.on("SIGINT", async () => { await consoleBridge.close(); server.close(); process.exit(0); });
-process.on("SIGTERM", async () => { await consoleBridge.close(); server.close(); process.exit(0); });
+const stopDashboard = async () => { for (const id of terminalSessions.keys()) closeTerminalSession(id, "shutdown"); await consoleBridge.close(); server.close(); process.exit(0); };
+process.on("SIGINT", stopDashboard);
+process.on("SIGTERM", stopDashboard);

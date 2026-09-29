@@ -6,7 +6,17 @@
   const TOOL_STORAGE_KEY = 'omp.tools.v2';
   const BROWSER_MODE_PREFERENCE_VERSION = 'manual-v1';
   const initialBrowserMode = localStorage.getItem('omp.browserModePreferenceVersion') === BROWSER_MODE_PREFERENCE_VERSION ? localStorage.getItem('omp.browserMode') : 'none';
-  const state = { sessions: [], nextCursor: null, activeId: null, generation: 0, messages: [], models: [], activeModel: null, controller: null, requestId: null, activeRequest: null, createPromise: null, menu: null, folderMenu: null, quota: null, accounts: [], attachments: [], workspaceFiles: [], workspaceMention: '@', capabilities: null, selectedTools: [], toolsUpdating: false, folderExpanded: new Set(), folderCollapsed: new Set(), thinking: localStorage.getItem('omp.thinking') || 'max', browserMode: initialBrowserMode === 'ego-browser' ? 'ego-browser' : 'none', shareMode: localStorage.getItem('omp.shareMode') || 'encrypted', approvalMode: localStorage.getItem('omp.approvalMode') || 'always-ask', enterBehavior: localStorage.getItem('omp.enterBehavior') || 'queue', conversationDisplay: localStorage.getItem('omp.conversationDisplay') || 'compact', pendingPrompts: [], queuePausedSessions: new Map(), editingQueueId: null, draftPromptPreview: null, browserAction: null, browserStatus: null, media: { screenCapture: { status: 'unavailable', reason: 'Native screen capture is not provided by OMP dashboard.' }, camera: { status: 'unavailable' }, microphone: { status: 'unavailable' }, video: { status: 'unavailable' } } };
+  const state = { sessions: [], nextCursor: null, activeId: null, generation: 0, messages: [], models: [], activeModel: null, controller: null, requestId: null, activeRequest: null, createPromise: null, menu: null, folderMenu: null, quota: null, accounts: [], attachments: [], workspaceFiles: [], workspaceMention: '@', capabilities: null, selectedTools: [], toolsUpdating: false, advisor: false, advisorConfig: null, advisorConfigLoading: false, advisorConfigSaving: false, folderExpanded: new Set(), folderCollapsed: new Set(), thinking: localStorage.getItem('omp.thinking') || 'max', browserMode: initialBrowserMode === 'ego-browser' ? 'ego-browser' : 'none', planYolo: false, planYoloModel: '', shareMode: localStorage.getItem('omp.shareMode') || 'encrypted', approvalMode: localStorage.getItem('omp.approvalMode') || 'always-ask', enterBehavior: localStorage.getItem('omp.enterBehavior') || 'queue', conversationDisplay: localStorage.getItem('omp.conversationDisplay') || 'compact', pendingPrompts: [], queuePausedSessions: new Map(), editingQueueId: null, draftPromptPreview: null, browserAction: null, browserStatus: null, media: { screenCapture: { status: 'unavailable', reason: 'Native screen capture is not provided by OMP dashboard.' }, camera: { status: 'unavailable' }, microphone: { status: 'unavailable' }, video: { status: 'unavailable' } } };
+  let voiceRecognition = null;
+  let voiceStopResolve = null;
+  let voiceDisclosureShown = false;
+  let terminalSessionId = null;
+  let terminalSocket = null;
+  let terminalWidget = null;
+  let terminalFitAddon = null;
+  let terminalOpenPromise = null;
+  let terminalOpenCancelled = false;
+  let terminalDisclosureShown = false;
   state.enterBehavior = 'send';
   state.modelAccess = null;
   state.modelAccessInitialized = false;
@@ -251,14 +261,14 @@
       body: JSON.stringify({
         ...(state.draftWorkspaceCwd ? { cwd: state.draftWorkspaceCwd } : {}),
         approvalMode: settings.approvalMode,
-        browserMode: settings.browserMode,
+        browserMode: settings.browserMode, planYolo: settings.planYolo, ...(settings.planYolo ? { planYoloModel: settings.planYoloModel } : {}), advisor: settings.advisor,
         tools: settings.tools,
       }),
       keepalive: true,
     }).catch(() => {});
   }
   function snapshotSettings() {
-    return { model: state.activeModel || null, modelProvider: state.activeModelProvider, modelSource: state.modelSource, thinking: state.thinking, browserMode: state.browserMode, approvalMode: state.approvalMode, tools: [...state.selectedTools] };
+    return { model: state.activeModel || null, modelProvider: state.activeModelProvider, modelSource: state.modelSource, thinking: state.thinking, browserMode: state.browserMode, planYolo: state.planYolo, planYoloModel: state.planYoloModel || state.activeModel || null, advisor: state.advisor, approvalMode: state.approvalMode, tools: [...state.selectedTools] };
   }
   function setBrowserMode(value) {
     state.browserMode = value === 'ego-browser' ? 'ego-browser' : 'none';
@@ -1480,7 +1490,7 @@
   }
   function sanitizeProductionSurface() {
     const hide = (id) => { const node = $(id); if (node) { node.hidden = true; node.disabled = true; node.setAttribute('aria-hidden', 'true'); } };
-    ['toggleBottomPanelBtn', 'bottomPanel', 'headerActionDuplicate', 'headerActionExport', 'voiceRecordBtn', 'screenCaptureBtn', 'cameraCaptureBtn', 'microphoneCaptureBtn', 'videoCaptureBtn'].forEach(hide);
+    ['headerActionDuplicate', 'headerActionExport', 'screenCaptureBtn', 'cameraCaptureBtn', 'microphoneCaptureBtn', 'videoCaptureBtn'].forEach(hide);
     const tools = $('toolsContentArea');
     if (tools) { tools.replaceChildren(emptyNode('Chưa có công cụ backend')); tools.setAttribute('aria-live', 'polite'); }
     const toolsTab = $('drawerTabToolsBtn');
@@ -1502,6 +1512,8 @@
     if (!session) { if (!quiet) notify('Không tìm thấy cuộc trò chuyện được chọn.', true); return false; }
     if (state.editingQueueId && state.activeId !== id) cancelQueueEdit(true);
     const previousId = state.activeId;
+    if (previousId !== id && voiceRecognition) await stopVoiceInput();
+    if (previousId !== id && terminalSessionId) void closeEmbeddedTerminal();
     if (previousId && previousId !== id) {
       rememberRetry(previousId);
       cacheSessionView(previousId);
@@ -1586,7 +1598,7 @@
     setNeutralSelection({ preserveDraftPreview: Boolean(state.draftPromptPreview) });
     state.createPromise = (async () => {
       try {
-        const { payload } = await readJson(`${API}/sessions`, { method: 'POST', body: JSON.stringify({ title, ...(options.folderId ? { folderId: options.folderId } : {}), ...(cwd ? { cwd } : {}), browserMode: state.browserMode, approvalMode: state.approvalMode, ...(state.selectedTools.length ? { tools: state.selectedTools } : {}) }) });
+        const { payload } = await readJson(`${API}/sessions`, { method: 'POST', body: JSON.stringify({ title, ...(options.folderId ? { folderId: options.folderId } : {}), ...(cwd ? { cwd } : {}), browserMode: state.browserMode, planYolo: state.planYolo, ...(state.planYolo ? { planYoloModel: state.planYoloModel || state.activeModel } : {}), advisor: state.advisor, approvalMode: state.approvalMode, ...(state.selectedTools.length ? { tools: state.selectedTools } : {}) }) });
         const created = payload?.session || payload;
         if (!created?.id) throw new Error('Backend không trả id session hợp lệ');
         state.sessionLoadRequestId += 1;
@@ -1988,7 +2000,7 @@
       const attachments = item.attachments || [];
       const statusLabel = { queued: 'Đang chờ web', priority: 'Đang được ưu tiên', paused: 'Tạm dừng sau lỗi', editing: 'Đang chỉnh sửa', running: 'Đang gửi lên OMP' }[item.status] || item.status || 'Đang chờ web';
       const sessionLabel = item.sessionId || 'đang tạo session…';
-      const technicalMeta = `Session ${sessionLabel} · ${item.status || 'queued'} · ${settings.model || 'model mặc định'} · ${settings.thinking || 'mặc định'} · browser ${settings.browserMode || 'mặc định'} · approval ${settings.approvalMode || 'mặc định'} · tools ${(settings.tools || []).length} · tệp: ${queueAttachmentSummary(attachments)}`;
+      const technicalMeta = `Session ${sessionLabel} · ${item.status || 'queued'} · ${settings.model || 'model mặc định'} · ${settings.thinking || 'mặc định'} · browser ${settings.browserMode || 'mặc định'} · plan-yolo ${settings.planYolo ? 'on' : 'off'} · approval ${settings.approvalMode || 'mặc định'} · tools ${(settings.tools || []).length} · tệp: ${queueAttachmentSummary(attachments)}`;
       const row = document.createElement('div');
       row.className = 'queue-turn-row';
       row.dataset.queueId = item.id;
@@ -2480,6 +2492,7 @@
     return normalEnd;
   }
   async function sendPrompt() {
+    if (voiceRecognition) await stopVoiceInput();
     const input = $('chatInput'); const prompt = text(input?.value).trim();
     if (!prompt) { notify('Vui lòng nhập nội dung trước khi gửi.', true); return; }
     if (state.activeId) {
@@ -2527,6 +2540,164 @@
       return;
     }
     void startPrompt(prompt, sessionId, settings, attachments);
+  }
+
+  function insertVoiceTranscript(value) {
+    const input = $('chatInput'); const transcript = String(value || '').trim();
+    if (!input || !transcript) return;
+    const start = input.selectionStart ?? input.value.length; const end = input.selectionEnd ?? start;
+    const left = input.value.slice(0, start); const right = input.value.slice(end);
+    const prefix = left && !/\s$/.test(left) && !/^[,.;:!?)]/.test(transcript) ? ' ' : '';
+    const suffix = right && !/^\s|^[,.;:!?)]/.test(right) ? ' ' : '';
+    const inserted = `${prefix}${transcript}${suffix}`;
+    input.setRangeText(inserted, start, end, 'end');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.focus();
+  }
+
+  function setVoiceListening(listening) {
+    const button = $('voiceRecordBtn'); const language = $('voiceLanguageSelect');
+    if (button) { button.classList.toggle('recording', listening); button.setAttribute('aria-pressed', String(listening)); button.setAttribute('aria-label', listening ? 'Dừng nhập liệu bằng giọng nói' : 'Bắt đầu nhập liệu bằng giọng nói'); }
+    if (language) language.disabled = listening;
+  }
+
+  function startVoiceInput() {
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!Recognition) { notify('Trình duyệt này chưa hỗ trợ nhận dạng giọng nói.', true); return; }
+    const recognition = new Recognition(); const language = $('voiceLanguageSelect'); const processedFinals = new Set();
+    recognition.lang = language?.value === 'en-US' ? 'en-US' : 'vi-VN';
+    recognition.continuous = true; recognition.interimResults = false; recognition.maxAlternatives = 1;
+    voiceRecognition = recognition; setVoiceListening(true);
+    recognition.onresult = (event) => {
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        if (!result.isFinal || processedFinals.has(index)) continue;
+        processedFinals.add(index); insertVoiceTranscript(result[0]?.transcript);
+      }
+    };
+    recognition.onerror = (event) => {
+      if (event.error === 'aborted') return;
+      const messages = { 'not-allowed': 'Hãy cho phép trình duyệt dùng microphone cho dashboard.', 'service-not-allowed': 'Dịch vụ nhận dạng giọng nói của trình duyệt không khả dụng.', 'no-speech': 'Chưa nghe thấy giọng nói.', network: 'Nhận dạng giọng nói cần mạng nhưng kết nối bị lỗi.', 'language-not-supported': 'Trình duyệt không hỗ trợ ngôn ngữ đã chọn.' };
+      notify(messages[event.error] || `Không nhận dạng được giọng nói (${event.error || 'lỗi trình duyệt'}).`, true);
+    };
+    recognition.onend = () => {
+      if (voiceRecognition === recognition) { voiceRecognition = null; setVoiceListening(false); }
+      voiceStopResolve?.();
+    };
+    try {
+      recognition.start();
+      if (!voiceDisclosureShown) { voiceDisclosureShown = true; notify('Trình duyệt có thể xử lý audio qua dịch vụ nhận dạng của họ; dashboard không nhận audio.'); }
+    } catch (error) {
+      if (voiceRecognition === recognition) voiceRecognition = null;
+      setVoiceListening(false); notify(`Không thể bật microphone: ${error.message}`, true);
+    }
+  }
+
+  function stopVoiceInput() {
+    const recognition = voiceRecognition;
+    if (!recognition) return Promise.resolve();
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = () => { if (settled) return; settled = true; clearTimeout(timer); if (voiceStopResolve === finish) voiceStopResolve = null; resolve(); };
+      const timer = setTimeout(() => { if (voiceRecognition === recognition) { voiceRecognition = null; setVoiceListening(false); try { recognition.abort(); } catch {} } finish(); }, 1500);
+      voiceStopResolve = finish;
+      try { recognition.stop(); } catch { try { recognition.abort(); } catch {} finish(); }
+    });
+  }
+
+  function toggleVoiceInput() { if (voiceRecognition) void stopVoiceInput(); else startVoiceInput(); }
+
+  function setTerminalStatus(label, connected = false) {
+    const status = document.querySelector('#bottomPanelStatusLabel');
+    const dot = document.querySelector('.bottom-panel-status .bottom-status-dot');
+    if (status) status.textContent = label;
+    if (dot) dot.style.background = connected ? 'var(--success)' : 'var(--muted)';
+  }
+  function fitTerminal() { if (terminalWidget && $('bottomPanel')?.classList.contains('open')) { terminalFitAddon?.fit(); terminalWidget.focus(); } }
+  async function closeEmbeddedTerminal(hidePanel = true) {
+    if (terminalOpenPromise) terminalOpenCancelled = true;
+    const id = terminalSessionId;
+    const socket = terminalSocket;
+    terminalSessionId = null;
+    terminalSocket = null;
+    if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, 'closed');
+    if (id) void readJson(`${API}/terminal/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
+    terminalWidget?.dispose();
+    terminalWidget = null;
+    terminalFitAddon = null;
+    $('terminalHost')?.replaceChildren();
+    if (hidePanel) {
+      $('bottomPanel')?.classList.remove('open');
+      document.querySelector('.app-main')?.classList.remove('has-bottom-panel');
+      $('toggleBottomPanelBtn')?.classList.remove('active');
+    }
+    setTerminalStatus('Terminal đã đóng');
+  }
+  async function openEmbeddedTerminal() {
+    if (terminalOpenPromise) return terminalOpenPromise;
+    const panel = $('bottomPanel');
+    const button = $('toggleBottomPanelBtn');
+    panel?.classList.add('open');
+    document.querySelector('.app-main')?.classList.add('has-bottom-panel');
+    button?.classList.add('active');
+    if (button) { button.disabled = true; button.setAttribute('aria-busy', 'true'); }
+    terminalOpenPromise = (async () => {
+      terminalOpenCancelled = false;
+      try {
+        if (!window.Terminal || !window.FitAddon?.FitAddon) throw new Error('Không tải được terminal emulator.');
+        const ownerId = state.activeId;
+        const body = ownerId ? { sessionId: ownerId } : state.draftWorkspaceCwd ? { cwd: state.draftWorkspaceCwd } : {};
+        const { payload } = await readJson(`${API}/terminal/open`, { method: 'POST', body: JSON.stringify(body) });
+        if (terminalOpenCancelled || state.activeId !== ownerId) { void readJson(`${API}/terminal/sessions/${encodeURIComponent(payload.terminalId)}`, { method: 'DELETE' }); if (!terminalOpenCancelled) throw new Error('Chat đã thay đổi trong lúc mở terminal.'); return; }
+        terminalSessionId = payload.terminalId;
+        const host = $('terminalHost');
+        host?.replaceChildren();
+        terminalWidget = new window.Terminal({ cursorBlink: true, convertEol: true, fontFamily: 'var(--font-mono)', fontSize: 12, theme: { background: '#080b10', foreground: '#e4e7eb', cursor: '#42a5ff' }, scrollback: 3000 });
+        terminalFitAddon = new window.FitAddon.FitAddon();
+        terminalWidget.loadAddon(terminalFitAddon);
+        terminalWidget.open(host);
+        terminalFitAddon.fit();
+        terminalWidget.onData((data) => { if (terminalSocket?.readyState === WebSocket.OPEN) terminalSocket.send(JSON.stringify({ type: 'input', data })); });
+        terminalWidget.onResize(({ cols, rows }) => { if (terminalSocket?.readyState === WebSocket.OPEN) terminalSocket.send(JSON.stringify({ type: 'resize', cols, rows })); });
+        setTerminalStatus(`Đang kết nối · ${payload.workspace || 'General'}`);
+        const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const socket = new WebSocket(`${scheme}//${location.host}/api/v1/terminal/stream?terminalId=${encodeURIComponent(terminalSessionId)}`);
+        terminalSocket = socket;
+        socket.addEventListener('open', () => {
+          if (terminalSocket !== socket) return;
+          fitTerminal(); setTerminalStatus(`Quyền tài khoản OS · ${payload.workspace || 'General'}`, true);
+          if (!terminalDisclosureShown) { terminalDisclosureShown = true; notify('Terminal dùng quyền OS của tài khoản đang chạy dashboard; workspace chỉ là thư mục bắt đầu.'); }
+        });
+        socket.addEventListener('message', (event) => {
+          if (terminalSocket !== socket) return;
+          let message; try { message = JSON.parse(event.data); } catch { return; }
+          if (message.type === 'output' && typeof message.data === 'string') terminalWidget?.write(message.data);
+          else if (message.type === 'exit') setTerminalStatus(`Shell đã dừng · mã ${message.exitCode ?? message.signal ?? '?'}`);
+          else if (message.type === 'closed') setTerminalStatus('Terminal đã đóng');
+        });
+        socket.addEventListener('close', () => {
+          if (terminalSocket !== socket) return;
+          terminalSocket = null; terminalSessionId = null;
+          setTerminalStatus('Kết nối terminal đã đóng');
+        });
+        socket.addEventListener('error', () => { setTerminalStatus('Không kết nối được terminal'); notify('Không kết nối được terminal trên máy.', true); });
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('Kết nối terminal quá thời gian.')), 8000);
+          socket.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
+          socket.addEventListener('error', () => { clearTimeout(timer); reject(new Error('WebSocket terminal bị lỗi.')); }, { once: true });
+        });
+      } catch (error) {
+        const cancelled = terminalOpenCancelled;
+        await closeEmbeddedTerminal(false);
+        setTerminalStatus('Terminal chưa sẵn sàng');
+        if (!cancelled) notify(`Không mở được terminal: ${error.message}`, true);
+      } finally { terminalOpenPromise = null; if (button) { button.disabled = false; button.removeAttribute('aria-busy'); } }
+    })();
+    return terminalOpenPromise;
+  }
+  function toggleEmbeddedTerminal() {
+    if ($('bottomPanel')?.classList.contains('open')) void closeEmbeddedTerminal();
+    else void openEmbeddedTerminal();
   }
 
   function updateHeaderQuota(overview, accounts) {
@@ -2716,6 +2887,20 @@
   async function switchAccount(accountId) { try { const { payload } = await readJson(`${API}/quota/switch`, { method: 'POST', body: JSON.stringify({ accountId, ...(state.activeId ? { sessionId: state.activeId } : {}) }) }); await Promise.all([loadQuota(), loadModels()]); notify(payload?.scope === 'session' ? 'Đã ghim account Gemini cho chat này' : 'Đã đặt account Gemini mặc định'); } catch (error) { notify(`Không thể chọn tài khoản Gemini: ${error.message}`, true); } }
   async function syncQuota() { const button = $('forceSyncAllOmpBtn'); if (button) button.disabled = true; try { await readJson(`${API}/quota/sync`, { method: 'POST', body: JSON.stringify({}) }); await Promise.all([loadQuota(), loadModels()]); notify('Đã đồng bộ quota'); } catch (error) { notify(`Đồng bộ quota lỗi: ${error.message}`, true); } finally { if (button) button.disabled = false; } }
   const modelOptionValue = (model) => JSON.stringify([model.provider || '', model.id]);
+  function syncPlanYoloModelControl() {
+    const select = $('modesPlanYoloModelSelect'); if (!select) return;
+    const models = [...new Map((state.models.length ? state.models : state.capabilities?.models || []).filter((item) => item?.id).map((item) => [item.id, item])).values()];
+    const selected = models.find((item) => item.id === state.planYoloModel) || models.find((item) => item.id === state.activeModel) || models[0];
+    if (!selected) { select.replaceChildren(new Option('Chưa có model OMP khả dụng', '')); select.disabled = true; return; }
+    if (state.planYoloModel !== selected.id) state.planYoloModel = selected.id;
+    select.replaceChildren(...models.map((item) => new Option(item.name || item.id, item.id, false, item.id === selected.id)));
+    select.disabled = false;
+  }
+  function setPlanYoloModel(value, notifyUser = true) {
+    if (!value) return;
+    state.planYoloModel = value; syncPlanYoloPill();
+    if (notifyUser) notify(`Plan YOLO sẽ dùng ${value}.`);
+  }
   function syncModelControls(selected) {
     const model = selected && state.models.find((item) => item.id === selected.id && item.provider === selected.provider);
     const account = state.modelSource === 'quota' ? state.modelAccess?.account : null;
@@ -2759,6 +2944,7 @@
       select.disabled = !state.models.length || (state.modelSource === 'quota' && !account?.canUse);
       select.title = sourceStatus;
     });
+    syncPlanYoloModelControl();
   }
   async function loadModels() {
     const source = state.modelSource;
@@ -2951,13 +3137,15 @@
     });
   }
   function renderOmpTools() {
-    const tools = $('toolsContentArea'); const catalog = state.capabilities?.tools || []; if (!tools) return; tools.replaceChildren();
-    if (!catalog.length) { tools.append(emptyNode('OMP chưa công bố capability')); return; }
+    const tools = $('toolsContentArea'); const allTools = state.capabilities?.tools || []; const catalog = allTools.filter((item) => item.status === 'supported' && item.canToggle); if (!tools) return; tools.replaceChildren();
+    if (!allTools.length) { tools.append(emptyNode('OMP chưa công bố capability')); return; }
     tools.setAttribute('aria-label', 'Công cụ OMP. Gửi thêm order giữ nguyên trạng thái; chat mới dùng lựa chọn hiện tại; đổi toggle áp dụng từ lượt kế tiếp.');
-    const metadata = state.capabilities?.catalog || {}; const statuses = { supported: 'Tắt', unavailable: 'Chưa khả dụng', blocked: 'Bị chặn', probe_error: 'Lỗi kiểm tra', stale: 'Cần cập nhật', unmapped: 'Chờ map' };
+    const metadata = state.capabilities?.catalog || {}; const statuses = { supported: 'Tắt' };
     const summary = document.createElement('div'); summary.className = 'tool-group-label'; summary.textContent = `OMP ${text(metadata.audit?.ompVersion || 'chưa kiểm tra').replace(/^omp\//i, '')} · ${metadata.counts?.supported || 0} tool dùng được`;
-    const sync = document.createElement('button'); sync.type = 'button'; sync.className = 'btn-secondary'; sync.textContent = state.toolsUpdating ? 'Đang đồng bộ…' : 'Đồng bộ OMP'; sync.disabled = state.toolsUpdating; sync.addEventListener('click', () => void syncOmpCatalog()); tools.append(summary, sync);
-    const listedGroups = metadata.groups || []; const groupIds = new Set(listedGroups.map((item) => item.id)); const groups = [...listedGroups, { id: 'history', label: 'THEO DÕI OMP' }].filter((group, index, all) => all.findIndex((item) => item.id === group.id) === index).map((group) => [group.label, catalog.filter((item) => item.group === group.id)]);
+    const sync = document.createElement('button'); sync.type = 'button'; sync.className = 'tool-sync-button'; sync.textContent = state.toolsUpdating ? 'Đang đồng bộ…' : 'Đồng bộ OMP'; sync.disabled = state.toolsUpdating; sync.setAttribute('aria-label', sync.textContent); sync.addEventListener('click', () => void syncOmpCatalog()); tools.append(summary, sync);
+    const available = catalog.length; const toolsTab = $('drawerTabToolsBtn'); const badge = toolsTab?.querySelector('.drawer-tab-badge'); if (badge) badge.textContent = String(available); if (toolsTab) toolsTab.setAttribute('aria-label', `Công cụ OMP: ${available} tool khả dụng`);
+    if (!catalog.length) { tools.append(emptyNode('Không có công cụ OMP dùng được; hãy đồng bộ lại.')); return; }
+    const listedGroups = metadata.groups || []; const groupIds = new Set(listedGroups.map((item) => item.id)); const groups = listedGroups.map((group) => [group.label, catalog.filter((item) => item.group === group.id)]);
     const leftovers = catalog.filter((item) => !groupIds.has(item.group)); if (leftovers.length) groups.push(['KHÁC', leftovers]);
     const renderRow = (item) => {
       const checked = item.canToggle && state.selectedTools.includes(item.id);
@@ -2976,8 +3164,43 @@
       return row;
     };
     groups.forEach(([label, items]) => { if (!items.length) return; const group = document.createElement('div'); group.className = 'tool-section-group production-tool-group'; const heading = document.createElement('div'); heading.className = 'tool-group-label'; heading.textContent = label; group.append(heading, ...items.map(renderRow)); tools.append(group); });
-    const available = catalog.filter((item) => item.canToggle).length; const toolsTab = $('drawerTabToolsBtn'); const badge = toolsTab?.querySelector('.drawer-tab-badge'); if (badge) badge.textContent = String(available); if (toolsTab) toolsTab.setAttribute('aria-label', `Công cụ OMP: ${available} tool khả dụng`);
   }
+  function modeToggle(id, enabled, label, onClick) {
+    const toggle = document.createElement('button'); toggle.id = id; toggle.type = 'button'; toggle.className = `toggle-switch${enabled ? ' on' : ''}`; toggle.setAttribute('role', 'switch'); toggle.setAttribute('aria-checked', String(enabled)); toggle.setAttribute('aria-label', label); toggle.title = label; const knob = document.createElement('div'); knob.className = 'toggle-knob'; toggle.append(knob); toggle.addEventListener('click', onClick); return toggle;
+  }
+  function modeInfo(name, description, enabled) {
+    const left = document.createElement('div'); left.className = 'tool-item-left'; const icon = document.createElement('div'); icon.className = 'tool-icon-avatar'; icon.setAttribute('aria-hidden', 'true'); icon.textContent = name === 'Advisor' ? '✦' : '◈'; const info = document.createElement('div'); info.className = 'tool-item-info'; const line = document.createElement('div'); line.className = 'tool-item-name-wrap'; const title = document.createElement('span'); title.className = 'tool-item-name'; title.textContent = name; const status = document.createElement('span'); status.className = `tool-item-status-tag${enabled ? ' tag-active' : ''}`; status.textContent = enabled ? 'Bật' : 'Tắt'; const detail = document.createElement('div'); detail.className = 'tool-item-desc'; detail.textContent = description; line.append(title, status); info.append(line, detail); left.append(icon, info); return left;
+  }
+  function modeField(label, control) { const field = document.createElement('div'); field.className = 'mode-field'; const caption = document.createElement('label'); caption.htmlFor = control.id; caption.textContent = label; field.append(caption, control); return field; }
+  function renderOmpModes() {
+    const host = $('modesContentArea'); if (!host) return; host.replaceChildren(); const modes = state.capabilities?.sessionModes || []; const plan = modes.find((item) => item.id === 'plan-yolo'); const advisorMode = modes.find((item) => item.id === 'advisor'); const supported = [plan, advisorMode].filter((item) => item?.status === 'supported'); const badge = $('drawerTabModesBtn')?.querySelector('.drawer-tab-badge'); if (badge) badge.textContent = String(supported.length);
+    if (!modes.length) { host.append(emptyNode('OMP chưa công bố chế độ runtime.')); return; }
+    host.setAttribute('aria-label', 'Chế độ runtime OMP cho chat mới'); const note = document.createElement('div'); note.className = 'mode-runtime-note'; note.setAttribute('role', 'status'); note.textContent = 'OMP chỉ đọc các chế độ này khi khởi tạo runtime. Chat đang mở giữ nguyên; hãy tạo Cuộc trò chuyện mới để áp dụng.'; host.append(note);
+    const section = document.createElement('section'); section.className = 'tool-section-group'; const heading = document.createElement('div'); heading.className = 'tool-group-label'; heading.textContent = 'CHẾ ĐỘ ÁP DỤNG CHO CHAT MỚI'; section.append(heading);
+    if (plan?.status === 'supported') {
+      const card = document.createElement('div'); card.className = 'mode-card'; const head = document.createElement('div'); head.className = 'mode-card-head'; head.append(modeInfo('Plan YOLO', 'Bắt đầu chỉ đọc, tự duyệt plan ở resolve đầu rồi chuyển sang model thực thi.', state.planYolo), modeToggle('modesPlanYoloToggle', state.planYolo, state.planYolo ? 'Tắt Plan YOLO' : 'Bật Plan YOLO', () => { togglePlanYolo(); renderOmpModes(); }));
+      const select = document.createElement('select'); select.id = 'modesPlanYoloModelSelect'; select.disabled = true; select.append(new Option('Đang tải model từ OMP…', '')); select.addEventListener('change', () => setPlanYoloModel(select.value)); card.append(head, modeField('MODEL MẶC ĐỊNH PLAN YOLO', select)); section.append(card); syncPlanYoloModelControl();
+    }
+    if (advisorMode?.status === 'supported') {
+      const card = document.createElement('div'); card.className = 'mode-card'; const head = document.createElement('div'); head.className = 'mode-card-head'; head.append(modeInfo('Advisor', 'Model thứ hai review thụ động mỗi lượt và chèn note khi cần; có thể tăng token/quota.', state.advisor), modeToggle('modesAdvisorToggle', state.advisor, state.advisor ? 'Tắt Advisor' : 'Bật Advisor', () => { state.advisor = !state.advisor; renderOmpModes(); notify(`Advisor ${state.advisor ? 'đã bật' : 'đã tắt'}; áp dụng cho chat mới.`); }));
+      const controls = document.createElement('div'); controls.className = 'mode-card-controls'; const config = state.advisorConfig; const disabled = !state.advisor || state.advisorConfigLoading || state.advisorConfigSaving;
+      if (!config) { const loading = document.createElement('div'); loading.className = 'tool-item-desc'; loading.textContent = state.advisorConfigLoading ? 'Đang đọc tuning Advisor từ OMP…' : 'Chưa đọc được tuning Advisor.'; controls.append(loading); }
+      else {
+        const input = document.createElement('input'); input.id = 'advisorModelInput'; input.value = config.model; input.disabled = disabled; input.maxLength = 200;
+        const tier = document.createElement('select'); tier.id = 'advisorTierSelect'; ['inherit', 'none', 'auto', 'default', 'flex', 'scale', 'priority'].forEach((value) => tier.append(new Option(value, value, false, value === config.tier))); tier.disabled = disabled;
+        const backlog = document.createElement('select'); backlog.id = 'advisorBacklogSelect'; [['off', 'Tắt'], ['1', '1 lượt'], ['3', '3 lượt'], ['5', '5 lượt']].forEach(([value, label]) => backlog.append(new Option(label, value, false, value === config.syncBacklog))); backlog.disabled = disabled;
+        const immune = document.createElement('select'); immune.id = 'advisorImmuneSelect'; [0, 1, 2, 3, 4, 5].forEach((value) => immune.append(new Option(`${value} lượt`, String(value), false, value === config.immuneTurns))); immune.disabled = disabled;
+        const notes = document.createElement('select'); notes.id = 'advisorNotesSelect'; [1, 2, 3, 4, 5].forEach((value) => notes.append(new Option(`${value} note`, String(value), false, value === config.maxNotesPerUpdate))); notes.disabled = disabled;
+        const evict = modeToggle('advisorEvictToggle', config.evictStaleResults, config.evictStaleResults ? 'Giữ dọn note cũ' : 'Tắt dọn note cũ', () => { const value = evict.dataset.value !== 'true'; evict.classList.toggle('on', value); evict.setAttribute('aria-checked', String(value)); evict.dataset.value = String(value); }); evict.disabled = disabled; evict.dataset.value = String(config.evictStaleResults);
+        controls.append(modeField('MODEL ADVISOR', input), modeField('SERVICE TIER', tier), modeField('ĐỒNG BỘ BACKLOG', backlog), modeField('IMMUNE TURNS', immune), modeField('MAX NOTES / UPDATE', notes), modeField('DỌN KẾT QUẢ CŨ', evict));
+        const save = document.createElement('button'); save.type = 'button'; save.className = 'mode-save-button'; save.disabled = disabled; save.textContent = state.advisorConfigSaving ? 'Đang lưu vào OMP…' : 'Lưu tuning Advisor vào OMP'; save.addEventListener('click', () => saveAdvisorConfig({ model: input.value, tier: tier.value, syncBacklog: backlog.value, immuneTurns: Number(immune.value), maxNotesPerUpdate: Number(notes.value), evictStaleResults: evict.dataset.value === 'true' })); controls.append(save);
+      }
+      card.append(head, controls); section.append(card);
+    }
+    if (!supported.length) section.append(emptyNode('OMP chưa hỗ trợ chế độ nào trong catalog hiện tại.')); host.append(section);
+  }
+  async function loadAdvisorConfig() { if (state.advisorConfigLoading) return; state.advisorConfigLoading = true; renderOmpModes(); try { const { payload } = await readJson(`${API}/omp/advisor-config`); const applyModeDefaults = state.advisorConfig === null; state.advisorConfig = payload; if (applyModeDefaults) { state.advisor = payload.enabled === true; state.planYolo = payload.planYolo === true; state.planYoloModel = payload.planYoloModel || ''; syncPlanYoloPill(); } } catch (error) { notify(`Không đọc được tuning Advisor từ OMP: ${error.message}`, true); } finally { state.advisorConfigLoading = false; renderOmpModes(); } }
+  async function saveAdvisorConfig(next) { state.advisorConfigSaving = true; renderOmpModes(); try { const { payload } = await readJson(`${API}/omp/advisor-config`, { method: 'POST', body: JSON.stringify(next) }); state.advisorConfig = payload; notify('Đã lưu tuning Advisor vào OMP; áp dụng khi tạo chat mới.'); } catch (error) { notify(`Không lưu được tuning Advisor: ${error.message}`, true); } finally { state.advisorConfigSaving = false; renderOmpModes(); } }
   async function setOmpTools(toolId, enabled) {
     const supported = new Set(selectableTools());
     const previous = [...state.selectedTools]; const next = previous.filter((id) => id !== toolId); if (enabled) next.push(toolId);
@@ -3006,9 +3229,9 @@
   }
   async function loadAgentHub(guard = sessionGuard()) {
     const host = $('ompAgentHubStatus'); if (!host) return;
-    host.replaceChildren(); const title = document.createElement('div'); title.className = 'settings-section-title'; title.textContent = 'OMP Agent Hub'; host.append(title);
     const hub = state.capabilities?.tools?.find((item) => item.id === 'hub');
-    if (!hub?.canToggle) { host.append(emptyNode(hub?.reason || 'Agent Hub chưa được OMP công bố.')); return; }
+    if (!hub?.canToggle) { host.hidden = true; return; }
+    host.hidden = false; host.replaceChildren(); const title = document.createElement('div'); title.className = 'settings-section-title'; title.textContent = 'OMP Agent Hub'; host.append(title);
     if (!guard.sessionId || !isCurrentSession(guard)) { host.append(emptyNode('Chọn session để xem task/subagent thật.')); return; }
     if (state.capabilities?.featureStatus?.['agent-hub'] === 'unavailable') { host.append(emptyNode('Agent Hub chưa khả dụng qua ACP; OMP không công bố dữ liệu subagent cho dashboard.')); return; }
     try {
@@ -3196,6 +3419,20 @@
       : 'Bật Ego Browser khi order cần web';
     toggle.setAttribute('aria-label', toggle.title); toggle.setAttribute('aria-pressed', String(enabled)); toggle.hidden = false; toggle.removeAttribute('aria-hidden');
   }
+  function syncPlanYoloPill() {
+    const mode = state.capabilities?.sessionModes?.find((item) => item.id === 'plan-yolo');
+    const enabled = state.planYolo && mode?.status === 'supported';
+    const model = state.planYoloModel || state.activeModel || 'chưa chọn';
+    const title = enabled ? `Plan chỉ đọc, tự duyệt rồi thực thi với ${model}; chỉ áp dụng cho chat mới.` : `Bật Plan YOLO với ${model} cho chat mới.`;
+    const composerToggle = $('planYoloToggle');
+    if (composerToggle) { composerToggle.hidden = mode?.status !== 'supported'; composerToggle.classList.toggle('active', enabled); const label = composerToggle.querySelector('span'); if (label) label.textContent = enabled ? 'Plan YOLO · Bật' : 'Plan YOLO · Tắt'; composerToggle.title = title; composerToggle.setAttribute('aria-label', title); composerToggle.setAttribute('aria-pressed', String(enabled)); }
+    const modesToggle = $('modesPlanYoloToggle'); if (modesToggle) { modesToggle.classList.toggle('on', enabled); modesToggle.setAttribute('aria-checked', String(enabled)); modesToggle.title = enabled ? 'Tắt Plan YOLO' : 'Bật Plan YOLO'; }
+  }
+  function togglePlanYolo() {
+    if (!state.planYolo && !(state.planYoloModel || state.activeModel)) { notify('Chọn model Plan YOLO trước khi bật.', true); return; }
+    state.planYolo = !state.planYolo; syncPlanYoloPill();
+    notify(`Plan YOLO ${state.planYolo ? 'đã bật' : 'đã tắt'}; chỉ áp dụng khi tạo chat mới.`);
+  }
   async function loadCapabilities() {
     try {
       const { payload } = await readJson('/api/v1/omp/capabilities');
@@ -3214,8 +3451,8 @@
       const supported = selectableTools();
       state.selectedTools = restoreSelectedTools(supported);
       saveSelectedTools();
-      renderOmpTools(); ensureOmpSettings(); syncBrowserPill();
-    } catch (error) { state.capabilities = {}; syncBrowserPill(); notify(`OMP capability lỗi: ${error.message}`, true); }
+      renderOmpTools(); renderOmpModes(); ensureOmpSettings(); syncBrowserPill(); syncPlanYoloPill();
+    } catch (error) { state.capabilities = {}; renderOmpModes(); syncBrowserPill(); syncPlanYoloPill(); notify(`OMP capability lỗi: ${error.message}`, true); }
   }
   function bindDialogAccessibility() {
     const sync = (dialog) => {
@@ -3247,7 +3484,8 @@
     observer.observe(document.body, { childList: true, subtree: true });
   }
 
-  function bindOmpSurface() { ['egoBrowserToggle', 'drawerTabFilesBtn', 'tabFilesPane', 'settingsNavPlugins', 'settingsTabPlugins', 'settingsNavAgents', 'settingsTabAgents'].forEach((id) => { const node = $(id); if (node) { node.hidden = false; node.removeAttribute('aria-hidden'); node.style.removeProperty('display'); } }); ['fileChangeFloatingBar', 'fileChangeFloatingPill', 'shareSessionModal', 'openWindowModal', 'codeDiffReviewModal', 'upgradeModal', 'sessionContextMenu'].forEach((id) => { const node = $(id); if (node) { node.hidden = true; node.setAttribute('aria-hidden', 'true'); node.style.setProperty('display', 'none', 'important'); node.classList.remove('open'); } }); const fileList = $('drawerFilesList'); if (fileList) { fileList.replaceChildren(emptyNode('Chưa có tệp được đính kèm')); } const quotaRows = $('chatModalAccountsRows'); if (quotaRows) quotaRows.replaceChildren(emptyNode('Đang tải dữ liệu quota…')); const fileBadge = $('drawerTabFilesBtn')?.querySelector('.drawer-tab-badge'); if (fileBadge) fileBadge.textContent = '0'; $('drawerTabFilesBtn')?.setAttribute('aria-label', 'Tệp đính kèm thật'); $('drawerUploadFileBtn')?.removeAttribute('data-production-unsupported'); const permission = $('settingsPermissionSelect'); const map = { require_approval: 'always-ask', approve_for_me: 'write', full_access: 'yolo' }; if (permission) { permission.value = Object.entries(map).find(([, value]) => value === state.approvalMode)?.[0] || 'require_approval'; if (typeof setPermissionMode === 'function') setPermissionMode(permission.value, false); permission.addEventListener('change', () => { state.approvalMode = map[permission.value] || 'always-ask'; localStorage.setItem('omp.approvalMode', state.approvalMode); if (typeof setPermissionMode === 'function') setPermissionMode(permission.value, false); notify(`Đã chọn quyền OMP: ${permission.options[permission.selectedIndex]?.textContent || state.approvalMode}`); }, true); } const ego = $('egoBrowserToggle'); ego?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); state.browserMode = state.browserMode === 'ego-browser' ? 'none' : 'ego-browser'; localStorage.setItem('omp.browserMode', state.browserMode); syncBrowserPill(); }, true); document.addEventListener('click', (event) => { const option = event.target.closest('.approval-option-item'); if (!option) return; const mode = map[option.dataset.value] || 'always-ask'; state.approvalMode = mode; localStorage.setItem('omp.approvalMode', mode); }, true); bindFileAttachment(); loadCapabilities(); }
+  function bindDrawerTabs() { document.querySelectorAll('.drawer-tab[data-tab]').forEach((tab) => tab.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); const name = tab.dataset.tab; document.querySelectorAll('.drawer-tab[data-tab]').forEach((node) => { const active = node === tab; node.classList.toggle('active', active); node.setAttribute('aria-selected', String(active)); }); [['tools', 'tabToolsPane'], ['modes', 'tabModesPane'], ['files', 'tabFilesPane']].forEach(([id, paneId]) => $(paneId)?.classList.toggle('active', id === name)); if (name === 'modes') void loadAdvisorConfig(); if (name === 'files') void loadWorkspaceFiles(state.workspaceMention); }, true)); }
+  function bindOmpSurface() { ['egoBrowserToggle', 'planYoloToggle', 'drawerTabFilesBtn', 'drawerTabModesBtn', 'tabFilesPane', 'tabModesPane', 'settingsNavPlugins', 'settingsTabPlugins', 'settingsNavAgents', 'settingsTabAgents'].forEach((id) => { const node = $(id); if (node) { node.hidden = false; node.removeAttribute('aria-hidden'); node.style.removeProperty('display'); } }); ['fileChangeFloatingBar', 'fileChangeFloatingPill', 'shareSessionModal', 'openWindowModal', 'codeDiffReviewModal', 'upgradeModal', 'sessionContextMenu'].forEach((id) => { const node = $(id); if (node) { node.hidden = true; node.setAttribute('aria-hidden', 'true'); node.style.setProperty('display', 'none', 'important'); node.classList.remove('open'); } }); const fileList = $('drawerFilesList'); if (fileList) { fileList.replaceChildren(emptyNode('Chưa có tệp được đính kèm')); } const quotaRows = $('chatModalAccountsRows'); if (quotaRows) quotaRows.replaceChildren(emptyNode('Đang tải dữ liệu quota…')); const fileBadge = $('drawerTabFilesBtn')?.querySelector('.drawer-tab-badge'); if (fileBadge) fileBadge.textContent = '0'; $('drawerTabFilesBtn')?.setAttribute('aria-label', 'Tệp đính kèm thật'); $('drawerUploadFileBtn')?.removeAttribute('data-production-unsupported'); const permission = $('settingsPermissionSelect'); const map = { require_approval: 'always-ask', approve_for_me: 'write', full_access: 'yolo' }; if (permission) { permission.value = Object.entries(map).find(([, value]) => value === state.approvalMode)?.[0] || 'require_approval'; if (typeof setPermissionMode === 'function') setPermissionMode(permission.value, false); permission.addEventListener('change', () => { state.approvalMode = map[permission.value] || 'always-ask'; localStorage.setItem('omp.approvalMode', state.approvalMode); if (typeof setPermissionMode === 'function') setPermissionMode(permission.value, false); notify(`Đã chọn quyền OMP: ${permission.options[permission.selectedIndex]?.textContent || state.approvalMode}`); }, true); } const ego = $('egoBrowserToggle'); ego?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); state.browserMode = state.browserMode === 'ego-browser' ? 'none' : 'ego-browser'; localStorage.setItem('omp.browserMode', state.browserMode); syncBrowserPill(); }, true); $('planYoloToggle')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); togglePlanYolo(); }, true); document.addEventListener('click', (event) => { const plan = event.target.closest('[data-action="plan-mode"],#plusPlanningMode'); if (plan) { event.preventDefault(); event.stopImmediatePropagation(); togglePlanYolo(); return; } const option = event.target.closest('.approval-option-item'); if (!option) return; const mode = map[option.dataset.value] || 'always-ask'; state.approvalMode = mode; localStorage.setItem('omp.approvalMode', mode); }, true); bindDrawerTabs(); bindFileAttachment(); void loadAdvisorConfig(); loadCapabilities(); }
 
   function ensureToolsRail() {
     const drawer = $('toolsDrawer'); if (!drawer || $('toolsDrawerRail')) return;
@@ -3457,7 +3695,7 @@
     }
   }
 
-  function unsupported(event) { const target = event.target.closest('[data-production-unsupported],.plus-tool-action-item,#confirmUpgradeBtn,#launchRealBrowserTabBtn,#btnModalApplyDiff,#btnModalRevertFile,#btnApplyAllDiff,#btnUndoCurrentDiff,#terminalInput'); if (!target) return; event.preventDefault(); event.stopImmediatePropagation(); notify('Control này chưa có backend production.', true); }
+  function unsupported(event) { const target = event.target.closest('[data-production-unsupported],.plus-tool-action-item,#confirmUpgradeBtn,#launchRealBrowserTabBtn,#btnModalApplyDiff,#btnModalRevertFile,#btnApplyAllDiff,#btnUndoCurrentDiff'); if (!target) return; event.preventDefault(); event.stopImmediatePropagation(); notify('Control này chưa có backend production.', true); }
   function bind() {
     if (bound) return;
     bound = true;
@@ -3479,6 +3717,39 @@
       }, true);
     });
     document.addEventListener('click', unsupported, true);
+    const voiceLanguage = $('voiceLanguageSelect');
+    if (voiceLanguage) {
+      const savedLanguage = localStorage.getItem('omp.voiceLanguage');
+      voiceLanguage.value = savedLanguage === 'en-US' ? 'en-US' : 'vi-VN';
+      voiceLanguage.addEventListener('change', () => localStorage.setItem('omp.voiceLanguage', voiceLanguage.value), true);
+    }
+    const voiceButton = $('voiceRecordBtn');
+    if (voiceButton) {
+      const recognitionSupported = Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
+      voiceButton.disabled = !recognitionSupported;
+      if (!recognitionSupported) { voiceButton.title = 'Trình duyệt này chưa hỗ trợ nhận dạng giọng nói.'; voiceButton.setAttribute('aria-label', voiceButton.title); }
+      voiceButton.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); toggleVoiceInput(); }, true);
+    }
+    const terminalButton = $('toggleBottomPanelBtn');
+    if (terminalButton) {
+      terminalButton.hidden = false;
+      terminalButton.disabled = false;
+      terminalButton.removeAttribute('aria-hidden');
+      terminalButton.title = 'Terminal máy dùng quyền OS của tài khoản đang chạy dashboard';
+      terminalButton.setAttribute('aria-label', 'Bật/tắt Terminal nhúng');
+      terminalButton.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); toggleEmbeddedTerminal(); }, true);
+    }
+    $('closeBottomPanelBtn')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); void closeEmbeddedTerminal(); }, true);
+    $('clearConsoleBtn')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); terminalWidget?.clear(); terminalWidget?.focus(); }, true);
+    $('copyConsoleBtn')?.addEventListener('click', async (event) => { event.preventDefault(); event.stopImmediatePropagation(); const selected = terminalWidget?.getSelection() || ''; if (!selected) { notify('Hãy chọn nội dung trong terminal để sao chép.'); return; } try { await navigator.clipboard.writeText(selected); notify('Đã sao chép nội dung terminal.'); } catch { notify('Trình duyệt không cho phép sao chép nội dung.', true); } }, true);
+    document.querySelectorAll('.bottom-tab-btn').forEach((tab) => tab.addEventListener('click', (event) => {
+      event.preventDefault(); event.stopImmediatePropagation();
+      const key = tab.dataset.tab;
+      document.querySelectorAll('.bottom-tab-btn').forEach((item) => { const active = item === tab; item.classList.toggle('active', active); item.setAttribute('aria-selected', String(active)); });
+      document.querySelectorAll('.console-tab-pane').forEach((pane) => { pane.hidden = pane.id !== `pane${key[0].toUpperCase()}${key.slice(1)}`; pane.style.display = pane.hidden ? 'none' : 'flex'; });
+      if (key === 'terminal') fitTerminal();
+    }, true));
+    window.addEventListener('resize', fitTerminal);
     $('egoBrowserToggle')?.addEventListener('click', (event) => {
       event.preventDefault(); event.stopImmediatePropagation();
       setBrowserMode(state.browserMode === 'ego-browser' ? 'none' : 'ego-browser');
@@ -3520,8 +3791,6 @@
     $('headerActionDelete')?.addEventListener('click', (event) => activeAction(event, 'delete'), true);
     $('headerActionRename')?.addEventListener('click', (event) => activeAction(event, 'rename'), true);
     $('headerSessionEditBtn')?.addEventListener('click', (event) => activeAction(event, 'rename'), true);
-    $('terminalInput') && (($('terminalInput').disabled = true), ($('terminalInput').placeholder = 'Terminal backend chưa được kết nối'));
-    document.querySelectorAll('#clearConsoleBtn,#copyConsoleBtn').forEach((control) => control.setAttribute('data-production-unsupported', 'true'));
     $('settingsModal')?.style.setProperty('transition', 'none');
     ensureToolsRail();
     $('codeDiffReviewModal') && ($('codeDiffReviewModal').hidden = true);
