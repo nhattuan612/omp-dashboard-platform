@@ -433,9 +433,15 @@ export class AcpSessionContext {
   async #switchSession(frame) {
     let sessionId = "";
     if (typeof frame.sessionPath === "string") {
-      const firstLine = (await readFile(frame.sessionPath, "utf8")).split("\n", 1)[0];
-      const record = JSON.parse(firstLine);
-      sessionId = record.type === "session" ? record.id : "";
+      for (const line of (await readFile(frame.sessionPath, "utf8")).split("\n").slice(0, 6)) {
+        try {
+          const record = JSON.parse(line);
+          if (record?.type === "session" && typeof record.id === "string" && record.id) {
+            sessionId = record.id;
+            break;
+          }
+        } catch {}
+      }
     }
     if (!sessionId) throw Object.assign(new Error("Không đọc được OMP session ID để khôi phục ACP"), { code: "NOT_FOUND" });
     await this.#loadSession(sessionId);

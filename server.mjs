@@ -1439,6 +1439,7 @@ const OMP_TOOL_DEFINITIONS = [
   ["log_experiment", "Ghi experiment", "Ghi kết quả và dữ liệu của experiment.", "always", "write"],
   ["update_notes", "Cập nhật notes", "Cập nhật ghi chú bền vững của dự án hoặc phiên.", "always", "write"],
 ];
+const OMP_UNAVAILABLE_TOOL_IDS = new Set(["hub"]);
 const OMP_MEMORY_BACKENDS = new Set(["off", "local", "hindsight", "mnemopi", "sharpshooter"]);
 const OMP_MEMORY_ACTIONS = ["view", "stats", "diagnose", "queue", "sync", "clear", "reset", "enqueue", "rebuild"];
 const OMP_MEMORY_MUTATING_ACTIONS = new Set(["sync", "clear", "reset", "enqueue", "rebuild"]);
@@ -1447,7 +1448,7 @@ const OMP_TOOL_APPROVAL = new Map(OMP_TOOL_DEFINITIONS.map(([id, , , , approval]
 const HEADLESS_APPROVAL_RANK = { read: 0, write: 1, exec: 2 };
 const HEADLESS_APPROVAL_LIMIT = { "always-ask": "read", write: "write", yolo: "exec" };
 const HEADLESS_READ_ONLY_TOOLS = new Set(["read", "grep", "glob"]);
-const OMP_OBSERVED_TOOL_IDS = ["read", "bash", "edit", "eval", "glob", "grep", "task", "hub", "todo", "web_search", "write"];
+const OMP_OBSERVED_TOOL_IDS = ["read", "bash", "edit", "eval", "glob", "grep", "task", "todo", "web_search", "write"];
 let ompToolCatalogCache = { loadedAt: 0, items: [] };
 
 function runOmpConfigList() {
@@ -1502,7 +1503,7 @@ async function readOmpToolCatalog() {
   const items = OMP_TOOL_DEFINITIONS.map(([id, label, description, configKey, approval]) => {
     const setting = settings[configKey];
     const value = configKey === "eval.js" ? settings["eval.js"]?.value === true || settings["eval.py"]?.value === true : configKey === "always" ? true : setting?.value === true;
-    const status = value ? "supported" : "unavailable";
+    const status = !OMP_UNAVAILABLE_TOOL_IDS.has(id) && value ? "supported" : "unavailable";
     return { id, label, description, status, approval, canToggle: status === "supported" };
   });
   ompToolCatalogCache = { loadedAt: Date.now(), items };
