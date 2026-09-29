@@ -1,9 +1,11 @@
 import http from "node:http";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import * as pty from "node-pty";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
+import { WebSocketServer, WebSocket } from "ws";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConsoleBridge } from "./console-bridge.mjs";
@@ -62,10 +64,10 @@ const rawChatRateLimit = process.env.OMP_CHAT_RATE_LIMIT;
 const configuredChatRateLimit = rawChatRateLimit == null || rawChatRateLimit.trim() === "" ? 30 : Number(rawChatRateLimit);
 const CHAT_RATE_LIMIT = Number.isSafeInteger(configuredChatRateLimit) && configuredChatRateLimit >= 0 ? configuredChatRateLimit : 30;
 const DASHBOARD_MARK_ASSET = "honpi-dashboard-mark-8138753b.png";
-const CSP_HEADER = "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' __NONCE__; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self'; font-src 'self' data:; form-action 'self'";
+const CSP_HEADER = `default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' __NONCE__; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' ws://127.0.0.1:${PORT} ws://localhost:${PORT}; font-src 'self' data:; form-action 'self'`;
 const PUBLIC_ERROR_CODES = new Set([
   "BAD_REQUEST", "MODEL_NOT_FOUND", "MODEL_NOT_ALLOWED_BY_QUOTA", "IMAGE_GENERATION_MODEL_REQUIRED", "NOT_FOUND", "CONFLICT", "ACCOUNT_NOT_FOUND", "ACCOUNT_UNAVAILABLE", "ACCOUNT_SELECTION_REQUIRED",
-  "RATE_LIMITED", "METHOD_NOT_ALLOWED", "UNAUTHORIZED", "FORBIDDEN", "FORBIDDEN_HOST", "FORBIDDEN_ORIGIN", "UPSTREAM_UNAVAILABLE",
+  "RATE_LIMITED", "METHOD_NOT_ALLOWED", "UNAUTHORIZED", "FORBIDDEN", "FORBIDDEN_HOST", "FORBIDDEN_ORIGIN", "UPSTREAM_UNAVAILABLE", "TERMINAL_UNAVAILABLE",
 ]);
 const pendingApprovalRequests = new Map();
 const DEFAULT_APPROVAL_TIMEOUT_MS = 600_000;
@@ -92,13 +94,18 @@ let historyCache = { loadedAt: 0, items: [] };
 const statusClients = new Map();
 let refreshTimer = null;
 const requestRateBuckets = new Map();
+const terminalSessions = new Map();
+const TERMINAL_MAX_SESSIONS = 4;
+const TERMINAL_IDLE_TIMEOUT_MS = 30 * 60_000;
+const TERMINAL_PENDING_OUTPUT_LIMIT = 64 * 1024;
+const TERMINAL_WEBSOCKET_BUFFER_LIMIT = 512 * 1024;
 
 function applySecurityHeaders(res) {
   const nonce = randomBytes(18).toString("base64");
   res.setHeader("x-content-type-options", "nosniff");
   res.setHeader("x-frame-options", "DENY");
   res.setHeader("referrer-policy", "no-referrer");
-  res.setHeader("permissions-policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
+  res.setHeader("permissions-policy", "camera=(), microphone=(self), geolocation=(), payment=(), usb=()");
   res.setHeader("content-security-policy", CSP_HEADER.replace("__NONCE__", `'nonce-${nonce}'`));
   res.setHeader("cache-control", "no-store");
   return nonce;
@@ -156,7 +163,8 @@ function enforceRateLimit(req, pathname) {
   if (!requiresApiAuth(pathname) || !["POST", "DELETE"].includes(req.method)) return null;
   const isLogin = pathname === "/api/login";
   const isChat = pathname === "/api/v1/chat/send" || pathname === "/api/v1/chat/stream";
-  const limit = isLogin ? 5 : isChat ? CHAT_RATE_LIMIT : 120;
+  const isTerminalOpen = pathname === "/api/v1/terminal/open";
+  const limit = isLogin ? 5 : isChat ? CHAT_RATE_LIMIT : isTerminalOpen ? 10 : 120;
   if (limit <= 0) return null;
   const windowMs = 60_000;
   const key = `${req.socket.remoteAddress || "loopback"}:${pathname}`;
@@ -205,6 +213,7 @@ function errorStatus(code) {
   if (["NOT_FOUND", "ACCOUNT_NOT_FOUND"].includes(code)) return 404;
   if (["CONFLICT", "ACCOUNT_UNAVAILABLE", "ACCOUNT_SELECTION_REQUIRED", "MODEL_NOT_ALLOWED_BY_QUOTA"].includes(code)) return 409;
   if (code === "RATE_LIMITED") return 429;
+  if (code === "TERMINAL_UNAVAILABLE") return 503;
   if (code === "UPSTREAM_TIMEOUT") return 504;
   if (["UNAUTHORIZED"].includes(code)) return 401;
   if (["FORBIDDEN", "FORBIDDEN_HOST", "FORBIDDEN_ORIGIN"].includes(code)) return 403;
@@ -1424,6 +1433,8 @@ const OMP_MEMORY_BACKENDS = new Set(["off", "local", "hindsight", "mnemopi", "sh
 const OMP_MEMORY_ACTIONS = ["view", "stats", "diagnose", "queue", "sync", "clear", "reset", "enqueue", "rebuild"];
 const OMP_MEMORY_MUTATING_ACTIONS = new Set(["sync", "clear", "reset", "enqueue", "rebuild"]);
 const OMP_MEMORY_CONFIRM_ACTIONS = new Set(["sync", "clear", "reset", "enqueue", "rebuild"]);
+const ADVISOR_SYNC_BACKLOGS = new Set(["off", "1", "3", "5"]);
+const ADVISOR_TIERS = new Set(["inherit", "none", "auto", "default", "flex", "scale", "priority"]);
 const HEADLESS_APPROVAL_RANK = { read: 0, write: 1, exec: 2 };
 const HEADLESS_APPROVAL_LIMIT = { "always-ask": "read", write: "write", yolo: "exec" };
 function runOmpMemoryBackend(cwd) {
@@ -1457,6 +1468,49 @@ function runOmpMemoryBackend(cwd) {
   });
 }
 
+function runOmpConfig(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(OMP_BIN, ["config", ...args], { env: OMP_ENV, stdio: ["ignore", "pipe", "pipe"] });
+    let output = ""; let errorOutput = ""; let settled = false;
+    const finish = (fn, value) => { if (settled) return; settled = true; clearTimeout(timer); fn(value); };
+    const timer = setTimeout(() => { child.kill("SIGTERM"); finish(reject, Object.assign(new Error("OMP config không phản hồi"), { code: "UPSTREAM_UNAVAILABLE" })); }, 15000);
+    const append = (target) => (chunk) => { if (target === "out") output += chunk.toString(); else errorOutput += chunk.toString(); };
+    child.stdout.on("data", append("out")); child.stderr.on("data", append("err"));
+    child.on("error", () => finish(reject, Object.assign(new Error("Không chạy được OMP config"), { code: "UPSTREAM_UNAVAILABLE" })));
+    child.on("close", (code) => code === 0 ? finish(resolve, output) : finish(reject, Object.assign(new Error(errorOutput.trim() || "OMP config từ chối thay đổi"), { code: "UPSTREAM_UNAVAILABLE" })));
+  });
+}
+
+async function advisorConfig() {
+  const raw = JSON.parse(await runOmpConfig(["list", "--json"]));
+  const get = (key, fallback) => raw?.[key]?.value ?? fallback;
+  const roles = get("modelRoles", {});
+  return {
+    enabled: get("advisor.enabled", false) === true,
+    planYolo: false,
+    planYoloModel: typeof roles?.plan === "string" ? roles.plan : "",
+    syncBacklog: get("advisor.syncBacklog", "off"), immuneTurns: get("advisor.immuneTurns", 3), maxNotesPerUpdate: get("advisor.maxNotesPerUpdate", 4), evictStaleResults: get("advisor.evictStaleResults", true),
+    model: typeof roles?.advisor === "string" ? roles.advisor : "", tier: get("tier.advisor", "none"),
+  };
+}
+
+async function updateAdvisorConfig(body) {
+  if (!body || Array.isArray(body) || typeof body !== "object") throw Object.assign(new Error("Cấu hình Advisor phải là object"), { code: "BAD_REQUEST" });
+  const current = await advisorConfig();
+  const next = { ...current, ...body };
+  if (!ADVISOR_SYNC_BACKLOGS.has(next.syncBacklog)) throw Object.assign(new Error("Advisor sync backlog không hợp lệ"), { code: "BAD_REQUEST", field: "syncBacklog" });
+  if (!Number.isInteger(next.immuneTurns) || next.immuneTurns < 0 || next.immuneTurns > 5) throw Object.assign(new Error("Advisor immune turns phải từ 0 đến 5"), { code: "BAD_REQUEST", field: "immuneTurns" });
+  if (!Number.isInteger(next.maxNotesPerUpdate) || next.maxNotesPerUpdate < 1 || next.maxNotesPerUpdate > 5) throw Object.assign(new Error("Advisor max notes phải từ 1 đến 5"), { code: "BAD_REQUEST", field: "maxNotesPerUpdate" });
+  if (typeof next.evictStaleResults !== "boolean") throw Object.assign(new Error("Advisor evict stale results phải là boolean"), { code: "BAD_REQUEST", field: "evictStaleResults" });
+  if (typeof next.model !== "string" || !next.model.trim() || next.model.length > 200) throw Object.assign(new Error("Model Advisor không hợp lệ"), { code: "BAD_REQUEST", field: "model" });
+  if (!ADVISOR_TIERS.has(next.tier)) throw Object.assign(new Error("Service tier Advisor không hợp lệ"), { code: "BAD_REQUEST", field: "tier" });
+  const raw = JSON.parse(await runOmpConfig(["list", "--json"])); const roles = { ...(raw?.modelRoles?.value || {}), advisor: next.model.trim() };
+  for (const args of [
+    ["set", "advisor.syncBacklog", next.syncBacklog], ["set", "advisor.immuneTurns", String(next.immuneTurns)], ["set", "advisor.maxNotesPerUpdate", String(next.maxNotesPerUpdate)], ["set", "advisor.evictStaleResults", String(next.evictStaleResults)], ["set", "tier.advisor", next.tier], ["set", "modelRoles", JSON.stringify(roles)],
+  ]) await runOmpConfig(args);
+  return advisorConfig();
+}
+
 async function readOmpToolCatalog() {
   return (await ompToolCatalog.read()).tools;
 }
@@ -1486,6 +1540,21 @@ function approvalMode(value) {
   const mode = typeof value === "string" && value.trim() ? value.trim() : "always-ask";
   if (!["always-ask", "write", "yolo"].includes(mode)) throw Object.assign(new Error("approvalMode không hợp lệ"), { code: "BAD_REQUEST", field: "approvalMode" });
   return mode;
+}
+function planYolo(value) {
+  if (value == null) return false;
+  if (typeof value !== "boolean") throw Object.assign(new Error("planYolo phải là boolean"), { code: "BAD_REQUEST", field: "planYolo" });
+  return value;
+}
+function advisor(value) {
+  if (value == null) return false;
+  if (typeof value !== "boolean") throw Object.assign(new Error("advisor phải là boolean"), { code: "BAD_REQUEST", field: "advisor" });
+  return value;
+}
+function planYoloModel(value) {
+  const model = typeof value === "string" ? value.trim() : "";
+  if (!model || model.length > 200) throw Object.assign(new Error("Plan YOLO cần model OMP hợp lệ"), { code: "BAD_REQUEST", field: "planYoloModel" });
+  return model;
 }
 
 async function headlessTools(approval, tools) {
@@ -1594,17 +1663,24 @@ function gatewayPayload(record) {
     context,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
+    advisor: record.advisor === true,
   };
 }
 
 async function gatewayLaunchConfig(body = {}) {
   const selectedApprovalMode = approvalMode(body.approvalMode);
   const selectedBrowserMode = body.browserMode == null ? null : browserMode(body.browserMode);
+  const selectedPlanYolo = planYolo(body.planYolo);
+  const selectedPlanYoloModel = selectedPlanYolo ? planYoloModel(body.planYoloModel || body.model) : null;
+  const selectedAdvisor = advisor(body.advisor);
   const useSkillBrowser = selectedBrowserMode === "ego-browser";
   const selectedTools = useSkillBrowser ? null : await headlessTools(selectedApprovalMode, await selectedOmpTools(body.tools));
   return {
     approvalMode: selectedApprovalMode,
     browserMode: selectedBrowserMode,
+    planYolo: selectedPlanYolo,
+    planYoloModel: selectedPlanYoloModel,
+    advisor: selectedAdvisor,
     tools: selectedTools,
     workerTools: selectedTools ?? [],
   };
@@ -1625,6 +1701,9 @@ async function createGatewaySession(body) {
       protocol,
       cwd: body.cwd,
       approvalMode: launch.approvalMode,
+      planYolo: launch.planYolo,
+      planYoloModel: launch.planYoloModel,
+      advisor: launch.advisor,
       tools: launch.workerTools,
       ompSessionId: body.ompSessionId,
     });
@@ -1637,6 +1716,9 @@ async function createGatewaySession(body) {
       approvalMode: launch.approvalMode,
       tools: launch.tools,
       browserMode: launch.browserMode,
+      planYolo: launch.planYolo,
+      planYoloModel: launch.planYoloModel,
+      advisor: launch.advisor,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
@@ -1655,7 +1737,7 @@ async function prewarmGateway(body = {}) {
   const launch = await gatewayLaunchConfig(body);
   const cwd = typeof body.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : GENERAL_CHAT_CWD;
   if (cwd === GENERAL_CHAT_CWD) await mkdir(cwd, { recursive: true, mode: 0o700 });
-  return consoleBridge.prewarm({ cwd, approvalMode: launch.approvalMode, tools: launch.workerTools });
+  return consoleBridge.prewarm({ cwd, approvalMode: launch.approvalMode, planYolo: launch.planYolo, planYoloModel: launch.planYoloModel, advisor: launch.advisor, tools: launch.workerTools });
 }
 
 function normalizedChatMetadata(value) {
@@ -1759,6 +1841,108 @@ async function updateChatFolderWorkspace(folderId, cwd) {
   });
   chatMetadataWrite = operation.catch(() => {});
   return operation;
+}
+
+function terminalEnvironment(extra = {}) {
+  const keys = process.platform === "win32"
+    ? ["PATH", "PATHEXT", "SystemRoot", "windir", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "COMSPEC"]
+    : ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TMPDIR", "DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "XDG_SESSION_TYPE", "XAUTHORITY"];
+  return Object.fromEntries([
+    ...keys.filter((key) => typeof process.env[key] === "string").map((key) => [key, key === "PATH" ? OMP_ENV.PATH : process.env[key]]),
+    ["TERM", "xterm-256color"],
+    ["COLORTERM", "truecolor"],
+    ...(!process.env.LANG && process.platform !== "win32" ? [["LANG", "en_US.UTF-8"]] : []),
+    ...Object.entries(extra),
+  ]);
+}
+
+function terminalShell() {
+  if (process.platform === "win32") return { file: process.env.ComSpec || "powershell.exe", args: ["-NoLogo"] };
+  const fallback = process.platform === "darwin" ? "/bin/zsh" : "/bin/bash";
+  return { file: process.env.SHELL || fallback, args: ["-l"] };
+}
+
+function terminalTouch(session) {
+  clearTimeout(session.idleTimer);
+  session.idleTimer = setTimeout(() => closeTerminalSession(session.id, "idle"), TERMINAL_IDLE_TIMEOUT_MS);
+  session.idleTimer.unref?.();
+}
+
+function terminalSend(session, payload) {
+  if (session.socket?.readyState !== WebSocket.OPEN) return false;
+  if (session.socket.bufferedAmount > TERMINAL_WEBSOCKET_BUFFER_LIMIT) {
+    session.socket.close(1013, "Terminal output is backlogged");
+    closeTerminalSession(session.id, "backpressure");
+    return false;
+  }
+  session.socket.send(JSON.stringify(payload));
+  return true;
+}
+
+function closeTerminalSession(id, reason = "closed", kill = true) {
+  const session = terminalSessions.get(id);
+  if (!session) return;
+  terminalSessions.delete(id);
+  clearTimeout(session.idleTimer);
+  if (kill) { try { session.pty.kill(); } catch {} }
+  if (session.socket?.readyState === WebSocket.OPEN) {
+    terminalSend(session, { type: "closed", reason });
+    session.socket.close(1000, reason.slice(0, 100));
+  }
+}
+
+async function createTerminalSession(body) {
+  if (terminalSessions.size >= TERMINAL_MAX_SESSIONS) throw Object.assign(new Error("Đã đạt giới hạn terminal đang mở."), { code: "CONFLICT" });
+  const cwd = await terminalWorkspace(body);
+  if (terminalSessions.size >= TERMINAL_MAX_SESSIONS) throw Object.assign(new Error("Đã đạt giới hạn terminal đang mở."), { code: "CONFLICT" });
+  const { file, args } = terminalShell();
+  const id = randomUUID();
+  try {
+    const child = pty.spawn(file, args, { name: "xterm-256color", cols: 80, rows: 24, cwd, env: terminalEnvironment() });
+    const session = { id, cwd, pty: child, socket: null, pendingOutput: "", idleTimer: null };
+    terminalSessions.set(id, session);
+    terminalTouch(session);
+    child.onData((data) => {
+      terminalTouch(session);
+      if (session.socket?.readyState === WebSocket.OPEN) {
+        for (let offset = 0; offset < data.length; offset += 16_000) {
+          if (!terminalSend(session, { type: "output", data: data.slice(offset, offset + 16_000) })) break;
+        }
+      } else session.pendingOutput = (session.pendingOutput + data).slice(-TERMINAL_PENDING_OUTPUT_LIMIT);
+    });
+    child.onExit(({ exitCode, signal }) => {
+      terminalSend(session, { type: "exit", exitCode, signal });
+      closeTerminalSession(id, "exit", false);
+    });
+    return { terminalId: id, cwd };
+  } catch (error) {
+    throw Object.assign(new Error("Không thể khởi chạy shell trên máy này."), { code: "TERMINAL_UNAVAILABLE", cause: error });
+  }
+}
+
+async function terminalWorkspace(body) {
+  if (body.sessionId != null) {
+    if (body.cwd != null) throw Object.assign(new Error("Chỉ gửi sessionId khi mở Terminal cho chat đã có."), { code: "BAD_REQUEST" });
+    const id = gatewaySessionId(body.sessionId);
+    const metadata = await readChatMetadata();
+    const stored = metadata.sessions[id] || {};
+    if (stored.deleted || stored.archived) throw Object.assign(new Error("Cuộc trò chuyện không còn khả dụng."), { code: "NOT_FOUND" });
+    const record = liveGatewayRecord(id);
+    let persisted = null;
+    try { persisted = await readPersistedChatSession(id); }
+    catch (error) { if (error.message !== "Không tìm thấy session OMP") throw error; }
+    if (!record && !persisted && !Object.hasOwn(metadata.sessions, id)) throw Object.assign(new Error("Không tìm thấy cuộc trò chuyện."), { code: "NOT_FOUND" });
+    const folder = stored.folderId ? metadata.folders[stored.folderId] : null;
+    const cwd = folder?.cwd || GENERAL_CHAT_CWD;
+    if (!folder?.cwd) await mkdir(GENERAL_CHAT_CWD, { recursive: true, mode: 0o700 });
+    return consoleBridge.validateWorkspaceDirectory(cwd);
+  }
+  if (body.cwd != null) {
+    if (typeof body.cwd !== "string" || !body.cwd.trim() || body.cwd.length > 4096) throw Object.assign(new Error("Workspace draft không hợp lệ."), { code: "BAD_REQUEST", field: "cwd" });
+    return consoleBridge.validateWorkspaceDirectory(body.cwd);
+  }
+  await mkdir(GENERAL_CHAT_CWD, { recursive: true, mode: 0o700 });
+  return consoleBridge.validateWorkspaceDirectory(GENERAL_CHAT_CWD);
 }
 async function rememberGatewaySession(record, timeoutMs = 1500) {
   if (!record) return null;
@@ -2466,6 +2650,8 @@ function chatSessionView(session) {
     isPinned: Boolean(session.isPinned),
     isUnread: Boolean(session.isUnread),
     ...(Array.isArray(session.tools) ? { tools: session.tools } : {}),
+    ...(session.planYolo === true ? { planYolo: true, planYoloModel: session.planYoloModel || null } : {}),
+    ...(session.advisor === true ? { advisor: true } : {}),
     ...(folderId ? { folderId } : {}),
     ...(folderName ? { folderName } : {}),
     updatedAgo: shortAge(updatedAt),
@@ -2607,13 +2793,18 @@ async function ensureChatSessionUnlocked(sessionId, body = {}, { requireExisting
   const useSkillBrowser = selectedBrowserMode === "ego-browser";
   const requestedApprovalMode = body.approvalMode ? approvalMode(body.approvalMode) : null;
   const selectedApprovalMode = requestedApprovalMode || record?.approvalMode || approvalMode(stored.approvalMode);
+  const hasPlanYolo = Object.hasOwn(body, "planYolo");
+  const selectedPlanYolo = hasPlanYolo ? planYolo(body.planYolo) : record?.planYolo === true || stored.planYolo === true;
+  const selectedPlanYoloModel = selectedPlanYolo ? planYoloModel(body.planYoloModel || body.model || record?.planYoloModel || stored.planYoloModel) : null;
+  const hasAdvisor = Object.hasOwn(body, "advisor");
+  const selectedAdvisor = hasAdvisor ? advisor(body.advisor) : record?.advisor === true || stored.advisor === true;
   const requestedTools = hasBrowserMode && useSkillBrowser
     ? null
     : body.tools == null
       ? (hasBrowserMode && record?.tools == null ? await headlessTools(selectedApprovalMode, await selectedOmpTools(stored.tools)) : null)
       : await headlessTools(selectedApprovalMode, await selectedOmpTools(body.tools));
   const browserContextChanged = Boolean(record && hasBrowserMode && ((useSkillBrowser && record.tools !== null) || (!useSkillBrowser && record.tools === null)));
-  if (record && ((requestedApprovalMode && record.approvalMode !== requestedApprovalMode) || (requestedTools && JSON.stringify(record.tools || []) !== JSON.stringify(requestedTools)) || browserContextChanged) && !contextHasChatWork(record.contextId)) {
+  if (record && ((requestedApprovalMode && record.approvalMode !== requestedApprovalMode) || (hasPlanYolo && (record.planYolo !== selectedPlanYolo || record.planYoloModel !== selectedPlanYoloModel)) || (hasAdvisor && record.advisor !== selectedAdvisor) || (requestedTools && JSON.stringify(record.tools || []) !== JSON.stringify(requestedTools)) || browserContextChanged) && !contextHasChatWork(record.contextId)) {
     await consoleBridge.stop(record.contextId);
     gatewaySessions.delete(id);
     record = null;
@@ -2625,6 +2816,9 @@ async function ensureChatSessionUnlocked(sessionId, body = {}, { requireExisting
       sessionId: id,
       cwd: effectiveCwd,
       approvalMode: selectedApprovalMode,
+      planYolo: selectedPlanYolo,
+      planYoloModel: selectedPlanYoloModel,
+      advisor: selectedAdvisor,
       ...(hasBrowserMode ? { browserMode: selectedBrowserMode } : {}),
       tools: requestedTools ?? stored.tools,
       ...((persisted?.ompSessionId || stored.ompSessionId) ? { ompSessionId: persisted?.ompSessionId || stored.ompSessionId } : {}),
@@ -3364,7 +3558,7 @@ async function sessionAction(sessionId, req, providedBody = null) {
     const selectedChatModel = record?.selectedChatModel || null;
     const tools = await headlessTools(record?.approvalMode || approvalMode(current.approvalMode), await selectedOmpTools(body.tools));
     if (!record) {
-      await ensureChatSession(id, { tools, approvalMode: current.approvalMode });
+      await ensureChatSession(id, { tools, approvalMode: current.approvalMode, planYolo: current.planYolo === true, planYoloModel: current.planYoloModel, advisor: current.advisor === true });
       record = liveGatewayRecord(id);
       if (record) record.selectedChatModel = selectedChatModel;
     } else {
@@ -3373,7 +3567,7 @@ async function sessionAction(sessionId, req, providedBody = null) {
       const sourcePath = current.path || (await readPersistedChatSession(id).catch(() => null))?.path;
       await consoleBridge.stop(record.contextId);
       gatewaySessions.delete(id);
-      await createGatewaySession({ sessionId: id, cwd: summary.cwd, approvalMode: record.approvalMode, tools });
+      await createGatewaySession({ sessionId: id, cwd: summary.cwd, approvalMode: record.approvalMode, planYolo: record.planYolo === true, planYoloModel: record.planYoloModel, advisor: record.advisor === true, tools });
       const nextRecord = liveGatewayRecord(id);
       if (nextRecord) nextRecord.selectedChatModel = selectedChatModel;
       if (sourcePath) await queryGatewayResponse(nextRecord, { type: "switch_session", sessionPath: sourcePath });
@@ -3392,10 +3586,13 @@ async function sessionAction(sessionId, req, providedBody = null) {
     const summary = record ? consoleBridge.get(record.contextId).summary() : null;
     if (record && contextHasChatWork(record.contextId)) throw Object.assign(new Error("Không thể reconnect khi session đang chạy hoặc đang chờ; hãy dừng lượt trước."), { code: "CONFLICT" });
     const savedApprovalMode = record?.approvalMode || current.approvalMode;
+    const savedPlanYolo = record?.planYolo === true || current.planYolo === true;
+    const savedPlanYoloModel = record?.planYoloModel || current.planYoloModel;
+    const savedAdvisor = record?.advisor === true || current.advisor === true;
     const savedTools = Array.isArray(record?.tools) ? record.tools : current.tools;
     const cwd = summary?.cwd || persisted?.cwd;
     if (record) { await consoleBridge.stop(record.contextId); gatewaySessions.delete(id); }
-    const nextRecord = await ensureChatSession(id, { cwd, approvalMode: savedApprovalMode, ...(Array.isArray(savedTools) ? { tools: savedTools } : {}) });
+    const nextRecord = await ensureChatSession(id, { cwd, approvalMode: savedApprovalMode, planYolo: savedPlanYolo, advisor: savedAdvisor, ...(savedPlanYolo ? { planYoloModel: savedPlanYoloModel } : {}), ...(Array.isArray(savedTools) ? { tools: savedTools } : {}) });
     const stored = await updateChatMetadata(id, { reconnectedAt: new Date().toISOString() }, { touchUpdatedAt: false });
     return { success: true, action, sessionId: id, status: "ready", metadata: stored, context: consoleBridge.publicSummary(nextRecord.contextId) };
   } else if (action === "resume_queue") {
@@ -3474,6 +3671,9 @@ async function sessionAction(sessionId, req, providedBody = null) {
           cwd,
           ompSessionId: childId,
           approvalMode: target.approvalMode,
+          planYolo: target.planYolo === true,
+          planYoloModel: target.planYoloModel || null,
+          advisor: target.advisor === true,
           tools: target.tools,
           createdAt,
         });
@@ -3485,6 +3685,8 @@ async function sessionAction(sessionId, req, providedBody = null) {
           ompSessionId: childId,
           cwd,
           approvalMode: target.approvalMode,
+          planYolo: target.planYolo === true,
+          planYoloModel: target.planYoloModel || null,
           tools: target.tools,
           browserMode: target.browserMode,
           createdAt: timestamp,
@@ -3881,6 +4083,14 @@ async function readDashboardBinary(name) {
   catch (error) {
     if (ROOT === SOURCE_ROOT) throw error;
     return readFile(join(ROOT, name));
+  }
+}
+
+async function readTerminalAsset(name) {
+  try { return await readFile(join(SOURCE_ROOT, "node_modules", name)); }
+  catch (error) {
+    if (ROOT === SOURCE_ROOT) throw error;
+    return readFile(join(ROOT, "node_modules", name));
   }
 }
 
@@ -4799,6 +5009,22 @@ const server = http.createServer(async (req, res) => {
       return chatError(res, error);
     }
   }
+  if (requestUrl.pathname === "/api/v1/terminal/open") {
+    try {
+      if (req.method !== "POST") return json(res, 405, { ok: false, error: { code: "METHOD_NOT_ALLOWED", message: "Phương thức HTTP không được hỗ trợ." } });
+      const body = await jsonBody(req);
+      if (!body || Array.isArray(body) || typeof body !== "object") throw Object.assign(new Error("Payload phải là object JSON."), { code: "BAD_REQUEST" });
+      if (Object.keys(body).some((key) => !["sessionId", "cwd"].includes(key))) throw Object.assign(new Error("Payload terminal có trường không được hỗ trợ."), { code: "BAD_REQUEST" });
+      const { terminalId, cwd } = await createTerminalSession(body);
+      return json(res, 201, { ok: true, terminalId, workspace: basename(cwd) });
+    } catch (error) { return chatError(res, error); }
+  }
+  const terminalSessionMatch = requestUrl.pathname.match(/^\/api\/v1\/terminal\/sessions\/([0-9a-f-]{36})$/i);
+  if (terminalSessionMatch) {
+    if (req.method !== "DELETE") return json(res, 405, { ok: false, error: { code: "METHOD_NOT_ALLOWED", message: "Phương thức HTTP không được hỗ trợ." } });
+    closeTerminalSession(terminalSessionMatch[1], "closed");
+    return json(res, 200, { ok: true });
+  }
   if (requestUrl.pathname === "/api/v1/sessions" || requestUrl.pathname.startsWith("/api/v1/sessions/")) {
     try {
       if (requestUrl.pathname === "/api/v1/sessions" && req.method === "GET") {
@@ -4841,13 +5067,16 @@ const server = http.createServer(async (req, res) => {
           await mkdir(GENERAL_CHAT_CWD, { recursive: true, mode: 0o700 });
           cwd = GENERAL_CHAT_CWD;
         }
-        const record = await ensureChatSession(sessionId, { cwd, title: body.title, ...(body.browserMode != null ? { browserMode: body.browserMode } : {}), ...(body.approvalMode != null ? { approvalMode: body.approvalMode } : {}), ...(body.tools != null ? { tools: body.tools } : {}) });
+        const record = await ensureChatSession(sessionId, { cwd, title: body.title, ...(body.browserMode != null ? { browserMode: body.browserMode } : {}), ...(body.approvalMode != null ? { approvalMode: body.approvalMode } : {}), ...(body.planYolo != null ? { planYolo: body.planYolo } : {}), ...(body.planYoloModel != null ? { planYoloModel: body.planYoloModel } : {}), ...(body.advisor != null ? { advisor: body.advisor } : {}), ...(body.tools != null ? { tools: body.tools } : {}) });
         const now = new Date(record.createdAt || Date.now()).toISOString();
         const title = String(body.title || "Phiên làm việc mới").trim() || "Phiên làm việc mới";
         const stored = await updateChatMetadata(sessionId, {
           title,
           createdAt: now,
           tools: record.tools,
+          planYolo: record.planYolo,
+          planYoloModel: record.planYoloModel,
+          advisor: record.advisor === true,
           cwd: record.cwd,
           ...geminiDefaultSnapshot,
           ...(projectFolder ? { folderId: projectFolder.id, folderName: projectFolder.name } : {}),
@@ -4923,6 +5152,7 @@ const server = http.createServer(async (req, res) => {
       if (activeChatRequests.has(requestId)) throw Object.assign(new Error("requestId đang được xử lý"), { code: "CONFLICT" });
       const { model: selectedModel } = await resolveChatModel(chatModel(body.model), modelSource, modelProvider, sessionId, prompt);
       const record = await ensureChatSession(sessionId, { ...body, approvalMode: selectedApprovalMode, browserMode: selectedBrowserMode });
+      if (Object.hasOwn(body, "planYolo") || Object.hasOwn(body, "advisor")) await updateChatMetadata(sessionId, { planYolo: record.planYolo === true, planYoloModel: record.planYoloModel || null, advisor: record.advisor === true }, { touchUpdatedAt: false });
       record.selectedChatModel = selectedModel;
       if (isQuotaGoogleChatModel(selectedModel)) {
         const { account, availability } = await selectedGeminiAccountState(sessionId);
@@ -4957,6 +5187,10 @@ const server = http.createServer(async (req, res) => {
       return json(res, 202, { ok: true, worker: await prewarmGateway(body) });
     } catch (error) { return chatError(res, error); }
   }
+  if ((requestUrl.pathname === "/api/v1/omp/advisor-config" || requestUrl.pathname === "/api/omp/v1/advisor-config") && (req.method === "GET" || req.method === "POST")) {
+    try { return json(res, 200, req.method === "GET" ? await advisorConfig() : await updateAdvisorConfig(await jsonBody(req))); }
+    catch (error) { return chatError(res, error); }
+  }
   if (requestUrl.pathname === "/chat" && req.method === "GET") {
     const page = await readDashboardAsset("honpi-chat-dashboard-SKE.html", res.cspNonce);
     issueDashboardCookie(res);
@@ -4973,6 +5207,17 @@ const server = http.createServer(async (req, res) => {
     const script = await readDashboardAsset("honpi-chat-dashboard-live.js");
     res.writeHead(200, { "content-type": "application/javascript; charset=utf-8", "cache-control": "no-store" });
     return res.end(script);
+  }
+  const terminalAssets = {
+    "/terminal-assets/xterm.js": ["@xterm/xterm/lib/xterm.js", "application/javascript; charset=utf-8"],
+    "/terminal-assets/xterm.css": ["@xterm/xterm/css/xterm.css", "text/css; charset=utf-8"],
+    "/terminal-assets/addon-fit.js": ["@xterm/addon-fit/lib/addon-fit.js", "application/javascript; charset=utf-8"],
+  };
+  if (req.method === "GET" && terminalAssets[requestUrl.pathname]) {
+    const [asset, type] = terminalAssets[requestUrl.pathname];
+    const content = await readTerminalAsset(asset);
+    res.writeHead(200, { "content-type": type, "cache-control": "no-store" });
+    return res.end(content);
   }
   if (requestUrl.pathname === `/${DASHBOARD_MARK_ASSET}` && req.method === "GET") {
     const image = await readDashboardBinary(DASHBOARD_MARK_ASSET);
@@ -5017,7 +5262,7 @@ const server = http.createServer(async (req, res) => {
           imageGeneration,
           screenCapture: { status: "unavailable", note: "Native screen capture chưa có adapter." },
           camera: "unavailable",
-          microphone: "unavailable",
+          microphone: { status: "partial", provider: "browser-speech-recognition", languages: ["vi-VN", "en-US"], audioToDashboard: false },
           audio: "unavailable",
           video: "unavailable",
           browserRelay: "unavailable",
@@ -5028,7 +5273,7 @@ const server = http.createServer(async (req, res) => {
           browserPageScreenshot: "unavailable",
           note: "Ego Browser host hiện không cung cấp Page.captureScreenshot ổn định; snapshot page p1 là đọc cây trợ năng, không phải native screen capture.",
         },
-        models, tools, catalog: toolCatalog.catalog, observedToolIds: toolCatalog.observedToolIds, commands: [...ACP_GATEWAY_COMMANDS].filter((command) => !BLOCKED_BROWSER_COMMANDS.has(command)).sort(), browsers: OMP_BROWSER_MODES, approvalModes: OMP_APPROVAL_MODES, shareModes: OMP_SHARE_MODES,
+        models, tools, sessionModes: toolCatalog.sessionModes, catalog: toolCatalog.catalog, observedToolIds: toolCatalog.observedToolIds, commands: [...ACP_GATEWAY_COMMANDS].filter((command) => !BLOCKED_BROWSER_COMMANDS.has(command)).sort(), browsers: OMP_BROWSER_MODES, approvalModes: OMP_APPROVAL_MODES, shareModes: OMP_SHARE_MODES,
         safety: consoleBridge.safety(),
         note: "Catalog lấy từ OMP runtime; capability unavailable không được báo thành công.",
       });
@@ -5279,6 +5524,51 @@ server.on("error", (error) => {
   process.exitCode = 1;
 });
 
+const terminalWebSockets = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024, perMessageDeflate: false });
+server.on("upgrade", (req, socket, head) => {
+  let url;
+  try { url = new URL(req.url || "/", `http://${req.headers.host || ""}`); }
+  catch { socket.destroy(); return; }
+  const reject = (status, label) => { socket.write(`HTTP/1.1 ${status} ${label}\r\nConnection: close\r\n\r\n`); socket.destroy(); };
+  if (url.pathname !== "/api/v1/terminal/stream" || req.method !== "GET") return reject(404, "Not Found");
+  if (!isAllowedHost(req)) return reject(403, "Forbidden");
+  if (!DASHBOARD_ORIGINS.has(String(req.headers.origin || ""))) return reject(403, "Forbidden");
+  if (!tokenMatches(readCookie(req, DASHBOARD_SESSION_COOKIE))) return reject(401, "Unauthorized");
+  const id = url.searchParams.get("terminalId") || "";
+  const session = terminalSessions.get(id);
+  if (!/^[0-9a-f-]{36}$/i.test(id) || !session || session.socket) return reject(404, "Not Found");
+  terminalWebSockets.handleUpgrade(req, socket, head, (ws) => {
+    session.socket = ws;
+    terminalTouch(session);
+    if (session.pendingOutput) {
+      terminalSend(session, { type: "output", data: session.pendingOutput });
+      session.pendingOutput = "";
+    }
+    let messageWindow = Date.now();
+    let messageCount = 0;
+    ws.on("message", (raw, binary) => {
+      if (binary) { ws.close(1003, "Text messages only"); return; }
+      const now = Date.now();
+      if (now - messageWindow >= 1000) { messageWindow = now; messageCount = 0; }
+      if (++messageCount > 120) { ws.close(1008, "Rate limit"); return; }
+      let message;
+      try { message = JSON.parse(raw.toString()); } catch { ws.close(1007, "Invalid JSON"); return; }
+      if (message?.type === "input" && typeof message.data === "string" && message.data.length <= 16_000) {
+        terminalTouch(session);
+        session.pty.write(message.data);
+      } else if (message?.type === "resize" && Number.isInteger(message.cols) && Number.isInteger(message.rows) && message.cols >= 2 && message.cols <= 500 && message.rows >= 2 && message.rows <= 300) {
+        terminalTouch(session);
+        session.pty.resize(message.cols, message.rows);
+      } else if (message?.type === "close") closeTerminalSession(id, "closed");
+      else ws.close(1008, "Unsupported terminal message");
+    });
+    ws.on("close", () => closeTerminalSession(id, "disconnected"));
+    ws.on("error", () => closeTerminalSession(id, "socket-error"));
+    terminalWebSockets.emit("connection", ws, req);
+  });
+});
+
 server.listen(PORT, "127.0.0.1", () => { refresh(); setInterval(refresh, 60000); });
-process.on("SIGINT", async () => { await consoleBridge.close(); server.close(); process.exit(0); });
-process.on("SIGTERM", async () => { await consoleBridge.close(); server.close(); process.exit(0); });
+const stopDashboard = async () => { for (const id of terminalSessions.keys()) closeTerminalSession(id, "shutdown"); await consoleBridge.close(); server.close(); process.exit(0); };
+process.on("SIGINT", stopDashboard);
+process.on("SIGTERM", stopDashboard);

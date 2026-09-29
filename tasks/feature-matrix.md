@@ -29,6 +29,13 @@
 
 Các mục `partial`/`unavailable` không được quảng cáo là capability đã hỗ trợ đầy đủ. UI lấy trạng thái từ capability catalog và disable mode `unavailable`.
 
+## Đã deploy local — 2026-09-29
+
+| Tính năng | Trạng thái source | Giới hạn |
+|---|---|---|
+| Voice-to-text | deployed; partial; Web Speech API với `vi-VN` / `en-US` | Phụ thuộc browser và quyền microphone; browser có thể gửi audio tới dịch vụ nhận dạng của họ; audio không qua dashboard. Síp xác nhận mic hoạt động; chưa chạy đầy đủ ma trận browser/quyền. |
+| Terminal nhúng PTY | deployed; partial; PTY thật với xterm.js + WebSocket loopback | Live smoke macOS xác nhận UI, `pwd` tại General và project “Open design”, đóng PTY đúng; Windows/Linux chưa kiểm chứng. Shell dùng quyền OS của tài khoản dashboard. |
+
 ## Focused production evidence — 2026-09-24
 
 - Stop, approval deny/approve, steer/reconnect, local/encrypted share, and Agent Hub subagent all passed on the real runtime with the selected account live.

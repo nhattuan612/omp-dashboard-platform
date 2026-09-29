@@ -8,6 +8,9 @@
   },
   "files": [
     "server.mjs",
+    "package-lock.json",
+    "package.json",
+    "scripts/fix-node-pty-helper.mjs",
     "omp-tool-catalog.mjs",
     "omp-tool-map.json",
     "console-bridge.mjs",
@@ -23,7 +26,7 @@
     "install-local-dashboard.sh"
   ],
   "requirements": [
-    "Node.js",
+    "Node.js and npm",
     "OMP installed at ~/.bun/bin/omp",
     "macOS for LaunchAgent auto-start"
   ],

@@ -9,15 +9,25 @@ launch_domain="gui/$(/usr/bin/id -u)"
 launch_agent=${OMP_DASHBOARD_LAUNCH_AGENT:-/Users/trannhattuan/Library/LaunchAgents/$agent_label.plist}
 plist_backup=LaunchAgent.plist
 backup_root="$runtime_dir/backups/deploy"
-app_files='server.mjs omp-tool-catalog.mjs omp-tool-map.json console-bridge.mjs acp-worker.mjs acp-session-context.mjs gemini-account-pin-extension.mjs honpi-dashboard-mark-8138753b.png honpi-chat-dashboard-SKE.html honpi-quota-dashboard-SKE.html honpi-chat-dashboard-live.js honpi-chat-dashboard-legacy.js'
+app_files='server.mjs omp-tool-catalog.mjs omp-tool-map.json console-bridge.mjs acp-worker.mjs acp-session-context.mjs gemini-account-pin-extension.mjs honpi-dashboard-mark-8138753b.png honpi-chat-dashboard-SKE.html honpi-quota-dashboard-SKE.html honpi-chat-dashboard-live.js honpi-chat-dashboard-legacy.js package.json package-lock.json scripts/fix-node-pty-helper.mjs'
 omp_extension_source="$project_dir/omp/agent/extensions/omp-account-preference.js"
 omp_extension_target=/Users/trannhattuan/.omp/agent/extensions/omp-account-preference.js
 omp_extension_backup=OMPAccountPreference.js
 command=${1:-}
+npm_bin=$(command -v npm || true)
 
 fail() {
   printf '%s\n' "$*" >&2
   exit 1
+}
+
+install_dependencies() {
+  if [ -f "$runtime_dir/package.json" ]; then
+    [ -n "$npm_bin" ] || fail "npm cần có để cài dependency terminal"
+    "$npm_bin" ci --omit=dev --prefix "$runtime_dir" || return 1
+  else
+    /bin/rm -rf "$runtime_dir/node_modules" || return 1
+  fi
 }
 
 write_manifest() {
@@ -49,6 +59,7 @@ restore_backup() {
   verify_backup "$backup"
   for file in $app_files; do
     if [ -f "$backup/$file" ]; then
+      /bin/mkdir -p "$(/usr/bin/dirname "$runtime_dir/$file")" || return 1
       /bin/cp "$backup/$file" "$runtime_dir/$file" || return 1
       /bin/chmod 600 "$runtime_dir/$file" || return 1
     elif [ -f "$backup/ABSENT-$file" ]; then
@@ -57,6 +68,7 @@ restore_backup() {
       fail "Backup thiếu file hoặc marker: $file"
     fi
   done
+  install_dependencies || return 1
   if [ -f "$backup/$omp_extension_backup" ]; then
     /bin/mkdir -p "$(/usr/bin/dirname "$omp_extension_target")" || return 1
     /bin/cp "$backup/$omp_extension_backup" "$omp_extension_target" || return 1
@@ -126,6 +138,7 @@ fi
 for file in $app_files; do
   [ -f "$project_dir/$file" ] || fail "Thiếu source asset: $file"
 done
+
 [ -f "$omp_extension_source" ] || fail "Thiếu source OMP extension"
 
 /bin/mkdir -p "$backup_root"
@@ -136,6 +149,8 @@ backup_dir="$backup_root/$timestamp-$$"
 /bin/chmod 700 "$backup_dir"
 printf 'code-only-v2\n' > "$backup_dir/BACKUP-VERSION"
 for file in $app_files; do
+  /bin/mkdir -p "$(/usr/bin/dirname "$backup_dir/$file")"
+  /bin/mkdir -p "$(/usr/bin/dirname "$backup_dir/ABSENT-$file")"
   if [ -f "$runtime_dir/$file" ]; then
     /bin/cp "$runtime_dir/$file" "$backup_dir/$file"
   else
@@ -153,7 +168,8 @@ write_manifest "$backup_dir"
 verify_backup "$backup_dir"
 
 for file in $app_files; do
-  if ! /bin/cp "$project_dir/$file" "$runtime_dir/$file" \
+  if ! /bin/mkdir -p "$(/usr/bin/dirname "$runtime_dir/$file")" \
+    || ! /bin/cp "$project_dir/$file" "$runtime_dir/$file" \
     || ! /bin/chmod 600 "$runtime_dir/$file" \
     || ! /usr/bin/cmp -s "$project_dir/$file" "$runtime_dir/$file"; then
     printf 'Deploy asset thất bại: %s; đang rollback\n' "$file" >&2
@@ -161,6 +177,12 @@ for file in $app_files; do
     exit 1
   fi
 done
+
+if ! install_dependencies; then
+  printf 'Cài dependency terminal thất bại; đang rollback\n' >&2
+  rollback_deployment || true
+  exit 1
+fi
 
 if ! /bin/mkdir -p "$(/usr/bin/dirname "$omp_extension_target")" \
   || ! /bin/cp "$omp_extension_source" "$omp_extension_target" \
