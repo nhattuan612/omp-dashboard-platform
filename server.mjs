@@ -3539,7 +3539,7 @@ async function sessionAction(sessionId, req, providedBody = null) {
   const body = providedBody || await jsonBody(req);
   if (!body || Array.isArray(body) || typeof body !== "object") throw Object.assign(new Error("Payload phải là object JSON."), { code: "BAD_REQUEST" });
   const action = String(body.action || "").trim().toLowerCase();
-  if (!["rename", "pin", "unpin", "unread", "read", "mark_unread", "mark_read", "archive", "delete", "fork", "reconnect", "resume_queue", "steer", "follow_up", "share", "tools", "assign_folder", "unassign_folder"].includes(action)) throw Object.assign(new Error("action không được hỗ trợ"), { code: "BAD_REQUEST", field: "action" });
+  if (!["rename", "pin", "unpin", "unread", "read", "mark_unread", "mark_read", "archive", "delete", "fork", "duplicate", "reconnect", "resume_queue", "steer", "follow_up", "share", "tools", "assign_folder", "unassign_folder"].includes(action)) throw Object.assign(new Error("action không được hỗ trợ"), { code: "BAD_REQUEST", field: "action" });
   const id = gatewaySessionId(sessionId);
   const metadata = await readChatMetadata();
   const current = metadata.sessions[id] || {};
@@ -3649,7 +3649,7 @@ async function sessionAction(sessionId, req, providedBody = null) {
     patch = action === "archive" ? { archived: true, archivedAt: new Date().toISOString() } : { deleted: true, deletedAt: new Date().toISOString() };
     const stored = await updateChatMetadata(id, patch);
     return { success: true, action, sessionId: id, metadata: stored, ...(moved ? { moved } : {}) };
-  } else if (action === "fork") {
+  } else if (action === "fork" || action === "duplicate") {
     let sourcePath = current.path;
     if (!sourcePath) { try { sourcePath = (await readPersistedChatSession(id)).path; } catch { sourcePath = null; } }
     if (!record && !sourcePath) throw Object.assign(new Error("Không tìm thấy session để fork"), { code: "NOT_FOUND" });
@@ -3659,7 +3659,7 @@ async function sessionAction(sessionId, req, providedBody = null) {
       if (contextHasChatWork(target.contextId)) throw Object.assign(new Error("Không thể fork khi lượt chat đang chạy"), { code: "CONFLICT" });
       const forked = await consoleBridge.fork(target.contextId);
       const childId = gatewaySessionId(forked.sessionId);
-      const title = `${current.title || "Phiên làm việc mới"} · Fork`;
+      const title = `${current.title || "Phiên làm việc mới"} · ${action === "duplicate" ? "Bản sao" : "Fork"}`;
       const childPath = await findSessionPath(childId).catch(() => null);
       const cwd = targetSummary.cwd;
       const createdAt = new Date().toISOString();
@@ -3711,7 +3711,7 @@ async function sessionAction(sessionId, req, providedBody = null) {
     consoleBridge.send(target.contextId, { id: `fork-${Date.now()}`, type: "new_session", ...(sourcePath ? { parentSession: sourcePath } : {}) });
     const child = await waitForNewOmpSession(targetSummary.cwd, existingIds);
     const childId = gatewaySessionId(child.sessionId);
-    const title = `${current.title || "Phiên làm việc mới"} · Fork`;
+    const title = `${current.title || "Phiên làm việc mới"} · ${action === "duplicate" ? "Bản sao" : "Fork"}`;
     const childPath = await findSessionPath(childId).catch(() => null);
     const stored = await updateChatMetadata(childId, { title, parentSessionId: id, path: childPath, cwd: child.cwd || targetSummary.cwd, createdAt: new Date().toISOString() });
     if (sourcePath) consoleBridge.send(target.contextId, { id: `switch-back-${Date.now()}`, type: "switch_session", sessionPath: sourcePath });
@@ -5244,8 +5244,8 @@ const server = http.createServer(async (req, res) => {
         ok: true, capabilityVersion: OMP_CAPABILITY_VERSION, contractVersion: OMP_GATEWAY_VERSION,
         transport: { prompt: "http", stream: "sse", hostOnly: true },
         imageGenerationModels,
-        features: ["sessions", "streaming", "commands", "abort", "slash-commands", "file-references", "media-attachments", "image-generation", "approval-roundtrip", "browser-control", "memory"],
-        sessionActions: { abort: "supported", followUp: "supported", fork: "supported", reconnect: "supported", resumeQueue: "supported", steer: "unavailable" },
+        features: ["sessions", "streaming", "commands", "abort", "slash-commands", "file-references", "media-attachments", "image-generation", "approval-roundtrip", "browser-control", "memory", "session-duplicate", "session-export"],
+        sessionActions: { abort: "supported", followUp: "supported", fork: "supported", duplicate: "supported", export: "supported", reconnect: "supported", resumeQueue: "supported", steer: "unavailable" },
         featureStatus: { "session-actions": "supported", "file-reference": "supported", "media-attachments": "supported", "image-generation": imageGeneration.status, "stream-recovery": "partial", approval: "supported", "agent-hub": "unavailable", memory: "supported", share: "partial", "browser-control": "supported", media: "partial", "screen-capture": "unavailable" },
         browserControl: {
           status: "supported",
