@@ -3458,7 +3458,7 @@
       syncBrowserPill();
       notify(state.browserMode === 'ego-browser' ? 'Ego Browser skill đã bật · Gõ order trong ô chat.' : 'Ego Browser skill đã tắt · Prompt gửi như chat thường.');
     }, true);
-    $('newSessionBtn')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); beginLocalDraft(); }, true);
+    $('newSessionBtn')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); void createSession(); }, true);
     $('promptWorkspaceTrigger')?.addEventListener('click', async (event) => {
       event.preventDefault(); event.stopImmediatePropagation();
       if (state.activeId) return;
