@@ -1237,6 +1237,10 @@ const gatewaySessions = new Map();
 const chatSessionMeta = new Map();
 const chatMessageCache = new Map();
 const activeChatRequests = new Map();
+const fileChangeSnapshots = new Map();
+const fileChangeLocks = new Map();
+const FILE_CHANGE_MAX_FILES = 48;
+const FILE_CHANGE_PATH_PATTERN = /(?:~?\/|\.\.?\/)?(?:[\w@%+.,=-]+\/)*[\w@%+.,=-]+\.(?:[a-z0-9]{1,12})\b/gi;
 const activeMemoryOperations = new Set();
 const sessionPersistenceRequests = new Map();
 const chatTurnQueues = new Map();
@@ -2912,6 +2916,7 @@ async function chatMessages(sessionId) {
         if (attachments.length) merged[duplicateIndex].attachments = attachments;
         const body = mergeChatBodyBlocks(merged[duplicateIndex].body, message.body);
         if (body.length) merged[duplicateIndex].body = body;
+        if (message.fileChanges && !merged[duplicateIndex].fileChanges) merged[duplicateIndex].fileChanges = message.fileChanges;
       }
     }
     return merged.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
@@ -3001,6 +3006,134 @@ function frameAssistantAttachments(frame) {
   return chatMessageAttachments({ content: [update] }, { allowOmpBlob: true });
 }
 
+function fileChangePathCandidates(value) {
+  const source = typeof value === "string" ? value : (() => {
+    try { return JSON.stringify(value); } catch { return ""; }
+  })() || "";
+  const paths = [];
+  for (const match of source.matchAll(FILE_CHANGE_PATH_PATTERN)) {
+    const path = String(match[0] || "").replace(/[),.;:`'\"]+$/, "");
+    if (path && !paths.includes(path)) paths.push(path);
+  }
+  return paths;
+}
+
+function fileChangeFramePaths(frame) {
+  const actionText = [frame?.toolName, frame?.intent].map((value) => String(value || "")).join(" ");
+  if (!/(?:apply[_ -]?patch|write(?:[_ -]?file)?|edit(?:[_ -]?file)?|replace|create(?:[_ -]?file)?|delete(?:[_ -]?file)?|rename|move)/i.test(actionText)) return [];
+  return [frame?.toolName, frame?.intent, frame?.args, frame?.result, frame?.partialResult, frame?.update]
+    .flatMap(fileChangePathCandidates)
+    .slice(0, FILE_CHANGE_MAX_FILES);
+}
+
+function fileChangeView(snapshot) {
+  if (!snapshot) return null;
+  return {
+    id: snapshot.id,
+    sessionId: snapshot.sessionId,
+    createdAt: snapshot.createdAt,
+    status: snapshot.status,
+    complete: snapshot.complete,
+    audit: Array.isArray(snapshot.audit) ? snapshot.audit.slice(-12) : [],
+    ...(snapshot.reason ? { reason: snapshot.reason } : {}),
+    files: snapshot.files.map((item) => ({
+      path: item.path,
+      name: item.name,
+      status: item.status,
+      beforeHash: item.before?.sha256 || null,
+      afterHash: item.after?.sha256 || null,
+      before: item.before?.exists === true ? { exists: true, text: item.before.text.slice(0, MAX_CHAT_BODY_TEXT_CHARS), truncated: item.before.text.length > MAX_CHAT_BODY_TEXT_CHARS } : { exists: false, text: "", truncated: false },
+      after: item.after?.exists === true ? { exists: true, text: item.after.text.slice(0, MAX_CHAT_BODY_TEXT_CHARS), truncated: item.after.text.length > MAX_CHAT_BODY_TEXT_CHARS } : { exists: false, text: "", truncated: false },
+    })),
+  };
+}
+
+function createFileChangeTracker(record, sessionId, requestId) {
+  const tracker = { record, sessionId, requestId, paths: new Set(), entries: new Map(), pending: Promise.resolve(), failures: [] };
+  tracker.addFrame = (frame) => {
+    for (const path of fileChangeFramePaths(frame)) {
+      if (tracker.paths.size >= FILE_CHANGE_MAX_FILES || tracker.paths.has(path)) continue;
+      tracker.paths.add(path);
+      tracker.pending = tracker.pending.then(async () => {
+        try {
+          const before = await consoleBridge.snapshotWorkspaceFile(record.contextId, path);
+          tracker.entries.set(path, { before });
+        } catch (error) {
+          tracker.failures.push({ path, message: String(error.message || "snapshot failed").slice(0, 200) });
+        }
+      });
+    }
+  };
+  return tracker;
+}
+
+async function finalizeFileChangeTracker(tracker) {
+  await tracker.pending;
+  const files = [];
+  for (const entry of tracker.entries.values()) {
+    try {
+      const after = await consoleBridge.snapshotWorkspaceFile(tracker.record.contextId, entry.before.path);
+      const beforeHash = entry.before.sha256 || null;
+      const afterHash = after.sha256 || null;
+      if (beforeHash === afterHash && entry.before.exists === after.exists) continue;
+      files.push({ path: entry.before.path, name: entry.before.name, status: after.exists ? "changed" : "deleted", before: entry.before, after });
+    } catch (error) {
+      tracker.failures.push({ path: entry.before.path, message: String(error.message || "snapshot failed").slice(0, 200) });
+    }
+  }
+  if (!files.length) return tracker.failures.length ? {
+    id: `file-change-${tracker.requestId}`,
+    sessionId: tracker.sessionId,
+    createdAt: new Date().toISOString(),
+    status: "unavailable",
+    complete: false,
+    reason: "Không thể snapshot tệp đã được OMP chạm tới.",
+    files: [],
+  } : null;
+  const snapshot = {
+    id: `file-change-${tracker.requestId}`,
+    sessionId: tracker.sessionId,
+    createdAt: new Date().toISOString(),
+    status: tracker.failures.length ? "review_only" : "ready",
+    complete: tracker.failures.length === 0,
+    audit: [],
+    ...(tracker.failures.length ? { reason: "Một số tệp không đủ điều kiện snapshot; chỉ cho phép xem." } : {}),
+    files,
+  };
+  fileChangeSnapshots.set(tracker.sessionId, snapshot);
+  return snapshot;
+}
+
+async function verifyFileChangeSnapshot(record, snapshot, files) {
+  const selected = Array.isArray(files) && files.length
+    ? snapshot.files.filter((item) => files.includes(item.path))
+    : snapshot.files;
+  if (!selected.length || selected.length !== (Array.isArray(files) && files.length ? new Set(files).size : selected.length)) {
+    throw Object.assign(new Error("Tệp file-change không thuộc snapshot hiện tại"), { code: "BAD_REQUEST", field: "files" });
+  }
+  for (const item of selected) {
+    const current = await consoleBridge.snapshotWorkspaceFile(record.contextId, item.path);
+    if ((current.sha256 || null) !== (item.after.sha256 || null) || current.exists !== item.after.exists) {
+      throw Object.assign(new Error(`Tệp đã thay đổi ngoài phiên: ${item.path}`), { code: "CONFLICT", field: "files" });
+    }
+  }
+  return selected;
+}
+
+async function withFileChangeLock(sessionId, operation) {
+  const previous = fileChangeLocks.get(sessionId) || Promise.resolve();
+  let release;
+  const current = new Promise((resolve) => { release = resolve; });
+  const queued = previous.then(() => current);
+  fileChangeLocks.set(sessionId, queued);
+  await previous;
+  try { return await operation(); }
+  finally {
+    release();
+    if (fileChangeLocks.get(sessionId) === queued) fileChangeLocks.delete(sessionId);
+  }
+}
+
 
 async function collectChatTurn(record, sessionId, prompt, model, requestId, options = {}) {
   const attachments = options.attachments;
@@ -3023,6 +3156,7 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
   let assistantMessage = null;
   let assistantAttachments = [];
   const bodyBlocks = [];
+  const fileChangeTracker = createFileChangeTracker(record, sessionId, requestId);
   let bodySequence = 0;
   let promptDispatched = false;
   let timeout = null;
@@ -3054,13 +3188,14 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
       if (active.promptDispatched) return;
       finish(resolve, { id: null, content: reply, model, createdAt: new Date().toISOString(), aborted: true });
     };
-    unsubscribe = subscribeGatewayFrames(record, (event, frame) => {
+    unsubscribe = subscribeGatewayFrames(record, async (event, frame) => {
       if (event === "bridge_error") {
         if (active.dispatched && chatTurnOwner(record.contextId, requestId)) finish(reject, Object.assign(new Error(frame.message || "OMP bridge error"), { code: "UPSTREAM_ERROR" }));
         return;
       }
       if (event !== "omp" || !active.dispatched || !chatTurnOwner(record.contextId, requestId)) return;
       resetTurnTimeout();
+      if (frame.type === "tool_execution_start" || frame.type === "tool_call") fileChangeTracker.addFrame(frame);
       for (const block of chatBodyBlocksFromFrame(frame, requestId, bodySequence++)) mergeChatBodyBlock(bodyBlocks, block);
       const failure = chatFrameFailure(frame);
       if (failure) return finish(reject, Object.assign(new Error(failure.message), { code: failure.code }));
@@ -3077,7 +3212,8 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
         if (!reply && !assistantMessage && !assistantAttachments.length) return finish(reject, Object.assign(new Error("OMP kết thúc lượt nhưng không trả nội dung"), { code: "UPSTREAM_ERROR" }));
         if (expectsGeneratedImage && !assistantAttachments.length) return finish(reject, Object.assign(new Error("OMP không trả ảnh đầu ra; lượt này chưa được tính là đã tạo ảnh."), { code: "UPSTREAM_IMAGE_MISSING" }));
         for (const block of chatBodyBlocksFromMessage(assistantMessage, requestId)) mergeChatBodyBlock(bodyBlocks, block);
-        const message = { id: `msg-${Date.now()}`, role: "assistant", content: reply || chatMessageText(assistantMessage), model: assistantMessage?.model || model || "neural-flash-3.8", createdAt: new Date().toISOString(), ...(bodyBlocks.length ? { body: bodyBlocks } : {}), ...(assistantAttachments.length ? { attachments: assistantAttachments } : {}), ...(assistantMessage?.usage?.total ? { totalTokens: assistantMessage.usage.total } : {}) };
+        const fileChanges = await finalizeFileChangeTracker(fileChangeTracker);
+        const message = { id: `msg-${Date.now()}`, role: "assistant", content: reply || chatMessageText(assistantMessage), model: assistantMessage?.model || model || "neural-flash-3.8", createdAt: new Date().toISOString(), ...(bodyBlocks.length ? { body: bodyBlocks } : {}), ...(assistantAttachments.length ? { attachments: assistantAttachments } : {}), ...(fileChanges ? { fileChanges: fileChangeView(fileChanges) } : {}), ...(assistantMessage?.usage?.total ? { totalTokens: assistantMessage.usage.total } : {}) };
         appendChatMessage(sessionId, message);
         finish(resolve, message);
       }
@@ -3150,6 +3286,7 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
     ...(message.aborted ? { aborted: true } : {}),
     ...(message.body?.length ? { body: message.body } : {}),
     ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+    ...(message.fileChanges ? { fileChanges: message.fileChanges } : {}),
   };
 }
 
@@ -3784,6 +3921,7 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
   let assistantMessage = null;
   let assistantAttachments = [];
   const bodyBlocks = [];
+  let fileChangeTracker = createFileChangeTracker(record, sessionId, requestId);
   let bodySequence = 0;
   let timeToFirstDeltaMs = null;
   let ended = false;
@@ -3862,7 +4000,7 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
     }
     throw Object.assign(new Error("Client đã đóng kết nối"), { code: "CLIENT_CLOSED" });
   };
-  unsubscribe = subscribeGatewayFrames(record, (event, frame) => {
+  unsubscribe = subscribeGatewayFrames(record, async (event, frame) => {
     if (ended) return;
     if (event === "bridge_error") {
       if (streamRequest.dispatched && chatTurnOwner(record.contextId, requestId)) finish("error", { code: "UPSTREAM_ERROR", message: frame.message || "OMP bridge error" });
@@ -3870,6 +4008,7 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
     }
     if (event !== "omp" || !streamRequest.dispatched || !chatTurnOwner(record.contextId, requestId)) return;
     resetTurnTimeout();
+    if (frame.type === "tool_execution_start" || frame.type === "tool_call") fileChangeTracker.addFrame(frame);
     const bodyFrames = chatBodyBlocksFromFrame(frame, requestId, bodySequence++);
     for (const block of bodyFrames) {
       const mergedBlock = mergeChatBodyBlock(bodyBlocks, block);
@@ -3934,9 +4073,10 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
       if (expectsGeneratedImage && !assistantAttachments.length) return finish("error", { code: "UPSTREAM_IMAGE_MISSING", message: "OMP không trả ảnh đầu ra; lượt này chưa được tính là đã tạo ảnh." });
       for (const block of chatBodyBlocksFromMessage(assistantMessage, requestId)) mergeChatBodyBlock(bodyBlocks, block);
       reply = chatMessageText(assistantMessage) || reply;
+      const fileChanges = await finalizeFileChangeTracker(fileChangeTracker);
       const createdAt = new Date().toISOString();
       const messageId = `msg-${Date.now()}`;
-      appendChatMessage(sessionId, { id: messageId, role: "assistant", content: reply, model: assistantMessage?.model || selectedModel.id, createdAt, ...(bodyBlocks.length ? { body: bodyBlocks } : {}), ...(assistantAttachments.length ? { attachments: assistantAttachments } : {}), ...(assistantMessage?.usage?.total ? { totalTokens: assistantMessage.usage.total } : {}) });
+      appendChatMessage(sessionId, { id: messageId, role: "assistant", content: reply, model: assistantMessage?.model || selectedModel.id, createdAt, ...(bodyBlocks.length ? { body: bodyBlocks } : {}), ...(assistantAttachments.length ? { attachments: assistantAttachments } : {}), ...(fileChanges ? { fileChanges: fileChangeView(fileChanges) } : {}), ...(assistantMessage?.usage?.total ? { totalTokens: assistantMessage.usage.total } : {}) });
       const totalTokens = assistantMessage?.usage?.total || 0;
       if (streamRequest.pendingTurns > 0) {
         streamRequest.pendingTurns -= 1;
@@ -3945,9 +4085,10 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
         assistantAttachments = [];
         bodyBlocks.splice(0, bodyBlocks.length);
         bodySequence = 0;
+        fileChangeTracker = createFileChangeTracker(record, sessionId, requestId);
         return;
       }
-      finish("end", { sessionId, messageId, model: assistantMessage?.model || selectedModel.id, totalDuration: `${((Date.now() - startedAt) / 1000).toFixed(1)}s`, totalTokens, ...(bodyBlocks.length ? { body: bodyBlocks } : {}), ...(assistantAttachments.length ? { attachments: assistantAttachments } : {}), done: true });
+      finish("end", { sessionId, messageId, model: assistantMessage?.model || selectedModel.id, totalDuration: `${((Date.now() - startedAt) / 1000).toFixed(1)}s`, totalTokens, ...(bodyBlocks.length ? { body: bodyBlocks } : {}), ...(assistantAttachments.length ? { attachments: assistantAttachments } : {}), ...(fileChanges ? { fileChanges: fileChangeView(fileChanges) } : {}), done: true });
       const rememberTimer = setTimeout(() => { void rememberGatewaySession(record).catch(() => {}); }, 10000);
       rememberTimer.unref?.();
     }
@@ -5123,6 +5264,29 @@ const server = http.createServer(async (req, res) => {
         const record = await ensureChatSession(sessionId);
         return json(res, 200, { ok: true, attachment: await consoleBridge.readWorkspaceFile(record.contextId, body?.path) });
       }
+      if (req.method === "GET" && parts[4] === "file-changes") {
+        const snapshot = fileChangeSnapshots.get(sessionId);
+        return json(res, 200, { ok: true, sessionId, ...(snapshot ? { snapshot: fileChangeView(snapshot) } : { snapshot: null, status: "unavailable", reason: "Phiên này chưa có snapshot file-change runtime." }) });
+      }
+      if (req.method === "POST" && parts[4] === "file-changes" && parts[5] === "action") {
+        const body = await jsonBody(req);
+        const action = String(body?.action || "").trim().toLowerCase();
+        if (!["apply", "revert"].includes(action)) throw Object.assign(new Error("file-change action không được hỗ trợ"), { code: "BAD_REQUEST", field: "action" });
+        if (body?.confirmed !== true) throw Object.assign(new Error("Thao tác file-change cần xác nhận rõ ràng."), { code: "BAD_REQUEST", field: "confirmed" });
+        const snapshot = fileChangeSnapshots.get(sessionId);
+        if (!snapshot || body.snapshotId !== snapshot.id) throw Object.assign(new Error("Snapshot file-change không còn hiệu lực."), { code: "CONFLICT", field: "snapshotId" });
+        if (snapshot.complete !== true || snapshot.status !== "ready") throw Object.assign(new Error("Snapshot chỉ cho phép xem; chưa đủ điều kiện thao tác."), { code: "CONFLICT", field: "snapshotId" });
+        const record = await ensureChatSession(sessionId, {}, { requireExisting: true });
+        return json(res, 200, await withFileChangeLock(sessionId, async () => {
+          const selected = await verifyFileChangeSnapshot(record, snapshot, body.files);
+          if (action === "revert") await consoleBridge.restoreWorkspaceFiles(record.contextId, selected.map((item) => ({ path: item.path, afterHash: item.after.sha256 || null, before: item.before })));
+          snapshot.status = action === "revert" ? "reverted" : "applied";
+          snapshot.updatedAt = new Date().toISOString();
+          snapshot.selectedPaths = selected.map((item) => item.path);
+          snapshot.audit.push({ action, at: snapshot.updatedAt, paths: snapshot.selectedPaths, hashChecked: true });
+          return { ok: true, sessionId, action, snapshot: fileChangeView(snapshot) };
+        }));
+      }
       if (req.method === "GET" && parts[4] === "agents") {
         const record = await ensureChatSession(sessionId);
         return json(res, 200, { ok: true, sessionId, agents: agentHubSnapshot(await queryGatewayResponse(record, { type: "get_subagents" })) });
@@ -5244,9 +5408,9 @@ const server = http.createServer(async (req, res) => {
         ok: true, capabilityVersion: OMP_CAPABILITY_VERSION, contractVersion: OMP_GATEWAY_VERSION,
         transport: { prompt: "http", stream: "sse", hostOnly: true },
         imageGenerationModels,
-        features: ["sessions", "streaming", "commands", "abort", "slash-commands", "file-references", "media-attachments", "image-generation", "approval-roundtrip", "browser-control", "memory", "session-duplicate", "session-export"],
+        features: ["sessions", "streaming", "commands", "abort", "slash-commands", "file-references", "media-attachments", "image-generation", "approval-roundtrip", "browser-control", "memory", "session-duplicate", "session-export", "file-change-snapshots", "file-change-actions"],
         sessionActions: { abort: "supported", followUp: "supported", fork: "supported", duplicate: "supported", export: "supported", reconnect: "supported", resumeQueue: "supported", steer: "unavailable" },
-        featureStatus: { "session-actions": "supported", "file-reference": "supported", "media-attachments": "supported", "image-generation": imageGeneration.status, "stream-recovery": "partial", approval: "supported", "agent-hub": "unavailable", memory: "supported", share: "partial", "browser-control": "supported", media: "partial", "screen-capture": "unavailable" },
+        featureStatus: { "session-actions": "supported", "file-reference": "supported", "media-attachments": "supported", "image-generation": imageGeneration.status, "stream-recovery": "partial", approval: "supported", "agent-hub": "unavailable", memory: "supported", share: "partial", "browser-control": "supported", media: "partial", "screen-capture": "unavailable", "file-change-snapshots": "supported", "file-change-actions": "supported" },
         browserControl: {
           status: "supported",
           provider: "omp-skill",

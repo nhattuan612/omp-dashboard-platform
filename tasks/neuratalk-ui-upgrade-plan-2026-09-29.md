@@ -206,13 +206,14 @@ Thứ tự: `ui-shell → conversation → turn-runtime → runtime-surfaces →
 | U1 | Đạt | `/chat` dùng shell hiện hữu, CSP/nonce, 3 theme, 5 tone, 7 accent, 6 font và responsive tokens. |
 | U2 | Đạt | Session/folder/header, Markdown an toàn, attachment/media, copy/fork/duplicate/export đã nối runtime thật. |
 | U3 | Đạt phần runtime | SSE/lifecycle/approval/reconnect và queue local/server; queue web có sửa, bỏ, gửi ngay, pause/resume và reorder. |
-| U4 | Đạt phần hiển thị | Tools/Modes/Files/Agent Hub và file-change activity lấy từ payload OMP; diff Apply/Revert transactional chưa bật vì backend chưa có snapshot contract. |
+| U4 | Đạt | Tools/Modes/Files/Agent Hub và file-change activity lấy từ payload OMP; snapshot trước/sau, hash guard, Apply xác nhận và Revert atomic rollback đã nối runtime. |
 | U5 | Đạt | Quota, Settings, Memory state, mic, terminal và local/encrypted share đã giữ contract runtime hiện hữu. |
-| U6 | Đạt checkpoint hiện tại | Syntax/security/contract `111 scenarios`; browser QA 320/375/768/1024/1440 không overflow, menu/settings/queue/export không lỗi console. |
-| U7 | Chờ | Chưa cutover production; cần diff adapter (nếu bắt buộc parity Apply/Revert) và nghiệm thu live trước deploy. |
+| U6 | Đạt checkpoint hiện tại | Syntax/security/contract `112 scenarios`; browser QA 320/375/768/1024/1440 không overflow, menu/settings/queue/export không lỗi console. |
+| U7 | Chờ | Chưa cutover production; cần nghiệm thu live trước deploy. |
 
-### Contract còn thiếu trước khi gọi parity tuyệt đối
+### Contract file-change đã triển khai
 
-- `GET /api/v1/sessions/:id/file-changes` phải trả snapshot trước/sau đã kiểm tra workspace và hash kỳ vọng.
-- `POST /api/v1/sessions/:id/file-changes/action` phải hỗ trợ `apply`/`revert` có xác nhận, kiểm tra hash hiện tại, atomic write/rollback và audit.
+- `GET /api/v1/sessions/:id/file-changes` trả snapshot trước/sau, hash SHA-256 và trạng thái review.
+- `POST /api/v1/sessions/:id/file-changes/action` hỗ trợ `apply`/`revert`, yêu cầu xác nhận, kiểm tra hash hiện tại, ghi atomic và rollback khi lỗi.
+- Snapshot giới hạn tệp/kích thước, chặn symlink/traversal/sensitive path; snapshot không đủ điều kiện chỉ cho xem.
 - Không dùng `git checkout`, nội dung mẫu hoặc success giả để thay contract trên.
