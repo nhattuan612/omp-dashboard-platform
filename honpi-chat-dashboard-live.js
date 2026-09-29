@@ -7,6 +7,16 @@
   const BROWSER_MODE_PREFERENCE_VERSION = 'manual-v1';
   const initialBrowserMode = localStorage.getItem('omp.browserModePreferenceVersion') === BROWSER_MODE_PREFERENCE_VERSION ? localStorage.getItem('omp.browserMode') : 'none';
   const state = { sessions: [], nextCursor: null, activeId: null, generation: 0, messages: [], models: [], activeModel: null, controller: null, requestId: null, activeRequest: null, createPromise: null, menu: null, folderMenu: null, quota: null, accounts: [], attachments: [], workspaceFiles: [], workspaceMention: '@', capabilities: null, selectedTools: [], toolsUpdating: false, advisor: false, advisorConfig: null, advisorConfigLoading: false, advisorConfigSaving: false, folderExpanded: new Set(), folderCollapsed: new Set(), thinking: localStorage.getItem('omp.thinking') || 'max', browserMode: initialBrowserMode === 'ego-browser' ? 'ego-browser' : 'none', planYolo: false, planYoloModel: '', shareMode: localStorage.getItem('omp.shareMode') || 'encrypted', approvalMode: localStorage.getItem('omp.approvalMode') || 'always-ask', enterBehavior: localStorage.getItem('omp.enterBehavior') || 'queue', conversationDisplay: localStorage.getItem('omp.conversationDisplay') || 'compact', pendingPrompts: [], queuePausedSessions: new Map(), editingQueueId: null, draftPromptPreview: null, browserAction: null, browserStatus: null, media: { screenCapture: { status: 'unavailable', reason: 'Native screen capture is not provided by OMP dashboard.' }, camera: { status: 'unavailable' }, microphone: { status: 'unavailable' }, video: { status: 'unavailable' } } };
+  let voiceRecognition = null;
+  let voiceStopResolve = null;
+  let voiceDisclosureShown = false;
+  let terminalSessionId = null;
+  let terminalSocket = null;
+  let terminalWidget = null;
+  let terminalFitAddon = null;
+  let terminalOpenPromise = null;
+  let terminalOpenCancelled = false;
+  let terminalDisclosureShown = false;
   state.enterBehavior = 'send';
   state.modelAccess = null;
   state.modelAccessInitialized = false;
@@ -1480,7 +1490,7 @@
   }
   function sanitizeProductionSurface() {
     const hide = (id) => { const node = $(id); if (node) { node.hidden = true; node.disabled = true; node.setAttribute('aria-hidden', 'true'); } };
-    ['toggleBottomPanelBtn', 'bottomPanel', 'headerActionDuplicate', 'headerActionExport', 'voiceRecordBtn', 'screenCaptureBtn', 'cameraCaptureBtn', 'microphoneCaptureBtn', 'videoCaptureBtn'].forEach(hide);
+    ['headerActionDuplicate', 'headerActionExport', 'screenCaptureBtn', 'cameraCaptureBtn', 'microphoneCaptureBtn', 'videoCaptureBtn'].forEach(hide);
     const tools = $('toolsContentArea');
     if (tools) { tools.replaceChildren(emptyNode('Chưa có công cụ backend')); tools.setAttribute('aria-live', 'polite'); }
     const toolsTab = $('drawerTabToolsBtn');
@@ -1502,6 +1512,8 @@
     if (!session) { if (!quiet) notify('Không tìm thấy cuộc trò chuyện được chọn.', true); return false; }
     if (state.editingQueueId && state.activeId !== id) cancelQueueEdit(true);
     const previousId = state.activeId;
+    if (previousId !== id && voiceRecognition) await stopVoiceInput();
+    if (previousId !== id && terminalSessionId) void closeEmbeddedTerminal();
     if (previousId && previousId !== id) {
       rememberRetry(previousId);
       cacheSessionView(previousId);
@@ -2480,6 +2492,7 @@
     return normalEnd;
   }
   async function sendPrompt() {
+    if (voiceRecognition) await stopVoiceInput();
     const input = $('chatInput'); const prompt = text(input?.value).trim();
     if (!prompt) { notify('Vui lòng nhập nội dung trước khi gửi.', true); return; }
     if (state.activeId) {
@@ -2527,6 +2540,164 @@
       return;
     }
     void startPrompt(prompt, sessionId, settings, attachments);
+  }
+
+  function insertVoiceTranscript(value) {
+    const input = $('chatInput'); const transcript = String(value || '').trim();
+    if (!input || !transcript) return;
+    const start = input.selectionStart ?? input.value.length; const end = input.selectionEnd ?? start;
+    const left = input.value.slice(0, start); const right = input.value.slice(end);
+    const prefix = left && !/\s$/.test(left) && !/^[,.;:!?)]/.test(transcript) ? ' ' : '';
+    const suffix = right && !/^\s|^[,.;:!?)]/.test(right) ? ' ' : '';
+    const inserted = `${prefix}${transcript}${suffix}`;
+    input.setRangeText(inserted, start, end, 'end');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.focus();
+  }
+
+  function setVoiceListening(listening) {
+    const button = $('voiceRecordBtn'); const language = $('voiceLanguageSelect');
+    if (button) { button.classList.toggle('recording', listening); button.setAttribute('aria-pressed', String(listening)); button.setAttribute('aria-label', listening ? 'Dừng nhập liệu bằng giọng nói' : 'Bắt đầu nhập liệu bằng giọng nói'); }
+    if (language) language.disabled = listening;
+  }
+
+  function startVoiceInput() {
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!Recognition) { notify('Trình duyệt này chưa hỗ trợ nhận dạng giọng nói.', true); return; }
+    const recognition = new Recognition(); const language = $('voiceLanguageSelect'); const processedFinals = new Set();
+    recognition.lang = language?.value === 'en-US' ? 'en-US' : 'vi-VN';
+    recognition.continuous = true; recognition.interimResults = false; recognition.maxAlternatives = 1;
+    voiceRecognition = recognition; setVoiceListening(true);
+    recognition.onresult = (event) => {
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        if (!result.isFinal || processedFinals.has(index)) continue;
+        processedFinals.add(index); insertVoiceTranscript(result[0]?.transcript);
+      }
+    };
+    recognition.onerror = (event) => {
+      if (event.error === 'aborted') return;
+      const messages = { 'not-allowed': 'Hãy cho phép trình duyệt dùng microphone cho dashboard.', 'service-not-allowed': 'Dịch vụ nhận dạng giọng nói của trình duyệt không khả dụng.', 'no-speech': 'Chưa nghe thấy giọng nói.', network: 'Nhận dạng giọng nói cần mạng nhưng kết nối bị lỗi.', 'language-not-supported': 'Trình duyệt không hỗ trợ ngôn ngữ đã chọn.' };
+      notify(messages[event.error] || `Không nhận dạng được giọng nói (${event.error || 'lỗi trình duyệt'}).`, true);
+    };
+    recognition.onend = () => {
+      if (voiceRecognition === recognition) { voiceRecognition = null; setVoiceListening(false); }
+      voiceStopResolve?.();
+    };
+    try {
+      recognition.start();
+      if (!voiceDisclosureShown) { voiceDisclosureShown = true; notify('Trình duyệt có thể xử lý audio qua dịch vụ nhận dạng của họ; dashboard không nhận audio.'); }
+    } catch (error) {
+      if (voiceRecognition === recognition) voiceRecognition = null;
+      setVoiceListening(false); notify(`Không thể bật microphone: ${error.message}`, true);
+    }
+  }
+
+  function stopVoiceInput() {
+    const recognition = voiceRecognition;
+    if (!recognition) return Promise.resolve();
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = () => { if (settled) return; settled = true; clearTimeout(timer); if (voiceStopResolve === finish) voiceStopResolve = null; resolve(); };
+      const timer = setTimeout(() => { if (voiceRecognition === recognition) { voiceRecognition = null; setVoiceListening(false); try { recognition.abort(); } catch {} } finish(); }, 1500);
+      voiceStopResolve = finish;
+      try { recognition.stop(); } catch { try { recognition.abort(); } catch {} finish(); }
+    });
+  }
+
+  function toggleVoiceInput() { if (voiceRecognition) void stopVoiceInput(); else startVoiceInput(); }
+
+  function setTerminalStatus(label, connected = false) {
+    const status = document.querySelector('#bottomPanelStatusLabel');
+    const dot = document.querySelector('.bottom-panel-status .bottom-status-dot');
+    if (status) status.textContent = label;
+    if (dot) dot.style.background = connected ? 'var(--success)' : 'var(--muted)';
+  }
+  function fitTerminal() { if (terminalWidget && $('bottomPanel')?.classList.contains('open')) { terminalFitAddon?.fit(); terminalWidget.focus(); } }
+  async function closeEmbeddedTerminal(hidePanel = true) {
+    if (terminalOpenPromise) terminalOpenCancelled = true;
+    const id = terminalSessionId;
+    const socket = terminalSocket;
+    terminalSessionId = null;
+    terminalSocket = null;
+    if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, 'closed');
+    if (id) void readJson(`${API}/terminal/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
+    terminalWidget?.dispose();
+    terminalWidget = null;
+    terminalFitAddon = null;
+    $('terminalHost')?.replaceChildren();
+    if (hidePanel) {
+      $('bottomPanel')?.classList.remove('open');
+      document.querySelector('.app-main')?.classList.remove('has-bottom-panel');
+      $('toggleBottomPanelBtn')?.classList.remove('active');
+    }
+    setTerminalStatus('Terminal đã đóng');
+  }
+  async function openEmbeddedTerminal() {
+    if (terminalOpenPromise) return terminalOpenPromise;
+    const panel = $('bottomPanel');
+    const button = $('toggleBottomPanelBtn');
+    panel?.classList.add('open');
+    document.querySelector('.app-main')?.classList.add('has-bottom-panel');
+    button?.classList.add('active');
+    if (button) { button.disabled = true; button.setAttribute('aria-busy', 'true'); }
+    terminalOpenPromise = (async () => {
+      terminalOpenCancelled = false;
+      try {
+        if (!window.Terminal || !window.FitAddon?.FitAddon) throw new Error('Không tải được terminal emulator.');
+        const ownerId = state.activeId;
+        const body = ownerId ? { sessionId: ownerId } : state.draftWorkspaceCwd ? { cwd: state.draftWorkspaceCwd } : {};
+        const { payload } = await readJson(`${API}/terminal/open`, { method: 'POST', body: JSON.stringify(body) });
+        if (terminalOpenCancelled || state.activeId !== ownerId) { void readJson(`${API}/terminal/sessions/${encodeURIComponent(payload.terminalId)}`, { method: 'DELETE' }); if (!terminalOpenCancelled) throw new Error('Chat đã thay đổi trong lúc mở terminal.'); return; }
+        terminalSessionId = payload.terminalId;
+        const host = $('terminalHost');
+        host?.replaceChildren();
+        terminalWidget = new window.Terminal({ cursorBlink: true, convertEol: true, fontFamily: 'var(--font-mono)', fontSize: 12, theme: { background: '#080b10', foreground: '#e4e7eb', cursor: '#42a5ff' }, scrollback: 3000 });
+        terminalFitAddon = new window.FitAddon.FitAddon();
+        terminalWidget.loadAddon(terminalFitAddon);
+        terminalWidget.open(host);
+        terminalFitAddon.fit();
+        terminalWidget.onData((data) => { if (terminalSocket?.readyState === WebSocket.OPEN) terminalSocket.send(JSON.stringify({ type: 'input', data })); });
+        terminalWidget.onResize(({ cols, rows }) => { if (terminalSocket?.readyState === WebSocket.OPEN) terminalSocket.send(JSON.stringify({ type: 'resize', cols, rows })); });
+        setTerminalStatus(`Đang kết nối · ${payload.workspace || 'General'}`);
+        const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const socket = new WebSocket(`${scheme}//${location.host}/api/v1/terminal/stream?terminalId=${encodeURIComponent(terminalSessionId)}`);
+        terminalSocket = socket;
+        socket.addEventListener('open', () => {
+          if (terminalSocket !== socket) return;
+          fitTerminal(); setTerminalStatus(`Quyền tài khoản OS · ${payload.workspace || 'General'}`, true);
+          if (!terminalDisclosureShown) { terminalDisclosureShown = true; notify('Terminal dùng quyền OS của tài khoản đang chạy dashboard; workspace chỉ là thư mục bắt đầu.'); }
+        });
+        socket.addEventListener('message', (event) => {
+          if (terminalSocket !== socket) return;
+          let message; try { message = JSON.parse(event.data); } catch { return; }
+          if (message.type === 'output' && typeof message.data === 'string') terminalWidget?.write(message.data);
+          else if (message.type === 'exit') setTerminalStatus(`Shell đã dừng · mã ${message.exitCode ?? message.signal ?? '?'}`);
+          else if (message.type === 'closed') setTerminalStatus('Terminal đã đóng');
+        });
+        socket.addEventListener('close', () => {
+          if (terminalSocket !== socket) return;
+          terminalSocket = null; terminalSessionId = null;
+          setTerminalStatus('Kết nối terminal đã đóng');
+        });
+        socket.addEventListener('error', () => { setTerminalStatus('Không kết nối được terminal'); notify('Không kết nối được terminal trên máy.', true); });
+        await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => reject(new Error('Kết nối terminal quá thời gian.')), 8000);
+          socket.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
+          socket.addEventListener('error', () => { clearTimeout(timer); reject(new Error('WebSocket terminal bị lỗi.')); }, { once: true });
+        });
+      } catch (error) {
+        const cancelled = terminalOpenCancelled;
+        await closeEmbeddedTerminal(false);
+        setTerminalStatus('Terminal chưa sẵn sàng');
+        if (!cancelled) notify(`Không mở được terminal: ${error.message}`, true);
+      } finally { terminalOpenPromise = null; if (button) { button.disabled = false; button.removeAttribute('aria-busy'); } }
+    })();
+    return terminalOpenPromise;
+  }
+  function toggleEmbeddedTerminal() {
+    if ($('bottomPanel')?.classList.contains('open')) void closeEmbeddedTerminal();
+    else void openEmbeddedTerminal();
   }
 
   function updateHeaderQuota(overview, accounts) {
@@ -3524,7 +3695,7 @@
     }
   }
 
-  function unsupported(event) { const target = event.target.closest('[data-production-unsupported],.plus-tool-action-item,#confirmUpgradeBtn,#launchRealBrowserTabBtn,#btnModalApplyDiff,#btnModalRevertFile,#btnApplyAllDiff,#btnUndoCurrentDiff,#terminalInput'); if (!target) return; event.preventDefault(); event.stopImmediatePropagation(); notify('Control này chưa có backend production.', true); }
+  function unsupported(event) { const target = event.target.closest('[data-production-unsupported],.plus-tool-action-item,#confirmUpgradeBtn,#launchRealBrowserTabBtn,#btnModalApplyDiff,#btnModalRevertFile,#btnApplyAllDiff,#btnUndoCurrentDiff'); if (!target) return; event.preventDefault(); event.stopImmediatePropagation(); notify('Control này chưa có backend production.', true); }
   function bind() {
     if (bound) return;
     bound = true;
@@ -3546,6 +3717,39 @@
       }, true);
     });
     document.addEventListener('click', unsupported, true);
+    const voiceLanguage = $('voiceLanguageSelect');
+    if (voiceLanguage) {
+      const savedLanguage = localStorage.getItem('omp.voiceLanguage');
+      voiceLanguage.value = savedLanguage === 'en-US' ? 'en-US' : 'vi-VN';
+      voiceLanguage.addEventListener('change', () => localStorage.setItem('omp.voiceLanguage', voiceLanguage.value), true);
+    }
+    const voiceButton = $('voiceRecordBtn');
+    if (voiceButton) {
+      const recognitionSupported = Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
+      voiceButton.disabled = !recognitionSupported;
+      if (!recognitionSupported) { voiceButton.title = 'Trình duyệt này chưa hỗ trợ nhận dạng giọng nói.'; voiceButton.setAttribute('aria-label', voiceButton.title); }
+      voiceButton.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); toggleVoiceInput(); }, true);
+    }
+    const terminalButton = $('toggleBottomPanelBtn');
+    if (terminalButton) {
+      terminalButton.hidden = false;
+      terminalButton.disabled = false;
+      terminalButton.removeAttribute('aria-hidden');
+      terminalButton.title = 'Terminal máy dùng quyền OS của tài khoản đang chạy dashboard';
+      terminalButton.setAttribute('aria-label', 'Bật/tắt Terminal nhúng');
+      terminalButton.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); toggleEmbeddedTerminal(); }, true);
+    }
+    $('closeBottomPanelBtn')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); void closeEmbeddedTerminal(); }, true);
+    $('clearConsoleBtn')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); terminalWidget?.clear(); terminalWidget?.focus(); }, true);
+    $('copyConsoleBtn')?.addEventListener('click', async (event) => { event.preventDefault(); event.stopImmediatePropagation(); const selected = terminalWidget?.getSelection() || ''; if (!selected) { notify('Hãy chọn nội dung trong terminal để sao chép.'); return; } try { await navigator.clipboard.writeText(selected); notify('Đã sao chép nội dung terminal.'); } catch { notify('Trình duyệt không cho phép sao chép nội dung.', true); } }, true);
+    document.querySelectorAll('.bottom-tab-btn').forEach((tab) => tab.addEventListener('click', (event) => {
+      event.preventDefault(); event.stopImmediatePropagation();
+      const key = tab.dataset.tab;
+      document.querySelectorAll('.bottom-tab-btn').forEach((item) => { const active = item === tab; item.classList.toggle('active', active); item.setAttribute('aria-selected', String(active)); });
+      document.querySelectorAll('.console-tab-pane').forEach((pane) => { pane.hidden = pane.id !== `pane${key[0].toUpperCase()}${key.slice(1)}`; pane.style.display = pane.hidden ? 'none' : 'flex'; });
+      if (key === 'terminal') fitTerminal();
+    }, true));
+    window.addEventListener('resize', fitTerminal);
     $('egoBrowserToggle')?.addEventListener('click', (event) => {
       event.preventDefault(); event.stopImmediatePropagation();
       setBrowserMode(state.browserMode === 'ego-browser' ? 'none' : 'ego-browser');
@@ -3587,8 +3791,6 @@
     $('headerActionDelete')?.addEventListener('click', (event) => activeAction(event, 'delete'), true);
     $('headerActionRename')?.addEventListener('click', (event) => activeAction(event, 'rename'), true);
     $('headerSessionEditBtn')?.addEventListener('click', (event) => activeAction(event, 'rename'), true);
-    $('terminalInput') && (($('terminalInput').disabled = true), ($('terminalInput').placeholder = 'Terminal backend chưa được kết nối'));
-    document.querySelectorAll('#clearConsoleBtn,#copyConsoleBtn').forEach((control) => control.setAttribute('data-production-unsupported', 'true'));
     $('settingsModal')?.style.setProperty('transition', 'none');
     ensureToolsRail();
     $('codeDiffReviewModal') && ($('codeDiffReviewModal').hidden = true);

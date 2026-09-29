@@ -8,12 +8,13 @@ WORKSPACE_DIR=${OMP_DASHBOARD_WORKSPACE:-$SOURCE_DIR}
 LAUNCH_DIR=${OMP_DASHBOARD_LAUNCH_DIR:-${HOME}/Library/LaunchAgents}
 LABEL=${OMP_DASHBOARD_LABEL:-com.trannhattuan.omp-usage-dashboard}
 NODE_BIN=$(command -v node || true)
+NPM_BIN=$(command -v npm || true)
 USER_ID=$(/usr/bin/id -u)
 LAUNCH_DOMAIN="gui/$USER_ID"
 PLIST="$LAUNCH_DIR/$LABEL.plist"
 PLIST_BACKUP=LaunchAgent.plist
 BACKUP_ROOT="$TARGET_DIR/backups/deploy"
-APP_FILES='server.mjs console-bridge.mjs acp-worker.mjs acp-session-context.mjs gemini-account-pin-extension.mjs honpi-dashboard-mark-8138753b.png honpi-chat-dashboard-SKE.html honpi-quota-dashboard-SKE.html honpi-chat-dashboard-live.js honpi-chat-dashboard-legacy.js'
+APP_FILES='server.mjs console-bridge.mjs acp-worker.mjs acp-session-context.mjs gemini-account-pin-extension.mjs honpi-dashboard-mark-8138753b.png honpi-chat-dashboard-SKE.html honpi-quota-dashboard-SKE.html honpi-chat-dashboard-live.js honpi-chat-dashboard-legacy.js package.json package-lock.json scripts/fix-node-pty-helper.mjs'
 OMP_EXTENSION_SOURCE="$SOURCE_DIR/omp-account-preference.js"
 OMP_EXTENSION_TARGET="${HOME}/.omp/agent/extensions/omp-account-preference.js"
 OMP_EXTENSION_BACKUP=OMPAccountPreference.js
@@ -23,7 +24,17 @@ fail() {
   exit 1
 }
 
+install_dependencies() {
+  if [ -f "$TARGET_DIR/package.json" ]; then
+    [ -n "$NPM_BIN" ] || fail "npm is required to install terminal dependencies"
+    "$NPM_BIN" ci --omit=dev --prefix "$TARGET_DIR" || return 1
+  else
+    /bin/rm -rf "$TARGET_DIR/node_modules" || return 1
+  fi
+}
+
 [ -n "$NODE_BIN" ] || fail "Node.js is required"
+[ -n "$NPM_BIN" ] || fail "npm is required"
 case "$NODE_BIN" in /*) ;; *) fail "Node.js path must be absolute" ;; esac
 [ -x "${HOME}/.bun/bin/omp" ] || fail "OMP is required at ~/.bun/bin/omp"
 case "$LABEL" in ''|*[!A-Za-z0-9._-]*) fail "Invalid LaunchAgent label" ;; esac
@@ -62,6 +73,7 @@ restore_backup() {
   verify_backup "$backup"
   for file in $APP_FILES; do
     if [ -f "$backup/$file" ]; then
+      /bin/mkdir -p "$(/usr/bin/dirname "$TARGET_DIR/$file")" || return 1
       /bin/cp "$backup/$file" "$TARGET_DIR/$file" || return 1
       /bin/chmod 600 "$TARGET_DIR/$file" || return 1
     elif [ -f "$backup/ABSENT-$file" ]; then
@@ -70,6 +82,7 @@ restore_backup() {
       fail "Backup file or absence marker missing: $file"
     fi
   done
+  install_dependencies || return 1
   if [ -f "$backup/$OMP_EXTENSION_BACKUP" ]; then
     /bin/mkdir -p "$(/usr/bin/dirname "$OMP_EXTENSION_TARGET")" || return 1
     /bin/cp "$backup/$OMP_EXTENSION_BACKUP" "$OMP_EXTENSION_TARGET" || return 1
@@ -121,6 +134,8 @@ BACKUP_DIR="$BACKUP_ROOT/$timestamp-$$"
 printf 'code-only-v2\n' > "$BACKUP_DIR/BACKUP-VERSION"
 for file in $APP_FILES; do
   [ -f "$SOURCE_DIR/$file" ] || fail "Missing release asset: $file"
+  /bin/mkdir -p "$(/usr/bin/dirname "$BACKUP_DIR/$file")"
+  /bin/mkdir -p "$(/usr/bin/dirname "$BACKUP_DIR/ABSENT-$file")"
   if [ -f "$TARGET_DIR/$file" ]; then
     /bin/cp "$TARGET_DIR/$file" "$BACKUP_DIR/$file"
   else
@@ -142,7 +157,10 @@ write_manifest "$BACKUP_DIR"
 verify_backup "$BACKUP_DIR"
 
 for file in $APP_FILES; do
-  tmp="$TARGET_DIR/.$file.tmp.$$"
+  target_dir=$(/usr/bin/dirname "$TARGET_DIR/$file")
+  target_name=$(/usr/bin/basename "$file")
+  /bin/mkdir -p "$target_dir"
+  tmp="$target_dir/.$target_name.tmp.$$"
   if ! /bin/cp "$SOURCE_DIR/$file" "$tmp" \
     || ! /bin/chmod 600 "$tmp" \
     || ! /bin/mv -f "$tmp" "$TARGET_DIR/$file" \
@@ -152,6 +170,11 @@ for file in $APP_FILES; do
     fail "Failed to install $file"
   fi
 done
+
+if ! install_dependencies; then
+  rollback_failed_install || true
+  fail "Failed to install terminal dependencies"
+fi
 
 if ! /bin/mkdir -p "$(/usr/bin/dirname "$OMP_EXTENSION_TARGET")" \
   || ! /bin/cp "$OMP_EXTENSION_SOURCE" "$OMP_EXTENSION_TARGET" \
