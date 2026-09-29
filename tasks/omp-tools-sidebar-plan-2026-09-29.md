@@ -1,6 +1,6 @@
 # Kế hoạch chuẩn hoá Catalog OMP → `/chat` và sidebar Công cụ
 
-Trạng thái: chờ Síp duyệt triển khai. Phạm vi tài liệu này là audit + kế hoạch; chưa đổi UI/runtime cho thiết kế mới.
+Trạng thái: đã triển khai source map, audit/drift, API validation và sidebar data-driven ngày 2026-09-29. Tài liệu giữ baseline, quyết định và gate vận hành khi OMP cập nhật.
 
 ## Kết quả audit làm baseline
 
@@ -18,11 +18,11 @@ Trạng thái: chờ Síp duyệt triển khai. Phạm vi tài liệu này là a
 
 ### Một source map có version, một snapshot runtime không chứa secret
 
-Sau khi được duyệt, thêm:
+Đã thêm:
 
-- `config/omp-tool-map.json`: map source-controlled OMP → Chat. Nó giữ ID canonical, alias, nhóm UI, label/icon, tier approval, kiểu lựa chọn, config evidence và lifecycle; không tự khẳng định một tool đang usable.
+- `omp-tool-map.json`: map source-controlled OMP → Chat. Nó giữ ID canonical, nhóm UI, label/icon, tier approval, kiểu lựa chọn, config evidence và lifecycle; không tự khẳng định một tool đang usable.
 - `omp-tool-catalog.mjs`: một module nhỏ dùng chung bởi server và lệnh audit. Module đọc map, probe OMP, canonicalize roster, tính digest và fail-closed khi map/audit lỗi.
-- `scripts/audit-omp-tools.mjs`: chạy audit không gửi prompt/model, ghi snapshot đã redaction vào `~/.omp/usage-dashboard/tool-audits/`. Thư mục runtime này không vào Git.
+- Audit nội bộ của catalog chạy không gửi prompt/model, ghi snapshot đã redaction vào `~/.omp/usage-dashboard/tool-audits/`. Thư mục runtime này không vào Git.
 
 Map không nhân bản danh sách tool trong `server.mjs`. `OMP_TOOL_DEFINITIONS`, `OMP_TOOL_APPROVAL`, `OMP_OBSERVED_TOOL_IDS` và blacklist ad-hoc được thay bằng output catalog duy nhất.
 
