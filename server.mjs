@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConsoleBridge } from "./console-bridge.mjs";
+import { createOmpToolCatalog } from "./omp-tool-catalog.mjs";
 
 const ROOT = join(homedir(), ".omp/usage-dashboard");
 const CA_BUNDLE = join(ROOT, "ca-bundle.pem");
@@ -1208,6 +1209,7 @@ function startLogin(targetEmail = null) {
 }
 
 const consoleBridge = new ConsoleBridge({ env: OMP_ENV, onGenerationFinished: () => scheduleRefresh(), onSafetyChanged: () => broadcastStatus() });
+const ompToolCatalog = createOmpToolCatalog({ ompBin: OMP_BIN, env: OMP_ENV });
 
 async function syncSafetyPolicy() {
   const config = await readProtectConfig();
@@ -1417,54 +1419,13 @@ const ACP_GATEWAY_COMMANDS = new Set([
 const BLOCKED_BROWSER_COMMANDS = new Set(["bash", "login"]);
 const OMP_THINKING_LEVELS = new Set(["max", "high", "medium", "low", "none"]);
 
-const OMP_CAPABILITY_VERSION = "2026-09-26";
-const OMP_TOOL_DEFINITIONS = [
-  ["read", "Đọc tệp", "Đọc nội dung tệp trong workspace để phân tích.", "always", "read"],
-  ["write", "Ghi tệp", "Tạo tệp mới hoặc ghi nội dung vào tệp khi được phép.", "always", "write"],
-  ["edit", "Sửa tệp", "Sửa tệp hiện có bằng thay đổi có kiểm soát.", "always", "write"],
-  ["ast_edit", "Sửa AST", "Sửa mã theo cấu trúc cú pháp để giảm lỗi thay thế.", "always", "write"],
-  ["grep", "Tìm nội dung", "Tìm chuỗi hoặc mẫu trong các tệp của workspace.", "grep.enabled", "read"],
-  ["glob", "Tìm tệp", "Liệt kê tệp theo mẫu đường dẫn.", "glob.enabled", "read"],
-  ["bash", "Chạy lệnh", "Chạy lệnh shell trong workspace theo quyền OMP.", "bash.enabled", "exec"],
-  ["eval", "Đánh giá mã", "Chạy đánh giá Python/JavaScript cho tác vụ cần kiểm chứng.", "eval.js", "exec"],
-  ["lsp", "LSP", "Dùng Language Server để điều hướng và chẩn đoán mã.", "lsp.enabled", "read"],
-  ["debug", "Debugger", "Phân tích lỗi chạy và trạng thái debug của chương trình.", "debug.enabled", "exec"],
-  ["task", "Task Agent", "Tạo và điều phối tác vụ con trong OMP.", "always", "exec"],
-  ["hub", "Agent Hub", "Điều phối Agent Hub runtime của OMP.", "always", "read"],
-  ["web_search", "Tìm kiếm Web", "Tìm thông tin trên Web qua provider OMP đã cấu hình.", "web_search.enabled", "read"],
-  ["todo", "Todo", "Theo dõi danh sách việc cần làm của phiên.", "todo.enabled", "write"],
-  ["goal", "Goal", "Quản lý mục tiêu và trạng thái hoàn thành của phiên.", "always", "write"],
-  ["init_experiment", "Khởi tạo experiment", "Tạo cấu trúc ban đầu cho một experiment.", "always", "write"],
-  ["run_experiment", "Chạy experiment", "Chạy experiment để kiểm tra giả thuyết hoặc thay đổi.", "always", "exec"],
-  ["log_experiment", "Ghi experiment", "Ghi kết quả và dữ liệu của experiment.", "always", "write"],
-  ["update_notes", "Cập nhật notes", "Cập nhật ghi chú bền vững của dự án hoặc phiên.", "always", "write"],
-];
-const OMP_UNAVAILABLE_TOOL_IDS = new Set(["hub"]);
+const OMP_CAPABILITY_VERSION = "2026-09-29";
 const OMP_MEMORY_BACKENDS = new Set(["off", "local", "hindsight", "mnemopi", "sharpshooter"]);
 const OMP_MEMORY_ACTIONS = ["view", "stats", "diagnose", "queue", "sync", "clear", "reset", "enqueue", "rebuild"];
 const OMP_MEMORY_MUTATING_ACTIONS = new Set(["sync", "clear", "reset", "enqueue", "rebuild"]);
 const OMP_MEMORY_CONFIRM_ACTIONS = new Set(["sync", "clear", "reset", "enqueue", "rebuild"]);
-const OMP_TOOL_APPROVAL = new Map(OMP_TOOL_DEFINITIONS.map(([id, , , , approval]) => [id, approval]));
 const HEADLESS_APPROVAL_RANK = { read: 0, write: 1, exec: 2 };
 const HEADLESS_APPROVAL_LIMIT = { "always-ask": "read", write: "write", yolo: "exec" };
-const HEADLESS_READ_ONLY_TOOLS = new Set(["read", "grep", "glob"]);
-const OMP_OBSERVED_TOOL_IDS = ["read", "bash", "edit", "eval", "glob", "grep", "task", "todo", "web_search", "write"];
-let ompToolCatalogCache = { loadedAt: 0, items: [] };
-
-function runOmpConfigList() {
-  return new Promise((resolve, reject) => {
-    const child = spawn(OMP_BIN, ["config", "list", "--json"], { env: OMP_ENV, stdio: ["ignore", "pipe", "ignore"] });
-    let output = "";
-    const timer = setTimeout(() => { child.kill("SIGTERM"); reject(new Error("OMP config timeout")); }, 10000);
-    child.stdout.on("data", (chunk) => { output += chunk; });
-    child.on("error", (error) => { clearTimeout(timer); reject(error); });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (code !== 0) return reject(new Error("OMP config không khả dụng"));
-      try { resolve(JSON.parse(output)); } catch { reject(new Error("OMP config trả JSON không hợp lệ")); }
-    });
-  });
-}
 function runOmpMemoryBackend(cwd) {
   return new Promise((resolve, reject) => {
     const child = spawn(OMP_BIN, ["config", "get", "memory.backend"], { env: OMP_ENV, cwd, stdio: ["ignore", "pipe", "ignore"] });
@@ -1497,28 +1458,11 @@ function runOmpMemoryBackend(cwd) {
 }
 
 async function readOmpToolCatalog() {
-  if (Date.now() - ompToolCatalogCache.loadedAt < 300000 && ompToolCatalogCache.items.length) return ompToolCatalogCache.items;
-  let settings = {};
-  try { settings = await runOmpConfigList(); } catch { settings = {}; }
-  const items = OMP_TOOL_DEFINITIONS.map(([id, label, description, configKey, approval]) => {
-    const setting = settings[configKey];
-    const value = configKey === "eval.js" ? settings["eval.js"]?.value === true || settings["eval.py"]?.value === true : configKey === "always" ? true : setting?.value === true;
-    const status = !OMP_UNAVAILABLE_TOOL_IDS.has(id) && value ? "supported" : "unavailable";
-    return { id, label, description, status, approval, canToggle: status === "supported" };
-  });
-  ompToolCatalogCache = { loadedAt: Date.now(), items };
-  return items;
+  return (await ompToolCatalog.read()).tools;
 }
 
 async function selectedOmpTools(value) {
-  const catalog = await readOmpToolCatalog();
-  const supported = new Set(catalog.filter((item) => item.status === "supported").map((item) => item.id));
-  if (value == null) return [...supported];
-  const requested = [...new Set((Array.isArray(value) ? value : String(value).split(",")).map((item) => String(item || "").trim()).filter(Boolean))];
-  if (requested.length > 32) throw Object.assign(new Error("Danh sách công cụ vượt quá 32 mục"), { code: "BAD_REQUEST", field: "tools" });
-  const invalid = requested.filter((id) => !supported.has(id));
-  if (invalid.length) throw Object.assign(new Error(`Công cụ OMP chưa khả dụng: ${invalid.join(", ")}`), { code: "BAD_REQUEST", field: "tools" });
-  return requested;
+  return ompToolCatalog.selected(value);
 }
 const OMP_BROWSER_MODES = [
   { id: "ego-browser", label: "Ego Browser · Skill", status: "supported", default: false, note: "Chỉ bật khi Síp chọn; OMP nạp /skill:ego-browser cho các order cần web." },
@@ -1544,10 +1488,14 @@ function approvalMode(value) {
   return mode;
 }
 
-function headlessTools(approval, tools) {
+async function headlessTools(approval, tools) {
   if (approval === "yolo") return tools;
   const limit = HEADLESS_APPROVAL_RANK[HEADLESS_APPROVAL_LIMIT[approval]];
-  const allowed = tools.filter((id) => HEADLESS_APPROVAL_RANK[OMP_TOOL_APPROVAL.get(id)] <= limit && (approval !== "always-ask" || HEADLESS_READ_ONLY_TOOLS.has(id)));
+  const policies = new Map((await ompToolCatalog.policies(tools)).map((tool) => [tool.id, tool]));
+  const allowed = tools.filter((id) => {
+    const tool = policies.get(id);
+    return tool && HEADLESS_APPROVAL_RANK[tool.approval] <= limit && (approval !== "always-ask" || tool.alwaysAsk);
+  });
   if (!allowed.length) throw Object.assign(new Error("Chế độ phê duyệt hiện tại chỉ hỗ trợ công cụ đọc trong dashboard headless."), { code: "CONFLICT" });
   return allowed;
 }
@@ -1653,7 +1601,7 @@ async function gatewayLaunchConfig(body = {}) {
   const selectedApprovalMode = approvalMode(body.approvalMode);
   const selectedBrowserMode = body.browserMode == null ? null : browserMode(body.browserMode);
   const useSkillBrowser = selectedBrowserMode === "ego-browser";
-  const selectedTools = useSkillBrowser ? null : headlessTools(selectedApprovalMode, await selectedOmpTools(body.tools));
+  const selectedTools = useSkillBrowser ? null : await headlessTools(selectedApprovalMode, await selectedOmpTools(body.tools));
   return {
     approvalMode: selectedApprovalMode,
     browserMode: selectedBrowserMode,
@@ -2662,8 +2610,8 @@ async function ensureChatSessionUnlocked(sessionId, body = {}, { requireExisting
   const requestedTools = hasBrowserMode && useSkillBrowser
     ? null
     : body.tools == null
-      ? (hasBrowserMode && record?.tools == null ? headlessTools(selectedApprovalMode, await selectedOmpTools(stored.tools)) : null)
-      : headlessTools(selectedApprovalMode, await selectedOmpTools(body.tools));
+      ? (hasBrowserMode && record?.tools == null ? await headlessTools(selectedApprovalMode, await selectedOmpTools(stored.tools)) : null)
+      : await headlessTools(selectedApprovalMode, await selectedOmpTools(body.tools));
   const browserContextChanged = Boolean(record && hasBrowserMode && ((useSkillBrowser && record.tools !== null) || (!useSkillBrowser && record.tools === null)));
   if (record && ((requestedApprovalMode && record.approvalMode !== requestedApprovalMode) || (requestedTools && JSON.stringify(record.tools || []) !== JSON.stringify(requestedTools)) || browserContextChanged) && !contextHasChatWork(record.contextId)) {
     await consoleBridge.stop(record.contextId);
@@ -3414,7 +3362,7 @@ async function sessionAction(sessionId, req, providedBody = null) {
     patch = { folderId: null, folderName: null };
   } else if (action === "tools") {
     const selectedChatModel = record?.selectedChatModel || null;
-    const tools = headlessTools(record?.approvalMode || approvalMode(current.approvalMode), await selectedOmpTools(body.tools));
+    const tools = await headlessTools(record?.approvalMode || approvalMode(current.approvalMode), await selectedOmpTools(body.tools));
     if (!record) {
       await ensureChatSession(id, { tools, approvalMode: current.approvalMode });
       record = liveGatewayRecord(id);
@@ -5045,7 +4993,8 @@ const server = http.createServer(async (req, res) => {
       const models = await availableModels();
       const imageGeneration = imageGenerationCapability(models);
       const imageGenerationModels = imageGeneration.models;
-      const tools = await readOmpToolCatalog();
+      const toolCatalog = await ompToolCatalog.read();
+      const tools = toolCatalog.tools;
       return json(res, 200, {
         ok: true, capabilityVersion: OMP_CAPABILITY_VERSION, contractVersion: OMP_GATEWAY_VERSION,
         transport: { prompt: "http", stream: "sse", hostOnly: true },
@@ -5079,7 +5028,7 @@ const server = http.createServer(async (req, res) => {
           browserPageScreenshot: "unavailable",
           note: "Ego Browser host hiện không cung cấp Page.captureScreenshot ổn định; snapshot page p1 là đọc cây trợ năng, không phải native screen capture.",
         },
-        models, tools, observedToolIds: OMP_OBSERVED_TOOL_IDS, commands: [...ACP_GATEWAY_COMMANDS].filter((command) => !BLOCKED_BROWSER_COMMANDS.has(command)).sort(), browsers: OMP_BROWSER_MODES, approvalModes: OMP_APPROVAL_MODES, shareModes: OMP_SHARE_MODES,
+        models, tools, catalog: toolCatalog.catalog, observedToolIds: toolCatalog.observedToolIds, commands: [...ACP_GATEWAY_COMMANDS].filter((command) => !BLOCKED_BROWSER_COMMANDS.has(command)).sort(), browsers: OMP_BROWSER_MODES, approvalModes: OMP_APPROVAL_MODES, shareModes: OMP_SHARE_MODES,
         safety: consoleBridge.safety(),
         note: "Catalog lấy từ OMP runtime; capability unavailable không được báo thành công.",
       });
