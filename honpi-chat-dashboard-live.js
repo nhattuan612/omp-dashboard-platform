@@ -526,7 +526,7 @@
     state.menu?.remove();
     state.folderMenu?.remove();
     const menu = document.createElement('div'); menu.className = 'neuratalk-context-menu open'; menu.id = 'liveSessionActionMenu'; menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', `Tùy chọn cuộc trò chuyện ${session.title || session.id}`); menu.style.left = `${Math.max(8, Math.min(x || 24, innerWidth - 228))}px`; menu.style.top = `${Math.max(8, Math.min(y || 80, innerHeight - 300))}px`; menu.style.zIndex = '3000'; menu.style.pointerEvents = 'auto';
-    const actions = [['rename', 'Đặt lại tên'], [session.isPinned ? 'unpin' : 'pin', session.isPinned ? 'Bỏ ghim' : 'Ghim'], [session.isUnread ? 'read' : 'unread', session.isUnread ? 'Đánh dấu đã đọc' : 'Đánh dấu chưa đọc'], ['folder', 'Phân loại folder'], ['fork', 'Tạo nhánh'], ['reconnect', 'Kết nối lại session'], ['share', 'Chia sẻ liên kết'], ['archive', 'Lưu trữ'], ['delete', 'Xoá vĩnh viễn']];
+    const actions = [['rename', 'Đặt lại tên'], [session.isPinned ? 'unpin' : 'pin', session.isPinned ? 'Bỏ ghim' : 'Ghim'], [session.isUnread ? 'read' : 'unread', session.isUnread ? 'Đánh dấu đã đọc' : 'Đánh dấu chưa đọc'], ['folder', 'Phân loại folder'], ['duplicate', 'Nhân bản cuộc trò chuyện'], ['fork', 'Tạo nhánh'], ['export', 'Xuất dữ liệu (.md)'], ['reconnect', 'Kết nối lại session'], ['share', 'Chia sẻ liên kết'], ['archive', 'Lưu trữ'], ['delete', 'Xoá vĩnh viễn']];
     actions.forEach(([action, label]) => {
       const item = document.createElement('button'); item.type = 'button'; item.className = `context-menu-item${action === 'delete' ? ' danger' : ''}`; item.dataset.action = action; item.textContent = label;
       item.addEventListener('click', () => {
@@ -851,10 +851,41 @@
     });
   }
 
+  async function exportSessionMarkdown(session) {
+    if (!session?.id) return;
+    let messages = state.activeId === session.id ? state.messages : null;
+    if (!Array.isArray(messages)) {
+      try {
+        const { payload } = await readJson(`${API}/sessions/${encodeURIComponent(session.id)}/messages`);
+        messages = dataOf(payload, 'messages') || [];
+      } catch (error) {
+        notify(`Không thể xuất cuộc trò chuyện: ${error.message}`, true);
+        return;
+      }
+    }
+    if (!messages.length) return notify('Cuộc trò chuyện chưa có nội dung để xuất.', true);
+    const lines = [`# ${text(session.title || 'Cuộc trò chuyện').trim()}`, ''];
+    messages.forEach((message) => {
+      const role = message?.role === 'user' ? 'Síp' : message?.role === 'toolResult' ? 'Tool' : 'OMP';
+      const content = text(message?.content || '').trim();
+      const attachments = Array.isArray(message?.attachments) ? message.attachments.map((item) => item?.name || 'tệp đính kèm').filter(Boolean) : [];
+      if (content || attachments.length) lines.push(`## ${role}`, content || '_[Không có nội dung văn bản]_', attachments.length ? `\nTệp đính kèm: ${attachments.join(', ')}` : '', '');
+    });
+    const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${text(session.title || 'cuoc-tro-chuyen').trim().replace(/[^\p{L}\p{N}._-]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 96) || 'cuoc-tro-chuyen'}.md`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    notify('Đã xuất lịch sử cuộc trò chuyện thành tệp Markdown.');
+  }
+
   async function runAction(id, action, actionData = {}) {
     const session = state.sessions.find((item) => item.id === id);
     if (!session) return;
     const actionGuard = sessionGuard(id, state.generation);
+    if (action === 'export') return exportSessionMarkdown(session);
     let renameTitle = '';
     if (action === 'rename') { renameTitle = (await requestTextInput('Đặt lại tên cuộc trò chuyện', session.title || 'Phiên làm việc mới')).trim(); if (!renameTitle) return; }
     if (action === 'delete' && !(await requestDeleteConfirm(session))) return;
@@ -885,6 +916,7 @@
           archive: 'Đã lưu trữ cuộc trò chuyện',
           delete: 'Đã xoá cuộc trò chuyện',
           fork: 'Đã tạo nhánh cuộc trò chuyện',
+          duplicate: 'Đã nhân bản cuộc trò chuyện',
           reconnect: 'Đã kết nối lại session',
           tools: 'Đã cập nhật công cụ OMP',
         };
@@ -906,10 +938,10 @@
         delete session.folderId;
         delete session.folderName;
       }
-      if (action === 'fork' && payload?.forkSession?.id) state.activeId = payload.forkSession.id;
+      if (['fork', 'duplicate'].includes(action) && payload?.forkSession?.id) state.activeId = payload.forkSession.id;
       await loadSessions();
       if (['assign_folder', 'unassign_folder'].includes(action)) await loadFolders({ silent: true });
-      if (action === 'fork' && payload?.forkSession?.id) await selectSession(payload.forkSession.id);
+      if (['fork', 'duplicate'].includes(action) && payload?.forkSession?.id) await selectSession(payload.forkSession.id);
       else if (['archive', 'delete'].includes(action) && state.activeId === id) setNeutralSelection({ preserveActiveView: false });
       else if (state.activeId === id && isCurrentSession(actionGuard)) await selectSession(id, true);
     } catch (error) { notify(`Không thể ${actionLabel}: ${error.message}`, true); }
@@ -1490,7 +1522,7 @@
   }
   function sanitizeProductionSurface() {
     const hide = (id) => { const node = $(id); if (node) { node.hidden = true; node.disabled = true; node.setAttribute('aria-hidden', 'true'); } };
-    ['headerActionDuplicate', 'headerActionExport', 'screenCaptureBtn', 'cameraCaptureBtn', 'microphoneCaptureBtn', 'videoCaptureBtn'].forEach(hide);
+    ['screenCaptureBtn', 'cameraCaptureBtn', 'microphoneCaptureBtn', 'videoCaptureBtn'].forEach(hide);
     const tools = $('toolsContentArea');
     if (tools) { tools.replaceChildren(emptyNode('Chưa có công cụ backend')); tools.setAttribute('aria-live', 'polite'); }
     const toolsTab = $('drawerTabToolsBtn');
@@ -1955,6 +1987,21 @@
     } catch (error) { notify(`Không thể tiếp tục hàng chờ: ${error.message}`, true); }
     renderQueueTray();
   }
+  function reorderLocalQueue(sourceId, targetId, before) {
+    const source = state.pendingPrompts.find((item) => item.id === sourceId);
+    const target = state.pendingPrompts.find((item) => item.id === targetId);
+    if (!source || !target || source.id === target.id || source.sessionId !== target.sessionId) return;
+    const group = state.pendingPrompts.filter((item) => item.sessionId === source.sessionId);
+    const sourceIndex = group.indexOf(source);
+    const targetIndex = group.indexOf(target);
+    if (sourceIndex < 0 || targetIndex < 0) return;
+    group.splice(sourceIndex, 1);
+    group.splice(Math.max(0, targetIndex - (sourceIndex < targetIndex ? 1 : 0) + (before ? 0 : 1)), 0, source);
+    let index = 0;
+    state.pendingPrompts = state.pendingPrompts.map((item) => item.sessionId === source.sessionId ? group[index++] : item);
+    renderQueueTray();
+    notify('Đã đổi thứ tự hàng chờ web.');
+  }
   function renderQueueTray() {
     const tray = $('promptQueueTray'); const list = $('queueItemsList'); if (!tray || !list) return;
     const serverItems = serverQueueItems();
@@ -2021,6 +2068,15 @@
       const send = document.createElement('button'); send.type = 'button'; send.className = 'btn-queue-steer'; send.textContent = item.status === 'priority' ? 'Đã ưu tiên' : 'Gửi ngay'; send.disabled = item.status === 'editing' || item.status === 'priority'; send.addEventListener('click', () => void sendQueuedPrompt(item));
       const discard = document.createElement('button'); discard.type = 'button'; discard.className = 'btn-queue-icon-action btn-queue-trash'; discard.textContent = '×'; discard.title = 'Bỏ order'; discard.setAttribute('aria-label', `Bỏ order ${order}`); discard.addEventListener('click', () => discardQueuedPrompt(item.id));
       actions.append(edit, send, discard); row.append(content, actions); list.append(row);
+      const draggable = ['queued', 'paused'].includes(item.status);
+      row.draggable = draggable;
+      if (draggable) {
+        row.addEventListener('dragstart', (event) => { row.classList.add('is-dragging'); event.dataTransfer?.setData('text/plain', item.id); if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'; });
+        row.addEventListener('dragend', () => { row.classList.remove('is-dragging'); list.querySelectorAll('.drag-over-top,.drag-over-bottom').forEach((node) => node.classList.remove('drag-over-top', 'drag-over-bottom')); });
+        row.addEventListener('dragover', (event) => { if (item.sessionId !== state.pendingPrompts.find((candidate) => candidate.id === item.id)?.sessionId) return; event.preventDefault(); const rect = row.getBoundingClientRect(); row.classList.toggle('drag-over-top', event.clientY < rect.top + rect.height / 2); row.classList.toggle('drag-over-bottom', event.clientY >= rect.top + rect.height / 2); });
+        row.addEventListener('dragleave', () => row.classList.remove('drag-over-top', 'drag-over-bottom'));
+        row.addEventListener('drop', (event) => { event.preventDefault(); const sourceId = event.dataTransfer?.getData('text/plain'); const before = event.clientY < row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2; row.classList.remove('drag-over-top', 'drag-over-bottom'); reorderLocalQueue(sourceId, item.id, before); });
+      }
     });
   }
   function renderQueuedPreview(item) {
@@ -3786,6 +3842,8 @@
     $('openFullQuotaDashboardLink')?.addEventListener('click', () => { location.href = '/quota'; });
     const activeAction = (event, action) => { event.preventDefault(); event.stopImmediatePropagation(); if (state.activeId) void runAction(state.activeId, action); else notify('Chưa chọn session', true); };
     $('headerShareBtn')?.addEventListener('click', (event) => activeAction(event, 'share'), true);
+    $('headerActionDuplicate')?.addEventListener('click', (event) => activeAction(event, 'duplicate'), true);
+    $('headerActionExport')?.addEventListener('click', (event) => activeAction(event, 'export'), true);
     $('headerActionFork')?.addEventListener('click', (event) => activeAction(event, 'fork'), true);
     $('headerActionPin')?.addEventListener('click', (event) => { const session = state.sessions.find((item) => item.id === state.activeId); activeAction(event, session?.isPinned ? 'unpin' : 'pin'); }, true);
     $('headerActionDelete')?.addEventListener('click', (event) => activeAction(event, 'delete'), true);
