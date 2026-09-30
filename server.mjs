@@ -64,12 +64,13 @@ const rawChatRateLimit = process.env.OMP_CHAT_RATE_LIMIT;
 const configuredChatRateLimit = rawChatRateLimit == null || rawChatRateLimit.trim() === "" ? 30 : Number(rawChatRateLimit);
 const CHAT_RATE_LIMIT = Number.isSafeInteger(configuredChatRateLimit) && configuredChatRateLimit >= 0 ? configuredChatRateLimit : 30;
 const DASHBOARD_MARK_ASSET = "honpi-dashboard-mark-8138753b.png";
-const CSP_HEADER = `default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' __NONCE__; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' ws://127.0.0.1:${PORT} ws://localhost:${PORT}; font-src 'self' data:; form-action 'self'`;
+const CSP_HEADER = `default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; script-src 'self' __NONCE__; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob: https:; connect-src 'self' ws://127.0.0.1:${PORT} ws://localhost:${PORT}; font-src 'self' data: https://fonts.gstatic.com; form-action 'self'`;
 const PUBLIC_ERROR_CODES = new Set([
   "BAD_REQUEST", "MODEL_NOT_FOUND", "MODEL_NOT_ALLOWED_BY_QUOTA", "IMAGE_GENERATION_MODEL_REQUIRED", "NOT_FOUND", "CONFLICT", "ACCOUNT_NOT_FOUND", "ACCOUNT_UNAVAILABLE", "ACCOUNT_SELECTION_REQUIRED",
   "RATE_LIMITED", "METHOD_NOT_ALLOWED", "UNAUTHORIZED", "FORBIDDEN", "FORBIDDEN_HOST", "FORBIDDEN_ORIGIN", "UPSTREAM_UNAVAILABLE", "TERMINAL_UNAVAILABLE",
 ]);
 const pendingApprovalRequests = new Map();
+const nativeWorkspaceSelections = new Map();
 const DEFAULT_APPROVAL_TIMEOUT_MS = 600_000;
 const testApprovalTimeout = process.env.NODE_ENV === "test" && process.env.OMP_DASHBOARD_TEST_APPROVAL_TIMEOUT_MS
   ? Number(process.env.OMP_DASHBOARD_TEST_APPROVAL_TIMEOUT_MS)
@@ -1812,7 +1813,7 @@ async function listChatFolders() {
 
 async function createChatFolder(name, cwd) {
   const folderName = chatFolderName(name);
-  const workspaceCwd = await consoleBridge.validateWorkspaceDirectory(cwd);
+  const workspaceCwd = await validateChosenWorkspaceDirectory(cwd);
   const operation = chatMetadataWrite.then(async () => {
     const data = await readChatMetadata();
     const duplicate = Object.values(data.folders).find((folder) => typeof folder?.name === "string" && chatFolderKey(folder.name) === chatFolderKey(folderName));
@@ -1829,7 +1830,7 @@ async function createChatFolder(name, cwd) {
 }
 async function updateChatFolderWorkspace(folderId, cwd) {
   const id = chatFolderId(folderId);
-  const workspaceCwd = await consoleBridge.validateWorkspaceDirectory(cwd);
+  const workspaceCwd = await validateChosenWorkspaceDirectory(cwd);
   const operation = chatMetadataWrite.then(async () => {
     const data = await readChatMetadata();
     const folder = data.folders[id];
@@ -1841,6 +1842,60 @@ async function updateChatFolderWorkspace(folderId, cwd) {
   });
   chatMetadataWrite = operation.catch(() => {});
   return operation;
+}
+
+async function validateChosenWorkspaceDirectory(cwd, allowSavedProject = false) {
+  try { return await consoleBridge.validateWorkspaceDirectory(cwd); }
+  catch (error) {
+    const selectedPath = typeof cwd === "string" ? cwd : "";
+    const expiresAt = nativeWorkspaceSelections.get(selectedPath) || 0;
+    if (error.code !== "FORBIDDEN" || (!allowSavedProject && expiresAt < Date.now())) throw error;
+    const canonicalPath = await realpath(selectedPath).catch(() => "");
+    const info = canonicalPath ? await stat(canonicalPath).catch(() => null) : null;
+    if (canonicalPath !== selectedPath || !info?.isDirectory()) {
+      nativeWorkspaceSelections.delete(selectedPath);
+      throw Object.assign(new Error("Thư mục đã chọn không còn khả dụng."), { code: "BAD_REQUEST", field: "cwd" });
+    }
+    return canonicalPath;
+  }
+}
+
+function chooseNativeWorkspaceDirectory() {
+  if (process.platform !== "darwin") {
+    throw Object.assign(new Error("Chọn thư mục từ máy tính hiện chỉ được hỗ trợ trên macOS."), { code: "UNSUPPORTED_ACTION" });
+  }
+  const script = [
+    "try",
+    'set chosenFolder to choose folder with prompt "Chọn thư mục nguồn cho dự án"',
+    "return POSIX path of chosenFolder",
+    "on error number -128",
+    'return "CANCELLED"',
+    "end try",
+  ].join("\n");
+  return new Promise((resolve, reject) => {
+    const child = spawn("osascript", ["-e", script], { env: OMP_ENV, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => child.kill(), 120_000);
+    child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });
+    child.stderr.setEncoding("utf8").on("data", (chunk) => { stderr += chunk; });
+    child.once("error", (error) => { clearTimeout(timer); reject(error); });
+    child.once("close", async (code) => {
+      clearTimeout(timer);
+      if (stdout.trim() === "CANCELLED") return resolve(null);
+      if (code !== 0) return reject(Object.assign(new Error(stderr.trim() || "Không mở được hộp thoại chọn thư mục."), { code: "UPSTREAM_UNAVAILABLE" }));
+      try {
+        const selectedPath = await realpath(stdout.trim());
+        const info = await stat(selectedPath);
+        if (!info.isDirectory()) throw new Error("Vị trí vừa chọn không phải thư mục.");
+        for (const [path, expiresAt] of nativeWorkspaceSelections) if (expiresAt < Date.now()) nativeWorkspaceSelections.delete(path);
+        nativeWorkspaceSelections.set(selectedPath, Date.now() + 5 * 60_000);
+        resolve({ cwd: selectedPath, name: basename(selectedPath) || selectedPath });
+      } catch (error) {
+        reject(Object.assign(error, { code: "BAD_REQUEST", field: "cwd" }));
+      }
+    });
+  });
 }
 
 function terminalEnvironment(extra = {}) {
@@ -1935,7 +1990,7 @@ async function terminalWorkspace(body) {
     const folder = stored.folderId ? metadata.folders[stored.folderId] : null;
     const cwd = folder?.cwd || GENERAL_CHAT_CWD;
     if (!folder?.cwd) await mkdir(GENERAL_CHAT_CWD, { recursive: true, mode: 0o700 });
-    return consoleBridge.validateWorkspaceDirectory(cwd);
+    return folder?.cwd ? validateChosenWorkspaceDirectory(cwd, true) : consoleBridge.validateWorkspaceDirectory(cwd);
   }
   if (body.cwd != null) {
     if (typeof body.cwd !== "string" || !body.cwd.trim() || body.cwd.length > 4096) throw Object.assign(new Error("Workspace draft không hợp lệ."), { code: "BAD_REQUEST", field: "cwd" });
@@ -4983,6 +5038,10 @@ const server = http.createServer(async (req, res) => {
     }
   }
   if (requestUrl.pathname === "/api/v1/workspaces") {
+    if (req.method === "POST") {
+      try { return json(res, 200, (await chooseNativeWorkspaceDirectory()) || { cancelled: true }); }
+      catch (error) { return chatError(res, error); }
+    }
     if (req.method !== "GET") return json(res, 405, { error: { code: "METHOD_NOT_ALLOWED", message: "Phương thức HTTP không được hỗ trợ." } });
     try { return json(res, 200, await consoleBridge.listWorkspaceDirectories(requestUrl.searchParams.get("path"))); }
     catch (error) { return chatError(res, error); }
@@ -5062,7 +5121,7 @@ const server = http.createServer(async (req, res) => {
           projectFolder = metadataAtCreation.folders[folderId] || null;
           if (!projectFolder) throw Object.assign(new Error("Folder không tồn tại"), { code: "NOT_FOUND", field: "folderId" });
           if (typeof projectFolder.cwd !== "string" || !projectFolder.cwd) throw Object.assign(new Error("Folder dự án cần được gắn với thư mục workspace trước khi tạo chat"), { code: "CONFLICT", field: "folderId" });
-          cwd = await consoleBridge.validateWorkspaceDirectory(projectFolder.cwd);
+          cwd = await validateChosenWorkspaceDirectory(projectFolder.cwd, true);
         } else if (cwd == null || cwd === "") {
           await mkdir(GENERAL_CHAT_CWD, { recursive: true, mode: 0o700 });
           cwd = GENERAL_CHAT_CWD;

@@ -1108,7 +1108,10 @@
       }
       if (mobileMenuBtn) {
         mobileMenuBtn.addEventListener('click', () => {
-          appSidebar.classList.toggle('mobile-open');
+          const open = !appSidebar.classList.contains('mobile-open');
+          appSidebar.classList.toggle('mobile-open', open);
+          mobileMenuBtn.setAttribute('aria-expanded', String(open));
+          mobileMenuBtn.setAttribute('aria-label', open ? 'Đóng thanh điều hướng' : 'Mở thanh điều hướng');
         });
       }
 
@@ -1133,6 +1136,14 @@
 
       if (collapseSidebarBtn) {
         collapseSidebarBtn.addEventListener('click', () => {
+          if (window.matchMedia('(max-width: 920px)').matches) {
+            appSidebar.classList.remove('mobile-open');
+            if (mobileMenuBtn) {
+              mobileMenuBtn.setAttribute('aria-expanded', 'false');
+              mobileMenuBtn.setAttribute('aria-label', 'Mở thanh điều hướng');
+            }
+            return;
+          }
           setSidebarCollapsed(true);
           showToast('Đã thu gọn thanh bên (Ctrl+B)');
         });
@@ -4497,6 +4508,13 @@
           e.preventDefault();
           openSettingsModal('general');
         } else if (e.key === 'Escape') {
+          if (appSidebar.classList.contains('mobile-open')) {
+            appSidebar.classList.remove('mobile-open');
+            if (mobileMenuBtn) {
+              mobileMenuBtn.setAttribute('aria-expanded', 'false');
+              mobileMenuBtn.setAttribute('aria-label', 'Mở thanh điều hướng');
+            }
+          }
           closeSessionContextMenu();
           if (headerMoreMenu) headerMoreMenu.classList.remove('open');
           if (bottomPanel && bottomPanel.classList.contains('open')) toggleBottomPanel(false);
