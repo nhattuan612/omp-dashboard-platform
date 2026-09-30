@@ -27,13 +27,16 @@ function mapError(message) { return Object.assign(new Error(`OMP tool map không
 
 function validateMap(map) {
   if (!map || typeof map !== "object" || !Number.isInteger(map.schemaVersion) || typeof map.mapVersion !== "string") throw mapError("thiếu version");
-  if (!Array.isArray(map.groups) || !Array.isArray(map.tools)) throw mapError("thiếu groups hoặc tools");
+  if (!Array.isArray(map.groups) || !Array.isArray(map.tools) || !Array.isArray(map.modes)) throw mapError("thiếu groups, tools hoặc modes");
   const groups = new Set(map.groups.map((item) => item?.id).filter(Boolean)); const ids = new Set();
   if (typeof map.verification?.ompVersion !== "string") throw mapError("thiếu OMP version xác minh");
   for (const tool of map.tools) {
     if (!tool || !/^[a-z][a-z0-9_]*$/.test(tool.id || "") || ids.has(tool.id)) throw mapError("tool ID trùng hoặc không hợp lệ");
     if (!groups.has(tool.chat?.group) || !APPROVALS.has(tool.chat?.approval) || tool.chat?.selection !== "cli" || tool.omp?.kind !== "builtin" || typeof tool.omp?.cliId !== "string") throw mapError(`tool ${tool.id}`);
     ids.add(tool.id);
+  }
+  for (const mode of map.modes) {
+    if (!mode || !/^[a-z][a-z0-9-]*$/.test(mode.id || "") || mode.omp?.kind !== "cli-flag" || !/^--[a-z][a-z-]*$/.test(mode.omp?.flag || "") || mode.chat?.surface !== "modes" || typeof mode.chat?.label !== "string") throw mapError(`mode ${mode?.id || "không rõ"}`);
   }
   return map;
 }
@@ -100,13 +103,13 @@ async function writeSnapshot(path, snapshot) {
 }
 
 export function createOmpToolCatalog({ ompBin, env = process.env, cacheMs = CACHE_MS, auditDir = join(env.HOME || homedir(), ".omp", "usage-dashboard", "tool-audits") } = {}) {
-  let mapPromise; let cache = { loadedAt: 0, value: null };
+  let mapPromise; let reading = null; let cache = { loadedAt: 0, value: null };
   const loadMap = async () => (mapPromise ??= readFile(MAP_PATH, "utf8").then((value) => validateMap(JSON.parse(value))));
   const audit = async (map, settings) => {
     const snapshotPath = join(auditDir, "latest.json"); const previous = await readSnapshot(snapshotPath);
-    const [versionResult, toolsResult] = await Promise.allSettled([runText(ompBin, ["--version"], env), runRpcState(ompBin, env)]);
+    const [versionResult, toolsResult, helpResult] = await Promise.allSettled([runText(ompBin, ["--version"], env), runRpcState(ompBin, env), runText(ompBin, ["--help"], env, 64_000)]);
     const configDigest = digest(settings || {});
-    if (versionResult.status !== "fulfilled" || toolsResult.status !== "fulfilled") {
+    if (versionResult.status !== "fulfilled" || toolsResult.status !== "fulfilled" || helpResult.status !== "fulfilled") {
       return { status: "error", stale: true, ompVersion: versionResult.status === "fulfilled" ? versionResult.value : null, configDigest, descriptors: [], drift: { added: [], removed: [], changed: [], versionChanged: false, configChanged: false } };
     }
     const current = descriptors(toolsResult.value); const previousById = new Map((previous?.tools || []).map((tool) => [tool.id, tool])); const currentById = new Map(current.map((tool) => [tool.id, tool])); const known = new Set(map.tools.map((tool) => tool.id));
@@ -115,12 +118,14 @@ export function createOmpToolCatalog({ ompBin, env = process.env, cacheMs = CACH
     const changed = current.filter((tool) => previousById.has(tool.id) && previousById.get(tool.id).schemaDigest !== tool.schemaDigest).map((tool) => tool.id);
     const versionChanged = normalizeVersion(versionResult.value) !== normalizeVersion(map.verification.ompVersion);
     const configChanged = Boolean(previous && previous.configDigest !== configDigest);
-    const record = { schemaVersion: 1, auditedAt: new Date().toISOString(), ompVersion: versionResult.value, configDigest, tools: current };
+    const record = { schemaVersion: 1, auditedAt: new Date().toISOString(), ompVersion: versionResult.value, configDigest, tools: current, flags: map.modes.filter((mode) => helpResult.value.includes(mode.omp.flag)).map((mode) => mode.omp.flag) };
     await writeSnapshot(snapshotPath, record);
     return { status: "ok", stale: versionChanged || changed.length > 0, ompVersion: versionResult.value, auditedAt: record.auditedAt, configDigest, descriptors: current, drift: { added, removed, changed, versionChanged, configChanged } };
   };
   const read = async ({ force = false } = {}) => {
     if (!force && cache.value && Date.now() - cache.loadedAt < cacheMs) return cache.value;
+    if (reading) return reading;
+    const operation = (async () => {
     const map = await loadMap(); let settings = null; let configError = null;
     try { settings = await runConfig(ompBin, env); } catch (error) { configError = error; }
     const checked = configError
@@ -136,8 +141,14 @@ export function createOmpToolCatalog({ ompBin, env = process.env, cacheMs = CACH
     const mapped = new Set(map.tools.map((tool) => tool.id));
     for (const tool of checked.descriptors.filter((tool) => !mapped.has(tool.id))) tools.push({ id: tool.id, label: tool.id, description: "OMP vừa công bố tool chưa có map Chat.", icon: "⋯", group: tool.source === "mcp" ? "connections" : "history", source: tool.source, selection: "readonly", approval: "read", alwaysAsk: false, status: "unmapped", reason: "Chỉ hiển thị để đối chiếu; chưa được gửi vào --tools.", canToggle: false, schemaDigest: tool.schemaDigest });
     const counts = Object.fromEntries(["supported", "unavailable", "blocked", "probe_error", "stale", "unmapped"].map((status) => [status, tools.filter((tool) => tool.status === status).length]));
-    const value = { tools, observedToolIds: tools.filter((tool) => tool.status === "supported").map((tool) => tool.id), catalog: { mapVersion: map.mapVersion, schemaVersion: map.schemaVersion, source: "checked-in", stale: checked.stale, fingerprint: digest({ map: map.mapVersion, version: checked.ompVersion, config: checked.configDigest, tools: checked.descriptors }), groups: map.groups, counts, audit: { status: checked.status, ompVersion: checked.ompVersion, auditedAt: checked.auditedAt || null, configDigest: checked.configDigest, toolCount: checked.descriptors.length }, drift: checked.drift } };
-    cache = { loadedAt: Date.now(), value }; return value;
+    const flags = new Set(checked.status === "ok" ? (await readSnapshot(join(auditDir, "latest.json")))?.flags || [] : []);
+    const sessionModes = map.modes.map((mode) => ({ id: mode.id, label: mode.chat.label, description: mode.chat.description, status: mode.lifecycle === "active" && flags.has(mode.omp.flag) ? "supported" : "unavailable", reason: flags.has(mode.omp.flag) ? "Đã xác minh từ OMP --help." : "OMP không công bố cờ này trong runtime hiện tại." }));
+    const value = { tools, sessionModes, observedToolIds: tools.filter((tool) => tool.status === "supported").map((tool) => tool.id), catalog: { mapVersion: map.mapVersion, schemaVersion: map.schemaVersion, source: "checked-in", stale: checked.stale, fingerprint: digest({ map: map.mapVersion, version: checked.ompVersion, config: checked.configDigest, tools: checked.descriptors }), groups: map.groups, counts, audit: { status: checked.status, ompVersion: checked.ompVersion, auditedAt: checked.auditedAt || null, configDigest: checked.configDigest, toolCount: checked.descriptors.length }, drift: checked.drift } };
+    if (checked.status === "ok") cache = { loadedAt: Date.now(), value }; return value;
+    })();
+    reading = operation;
+    try { return await operation; }
+    finally { if (reading === operation) reading = null; }
   };
   const selected = async (value) => {
     const catalog = await read(); const supported = new Set(catalog.tools.filter((tool) => tool.canToggle).map((tool) => tool.id));

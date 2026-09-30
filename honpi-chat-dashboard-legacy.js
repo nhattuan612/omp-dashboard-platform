@@ -1006,13 +1006,25 @@
       const reasoningActiveName = document.getElementById('reasoningActiveName');
       const openExecSettingsFromPopover = document.getElementById('openExecSettingsFromPopover');
 
+      const setModelPopoverOpen = (open) => {
+        modelReasoningPopover.classList.toggle('show', open);
+        modelReasoningPopover.setAttribute('aria-hidden', String(!open));
+        promptModelIconBtn.classList.toggle('active', open);
+        promptModelIconBtn.setAttribute('aria-expanded', String(open));
+      };
+
       if (promptModelIconBtn && modelReasoningPopover) {
         promptModelIconBtn.addEventListener('click', (e) => {
           e.stopPropagation();
           const willShow = !modelReasoningPopover.classList.contains('show');
           closePromptPopovers(modelReasoningPopover);
-          modelReasoningPopover.classList.toggle('show', willShow);
-          promptModelIconBtn.classList.toggle('active', willShow);
+          setModelPopoverOpen(willShow);
+        });
+        document.addEventListener('keydown', (e) => {
+          if (e.key !== 'Escape' || !modelReasoningPopover.classList.contains('show')) return;
+          e.preventDefault();
+          setModelPopoverOpen(false);
+          promptModelIconBtn.focus();
         });
       }
 
@@ -1020,8 +1032,7 @@
         modelCliOption.addEventListener('click', () => {
           promptModelSelect.value = 'omp-rpc';
           promptModelSelect.dispatchEvent(new Event('change'));
-          if (modelReasoningPopover) modelReasoningPopover.classList.remove('show');
-          if (promptModelIconBtn) promptModelIconBtn.classList.remove('active');
+          setModelPopoverOpen(false);
         });
       }
 
@@ -1046,8 +1057,7 @@
 
       if (openExecSettingsFromPopover) {
         openExecSettingsFromPopover.addEventListener('click', () => {
-          if (modelReasoningPopover) modelReasoningPopover.classList.remove('show');
-          if (promptModelIconBtn) promptModelIconBtn.classList.remove('active');
+          setModelPopoverOpen(false);
           if (typeof openSettingsModal === 'function') {
             openSettingsModal('models');
           } else {
@@ -1093,8 +1103,7 @@
         const addTagPop = document.getElementById('addTagPopover');
         if (addTagPop && addTagPop !== except) addTagPop.classList.remove('show');
         if (modelReasoningPopover && modelReasoningPopover !== except) {
-          modelReasoningPopover.classList.remove('show');
-          if (promptModelIconBtn) promptModelIconBtn.classList.remove('active');
+          setModelPopoverOpen(false);
         }
         const appPop = document.getElementById('approvalPopover');
         if (appPop && appPop !== except) {
@@ -1122,8 +1131,7 @@
           if (addTagPop) addTagPop.classList.remove('show');
         }
         if (!e.target.closest('#promptModelIconBtn') && !e.target.closest('#modelReasoningPopover')) {
-          if (modelReasoningPopover) modelReasoningPopover.classList.remove('show');
-          if (promptModelIconBtn) promptModelIconBtn.classList.remove('active');
+          setModelPopoverOpen(false);
         }
         if (!e.target.closest('#fullAccessBadge') && !e.target.closest('#approvalPopover')) {
           const appPop = document.getElementById('approvalPopover');

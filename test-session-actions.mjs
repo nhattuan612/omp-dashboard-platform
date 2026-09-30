@@ -785,6 +785,7 @@ async function runContract() {
 
     const chatClient = await readFile(join(PROJECT_ROOT, "honpi-chat-dashboard-live.js"), "utf8");
     const chatDashboard = await readFile(join(PROJECT_ROOT, "honpi-chat-dashboard-SKE.html"), "utf8");
+    const chatLegacy = await readFile(join(PROJECT_ROOT, "honpi-chat-dashboard-legacy.js"), "utf8");
     const quotaDashboards = await Promise.all([
       readFile(join(PROJECT_ROOT, "honpi-quota-dashboard-SKE.html"), "utf8"),
       readFile(join(PROJECT_ROOT, "product-release", "honpi-quota-dashboard-SKE.html"), "utf8"),
@@ -837,6 +838,9 @@ async function runContract() {
     assert.match(chatClient, /omp\.planYoloModel/);
     assert.match(chatClient, /function syncPlanYoloModelControl\(\)/);
     assert.match(chatClient, /id = 'modesPlanYoloModelSelect'/);
+    assert.match(chatDashboard, /id="promptModelIconBtn"[^>]*aria-label="Chọn mô hình và mức độ tư duy"[^>]*aria-expanded="false"/);
+    assert.match(chatDashboard, /id="modelReasoningPopover" role="dialog"[^>]*aria-hidden="true"/);
+    assert.match(chatLegacy, /document\.addEventListener\('keydown', \(e\) => \{\s*if \(e\.key !== 'Escape' \|\| !modelReasoningPopover\.classList\.contains\('show'\)\) return;[\s\S]*?setModelPopoverOpen\(false\);/);
     assert.match(chatClient, /function renderOmpModes\(\)/);
     assert.doesNotMatch(chatClient, /const basicIds/);
     assert.doesNotMatch(chatClient, /const glyphs/);

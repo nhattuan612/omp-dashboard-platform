@@ -168,3 +168,11 @@ Chi tiết và acceptance: [neuratalk-ui-upgrade-plan-2026-09-29.md](neuratalk-u
 - [x] U5: Quota, settings, Memory, mic, terminal và share.
 - [x] U6: A11y, responsive và regression matrix hiện tại.
 - [ ] U7: Cutover, product-release parity, backup/deploy/rollback.
+
+### U7 checkpoint — 2026-09-29
+
+- [x] Đồng bộ source vào `product-release/`; 17/17 asset theo manifest khớp byte, installer gồm OMP tool catalog/map.
+- [x] Syntax, `git diff --check`, runtime security smoke, routes `/healthz` `/chat` `/quota` và 112 session contract scenarios pass.
+- [x] Sửa model popover: accessible name, state ARIA đồng bộ, Escape đóng và trả focus; browser source smoke 320–1440px pass.
+- [ ] Cutover cần Síp duyệt. Sau bản vá, source/runtime chỉ lệch `honpi-chat-dashboard-SKE.html` và `honpi-chat-dashboard-legacy.js`; chưa deploy/restart.
+- [ ] Full ledger 258 control/13 modal chưa chạy lại; kế hoạch cũng nhắc `/chat-preview` nhưng route này hiện chưa có.

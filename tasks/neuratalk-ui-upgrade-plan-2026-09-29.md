@@ -164,8 +164,8 @@ Thứ tự: `ui-shell → conversation → turn-runtime → runtime-surfaces →
 
 ### U7 — Cutover, parity và release
 
-- [ ] Compare `/chat-preview` against old `/chat` using the state matrix; switch route only after every supported production flow passes.
-- [ ] Mirror approved assets to `product-release/`, create backup, deploy/restart, checksum source/runtime, and retain rollback checkpoint.
+- [ ] Compare `/chat-preview` against old `/chat` using the state matrix; switch route only after every supported production flow passes. `/chat-preview` is not present in the current server.
+- [x] Mirror current source assets to `product-release/`; manifest parity and installer file coverage pass. Backup/deploy/restart remain pending Síp review.
 - Acceptance: `/chat`, `/quota`, `/healthz`, LaunchAgent and PTY cleanup pass after restart; old UI remains rollback target until live acceptance succeeds.
 - Verify: `node --check server.mjs`, `node --check <client>`, `sh test-runtime-security.sh`, `node test-session-actions.mjs`, browser live smoke.
 - Files: production template/client/style, `server.mjs`, `product-release/` mirrors, docs/runbook.
@@ -209,7 +209,7 @@ Thứ tự: `ui-shell → conversation → turn-runtime → runtime-surfaces →
 | U4 | Đạt | Tools/Modes/Files/Agent Hub và file-change activity lấy từ payload OMP; snapshot trước/sau, hash guard, Apply xác nhận và Revert atomic rollback đã nối runtime. |
 | U5 | Đạt | Quota, Settings, Memory state, mic, terminal và local/encrypted share đã giữ contract runtime hiện hữu. |
 | U6 | Đạt checkpoint hiện tại | Syntax/security/contract `112 scenarios`; browser QA 320/375/768/1024/1440 không overflow, menu/settings/queue/export không lỗi console. |
-| U7 | Chờ | Chưa cutover production; cần nghiệm thu live trước deploy. |
+| U7 | Chờ Síp duyệt | Bundle parity 17/17; source/runtime matched before the final popover accessibility fix. Current diff is limited to the chat HTML and legacy client. No deploy/restart; full 258-control/13-modal ledger and the planned `/chat-preview` comparison remain open. |
 
 ### Contract file-change đã triển khai
 

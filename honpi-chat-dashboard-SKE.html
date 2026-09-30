@@ -6125,14 +6125,14 @@
                 </div>
                 <!-- Model Popover Trigger (Chỉ hiện icon theo image-26 & image-27) -->
                 <div class="model-popover-wrapper" id="modelPopoverWrapper">
-                  <button type="button" class="btn-prompt-model-icon" id="promptModelIconBtn" title="Chọn mô hình AI &amp; Mức độ tư duy (từ ảnh 26 &amp; 27)" data-od-id="model-popover-trigger">
+                  <button type="button" class="btn-prompt-model-icon" id="promptModelIconBtn" title="Chọn mô hình AI &amp; Mức độ tư duy (từ ảnh 26 &amp; 27)" aria-label="Chọn mô hình và mức độ tư duy" aria-haspopup="dialog" aria-controls="modelReasoningPopover" aria-expanded="false" data-od-id="model-popover-trigger">
                     <svg class="model-sparkle-svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                       <path d="M12 2C12 7.52 7.52 12 2 12C7.52 12 12 16.48 12 22C12 16.48 16.48 12 22 12C16.48 12 12 7.52 12 2Z"/>
                     </svg>
                   </button>
 
                   <!-- Popover chọn Model & Level (từ image-27.png) -->
-                  <div class="model-reasoning-popover" id="modelReasoningPopover" data-od-id="model-reasoning-popover">
+                  <div class="model-reasoning-popover" id="modelReasoningPopover" role="dialog" aria-label="Chọn mô hình và mức độ tư duy" aria-hidden="true" data-od-id="model-reasoning-popover">
                     <div class="model-popover-inner">
                       <!-- 1. Section: Model -->
                       <div class="model-popover-section">
