@@ -25,7 +25,7 @@
 - [x] Settings local/OMP, browser modes, approval modes và share mode selector.
 - [x] Session folder menu: create, assign, unassign and reload persistence.
 - [x] Agent Hub, files thật, tool status và unavailable state.
-- [x] Loại sạch demo data, quick cards và fake success.
+- [x] Loại mock transcript/account/fake success; quick cards giữ lại nhưng đã nối vào composer thật.
 - [x] Sửa các lỗi UI/a11y đã audit: running send gọi `stopStream()`, dialog đóng có `aria-hidden`/`inert`.
 
 ## Verification
@@ -153,3 +153,26 @@
 - [x] Mic voice-to-text (`vi-VN` / `en-US`) và Terminal nhúng PTY đã triển khai; CWD project/General đã xác minh trên macOS.
 - [x] Backup runtime đã tạo và checksum đã xác minh: `/Users/trannhattuan/.omp/usage-dashboard/backups/deploy/20260929-152014-18220`.
 - [ ] Chờ host Windows/Linux để xác minh runtime trên các hệ điều hành đó.
+
+---
+
+## Nâng cấp UI Neuratalk từ state mẫu — 2026-09-29
+
+Chi tiết và acceptance: [neuratalk-ui-upgrade-plan-2026-09-29.md](neuratalk-ui-upgrade-plan-2026-09-29.md).
+
+- [x] U0: Baseline state/API thật và fixture UI redacted.
+- [x] U1: Shell/tokens/assets với CSP hiện hữu.
+- [x] U2: Session/conversation/attachment/image renderer an toàn.
+- [x] U3: SSE, lifecycle, approval, queue, lỗi/reconnect.
+- [x] U4: Workspace composer, tools, Agent Hub, file-change snapshot và Apply/Revert hash-guarded atomic rollback.
+- [x] U5: Quota, settings, Memory, mic, terminal và share.
+- [x] U6: A11y, responsive và regression matrix hiện tại.
+- [ ] U7: Cutover, product-release parity, backup/deploy/rollback.
+
+### U7 checkpoint — 2026-09-29
+
+- [x] Đồng bộ source vào `product-release/`; 17/17 asset theo manifest khớp byte, installer gồm OMP tool catalog/map.
+- [x] Syntax, `git diff --check`, runtime security smoke, routes `/healthz` `/chat` `/quota` và 112 session contract scenarios pass.
+- [x] Sửa model popover: accessible name, state ARIA đồng bộ, Escape đóng và trả focus; browser source smoke 320–1440px pass.
+- [ ] Cutover cần Síp duyệt. Sau bản vá, source/runtime chỉ lệch `honpi-chat-dashboard-SKE.html` và `honpi-chat-dashboard-legacy.js`; chưa deploy/restart.
+- [ ] Full ledger 258 control/13 modal chưa chạy lại; kế hoạch cũng nhắc `/chat-preview` nhưng route này hiện chưa có.

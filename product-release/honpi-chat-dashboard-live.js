@@ -6,7 +6,7 @@
   const TOOL_STORAGE_KEY = 'omp.tools.v2';
   const BROWSER_MODE_PREFERENCE_VERSION = 'manual-v1';
   const initialBrowserMode = localStorage.getItem('omp.browserModePreferenceVersion') === BROWSER_MODE_PREFERENCE_VERSION ? localStorage.getItem('omp.browserMode') : 'none';
-  const state = { sessions: [], nextCursor: null, activeId: null, generation: 0, messages: [], models: [], activeModel: null, controller: null, requestId: null, activeRequest: null, createPromise: null, menu: null, folderMenu: null, quota: null, accounts: [], attachments: [], workspaceFiles: [], workspaceMention: '@', capabilities: null, selectedTools: [], toolsUpdating: false, advisor: false, advisorConfig: null, advisorConfigLoading: false, advisorConfigSaving: false, folderExpanded: new Set(), folderCollapsed: new Set(), thinking: localStorage.getItem('omp.thinking') || 'max', browserMode: initialBrowserMode === 'ego-browser' ? 'ego-browser' : 'none', planYolo: false, planYoloModel: '', shareMode: localStorage.getItem('omp.shareMode') || 'encrypted', approvalMode: localStorage.getItem('omp.approvalMode') || 'always-ask', enterBehavior: localStorage.getItem('omp.enterBehavior') || 'queue', conversationDisplay: localStorage.getItem('omp.conversationDisplay') || 'compact', pendingPrompts: [], queuePausedSessions: new Map(), editingQueueId: null, draftPromptPreview: null, browserAction: null, browserStatus: null, media: { screenCapture: { status: 'unavailable', reason: 'Native screen capture is not provided by OMP dashboard.' }, camera: { status: 'unavailable' }, microphone: { status: 'unavailable' }, video: { status: 'unavailable' } } };
+  const state = { sessions: [], nextCursor: null, activeId: null, generation: 0, messages: [], models: [], activeModel: null, controller: null, requestId: null, activeRequest: null, createPromise: null, menu: null, folderMenu: null, quota: null, accounts: [], attachments: [], workspaceFiles: [], workspaceMention: '@', capabilities: null, selectedTools: [], toolsUpdating: false, advisor: false, advisorConfig: null, advisorConfigLoading: false, advisorConfigSaving: false, folderExpanded: new Set(), folderCollapsed: new Set(), thinking: localStorage.getItem('omp.thinking') || 'max', browserMode: initialBrowserMode === 'ego-browser' ? 'ego-browser' : 'none', planYolo: false, planYoloModel: localStorage.getItem('omp.planYoloModel') || '', shareMode: localStorage.getItem('omp.shareMode') || 'encrypted', approvalMode: localStorage.getItem('omp.approvalMode') || 'always-ask', enterBehavior: localStorage.getItem('omp.enterBehavior') || 'queue', conversationDisplay: localStorage.getItem('omp.conversationDisplay') || 'compact', pendingPrompts: [], queuePausedSessions: new Map(), editingQueueId: null, draftPromptPreview: null, browserAction: null, browserStatus: null, media: { screenCapture: { status: 'unavailable', reason: 'Native screen capture is not provided by OMP dashboard.' }, camera: { status: 'unavailable' }, microphone: { status: 'unavailable' }, video: { status: 'unavailable' } } };
   let voiceRecognition = null;
   let voiceStopResolve = null;
   let voiceDisclosureShown = false;
@@ -379,6 +379,10 @@
     if (mode === 'always-expanded') folder.classList.remove('collapsed');
     if (mode === 'manual' && state.folderCollapsed.has(name)) folder.classList.add('collapsed');
   }
+
+  function closeLiveContextMenus() { state.menu?.remove(); state.folderMenu?.remove(); state.menu = null; state.folderMenu = null; }
+  document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeLiveContextMenus(); });
+
   function bindMenuArrowNavigation(menu, selector) {
     menu.addEventListener('keydown', (event) => {
       const keys = ['ArrowDown', 'ArrowUp', 'Home', 'End'];
@@ -394,10 +398,11 @@
 
   function showFolderMenu(name, x, y) {
     if (!name) return;
-    state.folderMenu?.remove();
+    closeLiveContextMenus();
     const menu = document.createElement('div'); menu.className = 'neuratalk-context-menu open'; menu.id = 'liveFolderActionMenu'; menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', `Tùy chọn folder ${name}`); menu.style.minWidth = '250px'; menu.style.width = '250px'; menu.style.maxWidth = '250px'; menu.style.zIndex = '3000'; menu.style.maxHeight = 'calc(100vh - 16px)'; menu.style.overflowY = 'auto';
     const icon = (path) => { const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none'); svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '2'); svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round'); svg.setAttribute('aria-hidden', 'true'); const shape = document.createElementNS('http://www.w3.org/2000/svg', 'path'); shape.setAttribute('d', path); svg.append(shape); return svg; };
     const divider = () => { const line = document.createElement('div'); line.className = 'context-divider'; line.setAttribute('role', 'separator'); menu.append(line); };
+
     const projectRecord = (state.folders || []).find((folder) => folder?.name === name);
     const close = () => { menu.remove(); document.removeEventListener('pointerdown', dismissOutside); if (state.folderMenu === menu) state.folderMenu = null; };
     const dismissOutside = (event) => { if (!menu.contains(event.target)) close(); };
@@ -412,6 +417,7 @@
     addItem('Chỉnh sửa (chọn lại vị trí folder)', 'M12 20h9 M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z', async () => { if (!projectRecord) return notify('Không tìm thấy metadata dự án.', true); if (await requestProjectFolder({ folder: projectRecord })) await loadFolders({ silent: true }); }, { checked: null });
     divider();
     const currentMode = folderMode(name);
+
     [
       ['always-expanded', 'Luôn mở rộng', 'M7 13l5 5 5-5 M7 6l5 5 5-5'],
       ['always-collapsed', 'Luôn thu gọn', 'M17 11l-5-5-5 5 M17 18l-5-5-5 5'],
@@ -419,6 +425,7 @@
     ].forEach(([mode, label, path]) => addItem(label, path, () => { setFolderMode(name, mode); state.folderCollapsed.delete(name); renderSessions(); notify(`Folder “${name}”: ${label}`); }, { checked: currentMode === mode }));
     bindMenuArrowNavigation(menu, '.context-item');
     menu.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); close(); } });
+
     document.body.append(menu); state.folderMenu = menu;
     const rect = menu.getBoundingClientRect();
     menu.style.left = `${Math.max(8, Math.min(x || 24, innerWidth - rect.width - 8))}px`;
@@ -542,8 +549,8 @@
   }
 
   function showMenu(session, x, y) {
-    state.menu?.remove();
-    state.folderMenu?.remove();
+
+    closeLiveContextMenus();
     const template = $('sessionContextMenu');
     if (!template) return;
     const menu = template.cloneNode(true);
@@ -578,6 +585,7 @@
         item.querySelector('span').textContent = folder.name;
         item.classList.toggle('active-item', session.folderId === folder.id);
         projectSubmenu.append(item);
+
       });
       const divider = document.createElement('div'); divider.className = 'context-menu-divider'; projectSubmenu.append(divider);
       const unassigned = prototype.cloneNode(true); unassigned.dataset.folderId = ''; unassigned.classList.toggle('active-item', !session.folderId); unassigned.querySelector('span').textContent = 'Không thuộc dự án (Chưa phân loại)'; projectSubmenu.append(unassigned);
@@ -672,13 +680,12 @@
   }
   function showFolderAssignmentMenu(session, x, y) {
     if (!session?.id) return;
-    state.menu?.remove();
-    state.folderMenu?.remove();
+    closeLiveContextMenus();
     const menu = document.createElement('div');
     menu.className = 'neuratalk-context-menu open';
     menu.id = 'liveFolderAssignmentMenu';
     menu.setAttribute('role', 'menu');
-    menu.setAttribute('aria-label', `Phân loại folder cho ${session.title || session.id}`);
+    menu.setAttribute('aria-label', `Phân loại dự án cho ${session.title || session.id}`);
     menu.style.left = `${Math.max(8, Math.min(x || 24, innerWidth - 260))}px`;
     menu.style.top = `${Math.max(8, Math.min(y || 80, innerHeight - 320))}px`;
     menu.style.zIndex = '3000';
@@ -703,15 +710,15 @@
           close();
         } catch (error) {
           item.disabled = false;
-          notify(`Không thể cập nhật folder: ${error.message}`, true);
+          notify(`Không thể cập nhật dự án: ${error.message}`, true);
         }
       });
       menu.append(item);
     };
     if (session.folderId || session.folderName) {
-      addItem('Bỏ phân loại folder', () => runAction(session.id, 'unassign_folder'), { danger: true });
+      addItem('Bỏ phân loại dự án', () => runAction(session.id, 'unassign_folder'), { danger: true });
     }
-    addItem('Tạo folder mới…', async () => {
+    addItem('Tạo dự án mới…', async () => {
       const created = await requestProjectFolder();
       if (!created?.id) return;
       await loadFolders({ silent: true });
@@ -731,7 +738,7 @@
     } else {
       const empty = document.createElement('div');
       empty.className = 'context-menu-label';
-      empty.textContent = 'Chưa có folder đã lưu';
+      empty.textContent = 'Chưa có dự án đã lưu';
       menu.append(empty);
     }
     document.body.append(menu);
@@ -1103,10 +1110,41 @@
     });
   }
 
+  async function exportSessionMarkdown(session) {
+    if (!session?.id) return;
+    let messages = state.activeId === session.id ? state.messages : null;
+    if (!Array.isArray(messages)) {
+      try {
+        const { payload } = await readJson(`${API}/sessions/${encodeURIComponent(session.id)}/messages`);
+        messages = dataOf(payload, 'messages') || [];
+      } catch (error) {
+        notify(`Không thể xuất cuộc trò chuyện: ${error.message}`, true);
+        return;
+      }
+    }
+    if (!messages.length) return notify('Cuộc trò chuyện chưa có nội dung để xuất.', true);
+    const lines = [`# ${text(session.title || 'Cuộc trò chuyện').trim()}`, ''];
+    messages.forEach((message) => {
+      const role = message?.role === 'user' ? 'Síp' : message?.role === 'toolResult' ? 'Tool' : 'OMP';
+      const content = text(message?.content || '').trim();
+      const attachments = Array.isArray(message?.attachments) ? message.attachments.map((item) => item?.name || 'tệp đính kèm').filter(Boolean) : [];
+      if (content || attachments.length) lines.push(`## ${role}`, content || '_[Không có nội dung văn bản]_', attachments.length ? `\nTệp đính kèm: ${attachments.join(', ')}` : '', '');
+    });
+    const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${text(session.title || 'cuoc-tro-chuyen').trim().replace(/[^\p{L}\p{N}._-]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 96) || 'cuoc-tro-chuyen'}.md`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    notify('Đã xuất lịch sử cuộc trò chuyện thành tệp Markdown.');
+  }
+
   async function runAction(id, action, actionData = {}) {
     const session = state.sessions.find((item) => item.id === id);
     if (!session) return;
     const actionGuard = sessionGuard(id, state.generation);
+    if (action === 'export') return exportSessionMarkdown(session);
     let renameTitle = '';
     if (action === 'rename') { renameTitle = (await requestTextInput('Đặt lại tên cuộc trò chuyện', session.title || 'Phiên làm việc mới')).trim(); if (!renameTitle) return; }
     if (action === 'delete' && !(await requestDeleteConfirm(session))) return;
@@ -1137,6 +1175,7 @@
           archive: 'Đã lưu trữ cuộc trò chuyện',
           delete: 'Đã xoá cuộc trò chuyện',
           fork: 'Đã tạo nhánh cuộc trò chuyện',
+          duplicate: 'Đã nhân bản cuộc trò chuyện',
           reconnect: 'Đã kết nối lại session',
           tools: 'Đã cập nhật công cụ OMP',
         };
@@ -1158,10 +1197,10 @@
         delete session.folderId;
         delete session.folderName;
       }
-      if (action === 'fork' && payload?.forkSession?.id) state.activeId = payload.forkSession.id;
+      if (['fork', 'duplicate'].includes(action) && payload?.forkSession?.id) state.activeId = payload.forkSession.id;
       await loadSessions();
       if (['assign_folder', 'unassign_folder'].includes(action)) await loadFolders({ silent: true });
-      if (action === 'fork' && payload?.forkSession?.id) await selectSession(payload.forkSession.id);
+      if (['fork', 'duplicate'].includes(action) && payload?.forkSession?.id) await selectSession(payload.forkSession.id);
       else if (['archive', 'delete'].includes(action) && state.activeId === id) setNeutralSelection({ preserveActiveView: false });
       else if (state.activeId === id && isCurrentSession(actionGuard)) await selectSession(id, true);
     } catch (error) { notify(`Không thể ${actionLabel}: ${error.message}`, true); }
@@ -1596,9 +1635,71 @@
     });
     return rows.slice(0, 12);
   }
-  function renderFileChangeCard(host, blocks) {
+  function ensureFileChangeReviewStyles() {
+    if ($('runtimeFileChangeReviewStyles')) return;
+    const style = document.createElement('style'); style.id = 'runtimeFileChangeReviewStyles';
+    style.textContent = '.runtime-file-change-modal{position:fixed;inset:0;z-index:1200;display:flex;align-items:center;justify-content:center;padding:20px;background:color-mix(in oklab,#000,transparent 34%)}.runtime-file-change-panel{display:flex;flex-direction:column;gap:14px;width:min(960px,100%);max-height:min(88vh,820px);overflow:hidden;background:var(--surface);border:1px solid var(--border-strong);border-radius:var(--radius-lg);box-shadow:0 24px 80px rgba(0,0,0,.36);color:var(--fg)}.runtime-file-change-head,.runtime-file-change-foot{display:flex;align-items:center;gap:10px;padding:16px 18px;border-bottom:1px solid var(--border)}.runtime-file-change-foot{border-top:1px solid var(--border);border-bottom:0;justify-content:flex-end}.runtime-file-change-title{font-size:16px;font-weight:700;flex:1}.runtime-file-change-close,.runtime-file-change-action{border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-raised);color:var(--fg);padding:7px 11px;cursor:pointer}.runtime-file-change-action.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-on)}.runtime-file-change-action.danger{color:var(--danger);border-color:color-mix(in oklab,var(--danger),var(--border) 55%)}.runtime-file-change-body{overflow:auto;padding:0 18px 18px;display:grid;gap:12px}.runtime-file-change-file{border:1px solid var(--border);border-radius:var(--radius-md);overflow:hidden}.runtime-file-change-file>summary{cursor:pointer;list-style:none;padding:10px 12px;font-weight:650;background:var(--surface-raised)}.runtime-file-change-file>summary::-webkit-details-marker{display:none}.runtime-file-change-path{font-family:var(--font-mono);font-size:12px;overflow-wrap:anywhere}.runtime-file-change-status{float:right;color:var(--muted);font-size:11px}.runtime-file-change-diff{margin:0;padding:10px 12px;overflow:auto;background:var(--canvas);font:12px/1.55 var(--font-mono)}.runtime-file-change-line{display:block;white-space:pre-wrap;overflow-wrap:anywhere}.runtime-file-change-line.add{color:var(--success);background:color-mix(in oklab,var(--success),transparent 90%)}.runtime-file-change-line.del{color:var(--danger);background:color-mix(in oklab,var(--danger),transparent 90%)}.runtime-file-change-line.meta{color:var(--muted);font-style:italic}.runtime-file-change-note{color:var(--muted);font-size:12px}@media(max-width:600px){.runtime-file-change-modal{padding:8px}.runtime-file-change-panel{max-height:94vh}.runtime-file-change-head,.runtime-file-change-foot{padding:12px}.runtime-file-change-body{padding:0 12px 12px}}';
+    document.head.append(style);
+  }
+  function renderFileChangeDiff(parent, before, after) {
+    const oldLines = text(before || '').split('\n'); const newLines = text(after || '').split('\n');
+    if (!text(before) && !text(after)) { const empty = document.createElement('span'); empty.className = 'runtime-file-change-line meta'; empty.textContent = '(tệp rỗng)'; parent.append(empty); return; }
+    let prefix = 0; while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) prefix += 1;
+    let suffix = 0; while (suffix < oldLines.length - prefix && suffix < newLines.length - prefix && oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]) suffix += 1;
+    const add = (value, kind) => { const line = document.createElement('span'); line.className = `runtime-file-change-line ${kind}`; line.textContent = `${kind === 'add' ? '+ ' : kind === 'del' ? '- ' : '  '}${value}`; parent.append(line); };
+    oldLines.slice(0, prefix).forEach((line) => add(line, 'same'));
+    oldLines.slice(prefix, oldLines.length - suffix || undefined).forEach((line) => add(line, 'del'));
+    newLines.slice(prefix, newLines.length - suffix || undefined).forEach((line) => add(line, 'add'));
+    oldLines.slice(oldLines.length - suffix).forEach((line) => add(line, 'same'));
+  }
+  async function actOnFileChanges(snapshot, action) {
+    if (!snapshot?.id || !['apply', 'revert'].includes(action)) return;
+    if (!window.confirm(action === 'revert' ? 'Hoàn tác các thay đổi này trên workspace?' : 'Xác nhận giữ các thay đổi này?')) return;
+    try {
+      const { payload } = await readJson(`${API}/sessions/${encodeURIComponent(snapshot.sessionId || state.activeId)}/file-changes/action`, { method: 'POST', body: JSON.stringify({ action, snapshotId: snapshot.id, confirmed: true }) });
+      const next = payload?.snapshot || payload;
+      state.messages = state.messages.map((message) => message.fileChanges?.id === snapshot.id ? { ...message, fileChanges: next } : message);
+      renderMessages(state.messages);
+      notify(action === 'revert' ? 'Đã hoàn tác file-change bằng snapshot runtime.' : 'Đã xác nhận file-change runtime.');
+      $('runtimeFileChangeModal')?.remove();
+    } catch (error) { notify(`Không thể ${action === 'revert' ? 'hoàn tác' : 'xác nhận'} file-change: ${error.message}`, true); }
+  }
+  async function openFileChangeReview(snapshot) {
+    let current = snapshot;
+    const sessionId = current?.sessionId || state.activeId;
+    if (!sessionId) return notify('Chưa chọn cuộc trò chuyện.', true);
+    try {
+      const { payload } = await readJson(`${API}/sessions/${encodeURIComponent(sessionId)}/file-changes`);
+      if (payload?.snapshot) current = payload.snapshot;
+    } catch (error) {
+      if (!current?.id) return notify(`Không tải được snapshot file-change: ${error.message}`, true);
+    }
+    if (!current?.files?.length) return notify(current?.reason || 'Phiên này chưa có snapshot file-change để xem.', true);
+    ensureFileChangeReviewStyles();
+    $('runtimeFileChangeModal')?.remove();
+    const modal = document.createElement('div'); modal.id = 'runtimeFileChangeModal'; modal.className = 'runtime-file-change-modal'; modal.setAttribute('role', 'dialog'); modal.setAttribute('aria-modal', 'true'); modal.setAttribute('aria-labelledby', 'runtimeFileChangeTitle');
+    const panel = document.createElement('div'); panel.className = 'runtime-file-change-panel';
+    const head = document.createElement('div'); head.className = 'runtime-file-change-head';
+    const title = document.createElement('strong'); title.id = 'runtimeFileChangeTitle'; title.className = 'runtime-file-change-title'; title.textContent = `${current.files.length} tệp thay đổi`;
+    const close = document.createElement('button'); close.type = 'button'; close.className = 'runtime-file-change-close'; close.textContent = 'Đóng'; close.addEventListener('click', () => modal.remove()); head.append(title, close);
+    const body = document.createElement('div'); body.className = 'runtime-file-change-body';
+    current.files.forEach((file) => {
+      const details = document.createElement('details'); details.className = 'runtime-file-change-file'; details.open = true;
+      const summary = document.createElement('summary'); const path = document.createElement('span'); path.className = 'runtime-file-change-path'; path.textContent = file.path; const status = document.createElement('span'); status.className = 'runtime-file-change-status'; status.textContent = file.status || 'changed'; summary.append(path, status);
+      const diff = document.createElement('pre'); diff.className = 'runtime-file-change-diff'; renderFileChangeDiff(diff, file.before?.text, file.after?.text); details.append(summary, diff); body.append(details);
+      if (file.before?.truncated || file.after?.truncated) { const note = document.createElement('div'); note.className = 'runtime-file-change-note'; note.textContent = 'Nội dung hiển thị đã rút gọn; hash đầy đủ vẫn được kiểm tra ở backend.'; details.append(note); }
+    });
+    const foot = document.createElement('div'); foot.className = 'runtime-file-change-foot';
+    const note = document.createElement('span'); note.className = 'runtime-file-change-note'; note.textContent = current.complete === true && current.status === 'ready' ? 'Backend sẽ kiểm tra hash trước khi thao tác.' : (current.reason || 'Chỉ xem được snapshot này.'); note.style.marginRight = 'auto'; foot.append(note);
+    const revert = document.createElement('button'); revert.type = 'button'; revert.className = 'runtime-file-change-action danger'; revert.textContent = 'Hoàn tác'; revert.disabled = !(current.complete === true && current.status === 'ready'); revert.addEventListener('click', () => void actOnFileChanges(current, 'revert'));
+    const apply = document.createElement('button'); apply.type = 'button'; apply.className = 'runtime-file-change-action primary'; apply.textContent = 'Giữ thay đổi'; apply.disabled = !(current.complete === true && current.status === 'ready'); apply.addEventListener('click', () => void actOnFileChanges(current, 'apply'));
+    foot.append(revert, apply); panel.append(head, body, foot); modal.append(panel); modal.addEventListener('click', (event) => { if (event.target === modal) modal.remove(); }); modal.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); modal.remove(); } }); document.body.append(modal); close.focus();
+  }
+  function renderFileChangeCard(host, blocks, fileChanges = null) {
     if (!host) return [];
-    const rows = fileChangeRows(blocks); host.replaceChildren(); host.hidden = !rows.length;
+    const rows = fileChangeRows(blocks);
+    if (!rows.length && Array.isArray(fileChanges?.files)) fileChanges.files.forEach((file) => rows.push({ path: text(file.path), status: text(file.status || 'changed'), toolName: 'OMP' }));
+    host.replaceChildren(); host.hidden = !rows.length;
     if (!rows.length) return rows;
     const running = rows.some((row) => row.status === 'running');
     const failed = rows.every((row) => row.status === 'error');
@@ -1608,9 +1709,9 @@
     const icon = document.createElement('span'); icon.className = 'file-change-icon-box'; icon.setAttribute('aria-hidden', 'true'); icon.textContent = '±';
     const meta = document.createElement('div'); meta.className = 'file-change-meta';
     const title = document.createElement('strong'); title.className = 'file-change-title'; title.textContent = failed ? 'Chỉnh sửa tệp chưa hoàn tất' : running ? `Đang chỉnh sửa ${rows.length} tệp` : `Đã chỉnh sửa ${rows.length} tệp`;
-    const detail = document.createElement('span'); detail.className = 'file-change-stats'; detail.textContent = 'Nguồn: hoạt động OMP';
+    const detail = document.createElement('span'); detail.className = 'file-change-stats'; detail.textContent = fileChanges?.id ? 'Nguồn: snapshot runtime' : 'Nguồn: hoạt động OMP';
     meta.append(title, detail); left.append(icon, meta);
-    const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'btn-diff-review'; toggle.textContent = 'Xem hoạt động'; toggle.setAttribute('aria-expanded', 'false');
+    const toggle = document.createElement('button'); toggle.type = 'button'; toggle.className = 'btn-diff-review'; toggle.textContent = fileChanges?.id ? 'Xem diff' : 'Xem hoạt động'; toggle.setAttribute('aria-expanded', 'false');
     const list = document.createElement('div'); list.className = 'file-change-list'; list.hidden = true;
     rows.forEach((row) => {
       const item = document.createElement('div'); item.className = 'file-change-row';
@@ -1618,21 +1719,22 @@
       const status = document.createElement('span'); status.className = 'file-diff-stats'; status.textContent = row.status === 'error' ? 'lỗi' : row.status === 'running' ? 'đang xử lý' : 'đã xong';
       item.append(path, status); list.append(item);
     });
-    toggle.addEventListener('click', () => { list.hidden = !list.hidden; toggle.setAttribute('aria-expanded', String(!list.hidden)); toggle.textContent = list.hidden ? 'Xem hoạt động' : 'Thu gọn'; });
+    toggle.addEventListener('click', () => { if (fileChanges?.id) { void openFileChangeReview(fileChanges); return; } list.hidden = !list.hidden; toggle.setAttribute('aria-expanded', String(!list.hidden)); toggle.textContent = list.hidden ? 'Xem hoạt động' : 'Thu gọn'; });
     header.append(left, toggle); card.append(header, list); host.append(card);
     return rows;
   }
   function syncFileChangeFloatingBar(messages = state.messages) {
     const bar = $('fileChangeFloatingBar'); const pill = $('fileChangeFloatingPill');
     if (!bar || !pill) return;
-    const latest = [...(Array.isArray(messages) ? messages : [])].reverse().map((message) => fileChangeRows(message?.role === 'user' ? [] : message?.body)).find((rows) => rows.length);
+    const latestMessage = [...(Array.isArray(messages) ? messages : [])].reverse().find((message) => fileChangeRows(message?.role === 'user' ? [] : message?.body).length || message?.fileChanges?.files?.length);
+    const latest = latestMessage ? fileChangeRows(latestMessage.role === 'user' ? [] : latestMessage.body) : [];
     const visible = Boolean(latest?.length);
     bar.hidden = !visible; bar.classList.toggle('is-visible', visible); bar.style.removeProperty('display');
     if (!visible) return;
     pill.hidden = false; pill.disabled = false; pill.removeAttribute('aria-hidden'); pill.removeAttribute('onclick');
     pill.replaceChildren(Object.assign(document.createElement('span'), { className: 'file-change-pill-text', textContent: `${latest.length} tệp đã thay đổi` }));
     pill.title = 'Nhấp để xem hoạt động chỉnh sửa tệp'; pill.setAttribute('aria-label', pill.title);
-    pill.onclick = () => document.querySelector('[data-file-change-card="true"]')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    pill.onclick = () => latestMessage?.fileChanges?.id ? void openFileChangeReview(latestMessage.fileChanges) : document.querySelector('[data-file-change-card="true"]')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
   function editUserPrompt(message) {
     const input = $('chatInput');
@@ -1671,7 +1773,7 @@
   function messageActionsNode(message) {
     const actions = document.createElement('div'); actions.className = 'msg-actions';
     const left = document.createElement('div'); left.className = 'msg-actions-left';
-    if (text(message.content).trim()) { const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'msg-act-btn'; copy.title = 'Sao chép phản hồi'; copy.setAttribute('aria-label', copy.title); copy.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>'; copy.addEventListener('click', () => void copyText(message.content, 'Markdown')); left.append(copy); }
+    if (text(message.content).trim()) { const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'msg-act-btn'; copy.title = 'Sao chép Markdown'; copy.setAttribute('aria-label', copy.title); copy.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>'; copy.addEventListener('click', () => void copyText(message.content, 'Markdown')); left.append(copy); }
     const fork = document.createElement('button'); fork.type = 'button'; fork.className = 'msg-act-btn'; fork.title = 'Tạo nhánh chat từ phản hồi này'; fork.setAttribute('aria-label', fork.title); fork.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="18" r="3"></circle><circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><path d="M18 9v1a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9"></path><path d="M12 12v3"></path></svg>'; fork.addEventListener('click', () => { if (!state.activeId) return notify('Chưa chọn cuộc trò chuyện.', true); void runAction(state.activeId, 'fork'); });
     left.append(fork);
     const right = document.createElement('div'); right.className = 'msg-actions-right';
@@ -1692,7 +1794,7 @@
       const footer = document.createElement('div'); footer.className = 'user-msg-footer'; const time = document.createElement('span'); time.className = 'user-msg-time'; time.textContent = messageClock(message);
       if (message.queueId && !message.requestId) { const queueStatus = document.createElement('span'); queueStatus.className = 'user-msg-queue-status'; queueStatus.textContent = 'Đang chờ web gửi'; queueStatus.setAttribute('aria-label', 'Đang chờ web gửi'); footer.append(queueStatus); }
       const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'user-msg-act-btn btn-copy-user-msg'; copy.title = 'Sao chép câu hỏi'; copy.setAttribute('aria-label', copy.title); copy.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>'; copy.addEventListener('click', () => void copyText(message.content, 'prompt'));
-      const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'user-msg-act-btn btn-edit-user-msg'; edit.title = 'Chỉnh sửa câu hỏi'; edit.setAttribute('aria-label', edit.title); edit.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>'; edit.addEventListener('click', () => editUserPrompt(message));
+      const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'user-msg-act-btn btn-edit-user-msg'; edit.title = 'Chỉnh prompt trong ô nhập'; edit.setAttribute('aria-label', edit.title); edit.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>'; edit.addEventListener('click', () => editUserPrompt(message));
       footer.append(time, copy, edit); wrap.append(footer); return wrap;
     }
     const wrap = document.createElement('div');
@@ -1708,7 +1810,7 @@
     const card = document.createElement('div');
     card.className = 'ai-message-card';
     renderMessageBody(card, message.body);
-    const fileChanges = document.createElement('div'); fileChanges.className = 'message-file-changes'; renderFileChangeCard(fileChanges, message.body); card.append(fileChanges);
+    const fileChanges = document.createElement('div'); fileChanges.className = 'message-file-changes'; renderFileChangeCard(fileChanges, message.body, message.fileChanges); card.append(fileChanges);
     if (text(message.content).trim()) {
       const content = document.createElement('div');
       content.className = 'chat-markdown';
@@ -1723,6 +1825,9 @@
   function clearPrototypeData() {
     ['pinnedSessionsList', 'projectFoldersTree', 'unassignedSessionsList'].forEach((id) => $(id)?.replaceChildren());
     $('chatStream')?.replaceChildren();
+
+    // Keep the six production quick actions; they are wired to the real composer by legacy.js.
+
     setGreetingVisible(!state.activeId && !state.pendingPrompts.length);
     const title = $('headerSessionTitle'); if (title) title.textContent = 'Chưa chọn cuộc trò chuyện';
     const pill = $('headerSessionPill'); if (pill) { pill.title = 'Chưa chọn cuộc trò chuyện'; pill.setAttribute('aria-label', 'Chưa chọn cuộc trò chuyện'); }
@@ -1752,7 +1857,7 @@
   }
   function sanitizeProductionSurface() {
     const hide = (id) => { const node = $(id); if (node) { node.hidden = true; node.disabled = true; node.setAttribute('aria-hidden', 'true'); } };
-    ['headerActionDuplicate', 'headerActionExport', 'screenCaptureBtn', 'cameraCaptureBtn', 'microphoneCaptureBtn', 'videoCaptureBtn'].forEach(hide);
+    ['screenCaptureBtn', 'cameraCaptureBtn', 'microphoneCaptureBtn', 'videoCaptureBtn'].forEach(hide);
     const tools = $('toolsContentArea');
     if (tools) { tools.replaceChildren(emptyNode('Chưa có công cụ backend')); tools.setAttribute('aria-live', 'polite'); }
     const toolsTab = $('drawerTabToolsBtn');
@@ -2217,6 +2322,21 @@
     } catch (error) { notify(`Không thể tiếp tục hàng chờ: ${error.message}`, true); }
     renderQueueTray();
   }
+  function reorderLocalQueue(sourceId, targetId, before) {
+    const source = state.pendingPrompts.find((item) => item.id === sourceId);
+    const target = state.pendingPrompts.find((item) => item.id === targetId);
+    if (!source || !target || source.id === target.id || source.sessionId !== target.sessionId) return;
+    const group = state.pendingPrompts.filter((item) => item.sessionId === source.sessionId);
+    const sourceIndex = group.indexOf(source);
+    const targetIndex = group.indexOf(target);
+    if (sourceIndex < 0 || targetIndex < 0) return;
+    group.splice(sourceIndex, 1);
+    group.splice(Math.max(0, targetIndex - (sourceIndex < targetIndex ? 1 : 0) + (before ? 0 : 1)), 0, source);
+    let index = 0;
+    state.pendingPrompts = state.pendingPrompts.map((item) => item.sessionId === source.sessionId ? group[index++] : item);
+    renderQueueTray();
+    notify('Đã đổi thứ tự hàng chờ web.');
+  }
   function renderQueueTray() {
     const tray = $('promptQueueTray'); const list = $('queueItemsList'); if (!tray || !list) return;
     const serverItems = serverQueueItems();
@@ -2283,6 +2403,15 @@
       const send = document.createElement('button'); send.type = 'button'; send.className = 'btn-queue-steer'; send.textContent = item.status === 'priority' ? 'Đã ưu tiên' : 'Gửi ngay'; send.disabled = item.status === 'editing' || item.status === 'priority'; send.addEventListener('click', () => void sendQueuedPrompt(item));
       const discard = document.createElement('button'); discard.type = 'button'; discard.className = 'btn-queue-icon-action btn-queue-trash'; discard.textContent = '×'; discard.title = 'Bỏ order'; discard.setAttribute('aria-label', `Bỏ order ${order}`); discard.addEventListener('click', () => discardQueuedPrompt(item.id));
       actions.append(edit, send, discard); row.append(content, actions); list.append(row);
+      const draggable = ['queued', 'paused'].includes(item.status);
+      row.draggable = draggable;
+      if (draggable) {
+        row.addEventListener('dragstart', (event) => { row.classList.add('is-dragging'); event.dataTransfer?.setData('text/plain', item.id); if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'; });
+        row.addEventListener('dragend', () => { row.classList.remove('is-dragging'); list.querySelectorAll('.drag-over-top,.drag-over-bottom').forEach((node) => node.classList.remove('drag-over-top', 'drag-over-bottom')); });
+        row.addEventListener('dragover', (event) => { if (item.sessionId !== state.pendingPrompts.find((candidate) => candidate.id === item.id)?.sessionId) return; event.preventDefault(); const rect = row.getBoundingClientRect(); row.classList.toggle('drag-over-top', event.clientY < rect.top + rect.height / 2); row.classList.toggle('drag-over-bottom', event.clientY >= rect.top + rect.height / 2); });
+        row.addEventListener('dragleave', () => row.classList.remove('drag-over-top', 'drag-over-bottom'));
+        row.addEventListener('drop', (event) => { event.preventDefault(); const sourceId = event.dataTransfer?.getData('text/plain'); const before = event.clientY < row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2; row.classList.remove('drag-over-top', 'drag-over-bottom'); reorderLocalQueue(sourceId, item.id, before); });
+      }
     });
   }
   function renderQueuedPreview(item) {
@@ -2607,6 +2736,7 @@
           completionPayload = payload;
           if (!payload.aborted) mountChatTurn();
           if (Array.isArray(payload.body)) payload.body.forEach(pushBodyBlock);
+          renderFileChangeCard(fileChangesNode, streamedBody, payload.fileChanges);
           setStreamStatus(payload.totalDuration ? `Đã hoàn tất · ${payload.totalDuration}` : 'Đã hoàn tất', 'done');
         }
         if (event === 'body' && payload.block) {
@@ -2689,8 +2819,9 @@
         ...(completionPayload?.totalTokens ? { totalTokens: completionPayload.totalTokens } : {}),
         ...(streamedBody.length ? { body: cloneSnapshot(streamedBody) } : {}),
         ...(streamedAttachments.length ? { attachments: cloneSnapshot(streamedAttachments) } : {}),
+        ...(completionPayload?.fileChanges ? { fileChanges: cloneSnapshot(completionPayload.fileChanges) } : {}),
       };
-      if (streamedText || streamedBody.length || streamedAttachments.length) {
+      if (streamedText || streamedBody.length || streamedAttachments.length || completedAssistant.fileChanges) {
         if (isCurrentSession(guard)) state.messages = upsertAssistantMessage(state.messages, request.requestId, completedAssistant);
         else {
           const view = state.sessionViews.get(sessionId) || { messages: [], transientNodes: [], volatile: true, scrollTop: 0 };
@@ -3206,13 +3337,15 @@
     const select = $('modesPlanYoloModelSelect'); if (!select) return;
     const models = ompModels();
     const selected = models.find((item) => item.id === state.planYoloModel) || models.find((item) => item.id === state.activeModel) || models[0];
+
     if (!selected) { updateModelListbox(select, [], '', setPlanYoloModel, true); return; }
-    if (state.planYoloModel !== selected.id) state.planYoloModel = selected.id;
+    if (state.planYoloModel !== selected.id) { state.planYoloModel = selected.id; localStorage.setItem('omp.planYoloModel', selected.id); }
     updateModelListbox(select, models, selected.id, setPlanYoloModel);
+
   }
   function setPlanYoloModel(value, notifyUser = true) {
     if (!value) return;
-    state.planYoloModel = value; syncPlanYoloPill();
+    state.planYoloModel = value; localStorage.setItem('omp.planYoloModel', value); syncPlanYoloPill();
     if (notifyUser) notify(`Plan YOLO sẽ dùng ${value}.`);
   }
   function syncModelControls(selected) {
@@ -3522,7 +3655,7 @@
     }
     if (!supported.length) section.append(emptyNode('OMP chưa hỗ trợ chế độ nào trong catalog hiện tại.')); host.append(section);
   }
-  async function loadAdvisorConfig() { if (state.advisorConfigLoading) return; state.advisorConfigLoading = true; renderOmpModes(); try { const { payload } = await readJson(`${API}/omp/advisor-config`); const applyModeDefaults = state.advisorConfig === null; state.advisorConfig = payload; if (applyModeDefaults) { state.advisor = payload.enabled === true; state.planYolo = payload.planYolo === true; state.planYoloModel = payload.planYoloModel || ''; syncPlanYoloPill(); } } catch (error) { notify(`Không đọc được tuning Advisor từ OMP: ${error.message}`, true); } finally { state.advisorConfigLoading = false; renderOmpModes(); } }
+  async function loadAdvisorConfig() { if (state.advisorConfigLoading) return; state.advisorConfigLoading = true; renderOmpModes(); try { const { payload } = await readJson(`${API}/omp/advisor-config`); const applyModeDefaults = state.advisorConfig === null; state.advisorConfig = payload; if (applyModeDefaults) { state.advisor = payload.enabled === true; state.planYolo = payload.planYolo === true; state.planYoloModel = payload.planYoloModel || state.planYoloModel || ''; if (state.planYoloModel) localStorage.setItem('omp.planYoloModel', state.planYoloModel); syncPlanYoloPill(); } } catch (error) { notify(`Không đọc được tuning Advisor từ OMP: ${error.message}`, true); } finally { state.advisorConfigLoading = false; renderOmpModes(); } }
   async function saveAdvisorConfig(next) { state.advisorConfigSaving = true; renderOmpModes(); try { const { payload } = await readJson(`${API}/omp/advisor-config`, { method: 'POST', body: JSON.stringify(next) }); state.advisorConfig = payload; notify('Đã lưu tuning Advisor vào OMP; áp dụng khi tạo chat mới.'); } catch (error) { notify(`Không lưu được tuning Advisor: ${error.message}`, true); } finally { state.advisorConfigSaving = false; renderOmpModes(); } }
   async function setOmpTools(toolId, enabled) {
     const supported = new Set(selectableTools());
@@ -3553,7 +3686,12 @@
   async function loadAgentHub(guard = sessionGuard()) {
     const host = $('ompAgentHubStatus'); if (!host) return;
     const hub = state.capabilities?.tools?.find((item) => item.id === 'hub');
-    if (!hub?.canToggle) { host.hidden = true; return; }
+    if (!hub?.canToggle) {
+      host.hidden = false; host.replaceChildren();
+      const title = document.createElement('div'); title.className = 'settings-section-title'; title.textContent = 'OMP Agent Hub';
+      const note = document.createElement('div'); note.className = 'settings-help-text'; note.textContent = 'Agent Hub chưa khả dụng qua ACP; OMP không công bố dữ liệu subagent cho dashboard.';
+      host.append(title, note); return;
+    }
     host.hidden = false; host.replaceChildren(); const title = document.createElement('div'); title.className = 'settings-section-title'; title.textContent = 'OMP Agent Hub'; host.append(title);
     if (!guard.sessionId || !isCurrentSession(guard)) { host.append(emptyNode('Chọn session để xem task/subagent thật.')); return; }
     if (state.capabilities?.featureStatus?.['agent-hub'] === 'unavailable') { host.append(emptyNode('Agent Hub chưa khả dụng qua ACP; OMP không công bố dữ liệu subagent cho dashboard.')); return; }
@@ -3905,7 +4043,7 @@
   }
 
   function bindDrawerTabs() { document.querySelectorAll('.drawer-tab[data-tab]').forEach((tab) => tab.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); const name = tab.dataset.tab; document.querySelectorAll('.drawer-tab[data-tab]').forEach((node) => { const active = node === tab; node.classList.toggle('active', active); node.setAttribute('aria-selected', String(active)); }); [['tools', 'tabToolsPane'], ['modes', 'tabModesPane'], ['files', 'tabFilesPane']].forEach(([id, paneId]) => $(paneId)?.classList.toggle('active', id === name)); if (name === 'modes') void loadAdvisorConfig(); if (name === 'files') void loadWorkspaceFiles(state.workspaceMention); }, true)); }
-  function bindOmpSurface() { ['egoBrowserToggle', 'planYoloToggle', 'drawerTabFilesBtn', 'drawerTabModesBtn', 'tabFilesPane', 'tabModesPane', 'settingsNavPlugins', 'settingsTabPlugins', 'settingsNavAgents', 'settingsTabAgents'].forEach((id) => { const node = $(id); if (node) { node.hidden = false; node.removeAttribute('aria-hidden'); node.style.removeProperty('display'); } }); ['fileChangeFloatingBar', 'fileChangeFloatingPill', 'shareSessionModal', 'openWindowModal', 'codeDiffReviewModal', 'upgradeModal', 'sessionContextMenu'].forEach((id) => { const node = $(id); if (node) { node.hidden = true; node.setAttribute('aria-hidden', 'true'); node.style.setProperty('display', 'none', 'important'); node.classList.remove('open'); } }); const fileList = $('drawerFilesList'); if (fileList) { fileList.replaceChildren(emptyNode('Chưa có tệp được đính kèm')); } const quotaRows = $('chatModalAccountsRows'); if (quotaRows) quotaRows.replaceChildren(emptyNode('Đang tải dữ liệu quota…')); const fileBadge = $('drawerTabFilesBtn')?.querySelector('.drawer-tab-badge'); if (fileBadge) fileBadge.textContent = '0'; $('drawerTabFilesBtn')?.setAttribute('aria-label', 'Tệp đính kèm thật'); $('drawerUploadFileBtn')?.removeAttribute('data-production-unsupported'); const permission = $('settingsPermissionSelect'); const map = { require_approval: 'always-ask', approve_for_me: 'write', full_access: 'yolo' }; if (permission) { permission.value = Object.entries(map).find(([, value]) => value === state.approvalMode)?.[0] || 'require_approval'; if (typeof setPermissionMode === 'function') setPermissionMode(permission.value, false); permission.addEventListener('change', () => { state.approvalMode = map[permission.value] || 'always-ask'; localStorage.setItem('omp.approvalMode', state.approvalMode); if (typeof setPermissionMode === 'function') setPermissionMode(permission.value, false); notify(`Đã chọn quyền OMP: ${permission.options[permission.selectedIndex]?.textContent || state.approvalMode}`); }, true); } const ego = $('egoBrowserToggle'); ego?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); state.browserMode = state.browserMode === 'ego-browser' ? 'none' : 'ego-browser'; localStorage.setItem('omp.browserMode', state.browserMode); syncBrowserPill(); }, true); $('planYoloToggle')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); togglePlanYolo(); }, true); document.addEventListener('click', (event) => { const plan = event.target.closest('[data-action="plan-mode"],#plusPlanningMode'); if (plan) { event.preventDefault(); event.stopImmediatePropagation(); togglePlanYolo(); return; } const option = event.target.closest('.approval-option-item'); if (!option) return; const mode = map[option.dataset.value] || 'always-ask'; state.approvalMode = mode; localStorage.setItem('omp.approvalMode', mode); }, true); bindDrawerTabs(); bindFileAttachment(); void loadAdvisorConfig(); loadCapabilities(); }
+  function bindOmpSurface() { ['egoBrowserToggle', 'planYoloToggle', 'drawerTabFilesBtn', 'drawerTabModesBtn', 'tabFilesPane', 'tabModesPane', 'settingsNavPlugins', 'settingsTabPlugins', 'settingsNavAgents', 'settingsTabAgents'].forEach((id) => { const node = $(id); if (node) { node.hidden = false; node.removeAttribute('aria-hidden'); node.style.removeProperty('display'); } }); ['fileChangeFloatingBar', 'fileChangeFloatingPill', 'shareSessionModal', 'openWindowModal', 'codeDiffReviewModal', 'upgradeModal', 'sessionContextMenu'].forEach((id) => { const node = $(id); if (node) { node.hidden = true; node.setAttribute('aria-hidden', 'true'); node.style.setProperty('display', 'none', 'important'); node.classList.remove('open'); } }); const fileList = $('drawerFilesList'); if (fileList) { fileList.replaceChildren(emptyNode('Chưa có tệp được đính kèm')); } const quotaRows = $('chatModalAccountsRows'); if (quotaRows) quotaRows.replaceChildren(emptyNode('Đang tải dữ liệu quota…')); const fileBadge = $('drawerTabFilesBtn')?.querySelector('.drawer-tab-badge'); if (fileBadge) fileBadge.textContent = '0'; $('drawerTabFilesBtn')?.setAttribute('aria-label', 'Tệp đính kèm thật'); $('drawerUploadFileBtn')?.removeAttribute('data-production-unsupported'); const permission = $('settingsPermissionSelect'); const map = { require_approval: 'always-ask', approve_for_me: 'write', full_access: 'yolo' }; if (permission) { permission.value = Object.entries(map).find(([, value]) => value === state.approvalMode)?.[0] || 'require_approval'; if (typeof setPermissionMode === 'function') setPermissionMode(permission.value, false); permission.addEventListener('change', () => { state.approvalMode = map[permission.value] || 'always-ask'; localStorage.setItem('omp.approvalMode', state.approvalMode); if (typeof setPermissionMode === 'function') setPermissionMode(permission.value, false); notify(`Đã chọn quyền OMP: ${permission.options[permission.selectedIndex]?.textContent || state.approvalMode}`); }, true); } const ego = $('egoBrowserToggle'); ego?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); state.browserMode = state.browserMode === 'ego-browser' ? 'none' : 'ego-browser'; localStorage.setItem('omp.browserMode', state.browserMode); syncBrowserPill(); }, true); $('planYoloToggle')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); togglePlanYolo(); }, true); document.addEventListener('click', (event) => { const plan = event.target.closest('[data-action="plan-mode"],#plusPlanningMode'); if (plan) { event.preventDefault(); event.stopImmediatePropagation(); togglePlanYolo(); return; } const option = event.target.closest('.approval-option-item'); if (!option) return; const mode = map[option.dataset.value] || 'always-ask'; state.approvalMode = mode; localStorage.setItem('omp.approvalMode', mode); }, true); bindDrawerTabs(); bindFileAttachment(); void loadAdvisorConfig(); }
 
   function ensureToolsRail() {
     const drawer = $('toolsDrawer'); if (!drawer || $('toolsDrawerRail')) return;
@@ -4206,6 +4344,8 @@
     $('openFullQuotaDashboardLink')?.addEventListener('click', () => { location.href = '/quota'; });
     const activeAction = (event, action) => { event.preventDefault(); event.stopImmediatePropagation(); if (state.activeId) void runAction(state.activeId, action); else notify('Chưa chọn session', true); };
     $('headerShareBtn')?.addEventListener('click', (event) => activeAction(event, 'share'), true);
+    $('headerActionDuplicate')?.addEventListener('click', (event) => activeAction(event, 'duplicate'), true);
+    $('headerActionExport')?.addEventListener('click', (event) => activeAction(event, 'export'), true);
     $('headerActionFork')?.addEventListener('click', (event) => activeAction(event, 'fork'), true);
     $('headerActionPin')?.addEventListener('click', (event) => { const session = state.sessions.find((item) => item.id === state.activeId); activeAction(event, session?.isPinned ? 'unpin' : 'pin'); }, true);
     $('headerActionDelete')?.addEventListener('click', (event) => activeAction(event, 'delete'), true);
@@ -4221,7 +4361,7 @@
     document.addEventListener('visibilitychange', refreshQuotaModelAccess);
     $('headerParametersBtn')?.closest('.header-dropdown-wrap')?.remove();
     const pluginPane = $('settingsTabPlugins'); if (pluginPane) pluginPane.replaceChildren();
-    const pluginLabel = $('settingsNavPlugins')?.querySelector('span'); if (pluginLabel) pluginLabel.textContent = 'OMP';
+    const pluginLabel = $('settingsNavPlugins')?.querySelector('span'); if (pluginLabel) pluginLabel.textContent = 'Tích hợp';
     updateHeaderQuota({}, []); updateQuotaModal({}, [], {});
     bindOmpSurface();
     bindFileAttachment();

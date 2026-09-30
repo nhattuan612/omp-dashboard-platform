@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { readdir, readFile, realpath, stat } from "node:fs/promises";
+import { lstat, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -15,6 +15,8 @@ const MAX_LINE_BYTES = 1_048_576;
 const MAX_RAW_FRAMES = 300;
 const MAX_WORKSPACE_FILE_BYTES = 512 * 1024;
 const MAX_WORKSPACE_FILE_TEXT_CHARS = 200_000;
+const MAX_WORKSPACE_CHANGE_FILES = 48;
+const MAX_WORKSPACE_CHANGE_BYTES = 8 * 1024 * 1024;
 const SAFE_WORKSPACE_FILE_EXTENSIONS = new Set([".c", ".cc", ".cpp", ".css", ".csv", ".go", ".h", ".html", ".java", ".js", ".json", ".jsx", ".md", ".py", ".rs", ".sh", ".sql", ".toml", ".ts", ".tsx", ".txt", ".xml", ".yaml", ".yml"]);
 const IDLE_CLOSE_MS = 15 * 60 * 1000;
 const SAFETY_MIN_REQUEST_GAP_MS = 1_000;
@@ -61,6 +63,18 @@ function isSafeWorkspaceFilePath(value) {
   const extension = name.includes(".") ? `.${name.split(".").pop().toLowerCase()}` : "";
   if (!SAFE_WORKSPACE_FILE_EXTENSIONS.has(extension)) return false;
   return parts.every((part) => !part.startsWith(".") && !BLOCKED_DIRECTORY_PATTERN.test(part) && !SENSITIVE_PATH_PATTERN.test(part));
+}
+
+function workspacePathInput(value) {
+  return String(value || "").trim().replace(/^@/, "").replace(/\\/g, "/");
+}
+
+function fileSha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function workspacePathError(message, code = "BAD_REQUEST") {
+  return Object.assign(new Error(message), { code, field: "path" });
 }
 
 function redact(value, key = "") {
@@ -868,23 +882,116 @@ export class ConsoleBridge {
 
   async readWorkspaceFile(contextId, value) {
     const context = this.get(contextId);
-    const raw = String(value || "").trim().replace(/^@/, "").replace(/\\/g, "/");
-    if (!raw || raw.startsWith("/") || raw.startsWith("~") || raw.startsWith("../") || raw.includes("\0")) throw Object.assign(new Error("Đường dẫn tệp workspace không hợp lệ"), { code: "BAD_REQUEST", field: "path" });
+    const raw = workspacePathInput(value);
+    if (!raw || raw.startsWith("/") || raw.startsWith("~") || raw.startsWith("../") || raw.includes("\0")) throw workspacePathError("Đường dẫn tệp workspace không hợp lệ");
     const root = await realpath(context.cwd);
     const file = await realpath(resolve(root, raw)).catch(() => null);
     const rel = file ? relative(root, file) : "..";
-    if (!file || rel.startsWith("..") || isAbsolute(rel)) throw Object.assign(new Error("Tệp nằm ngoài workspace"), { code: "FORBIDDEN", field: "path" });
+    if (!file || rel.startsWith("..") || isAbsolute(rel)) throw workspacePathError("Tệp nằm ngoài workspace", "FORBIDDEN");
     const info = await stat(file);
-    if (!info.isFile()) throw Object.assign(new Error("Chỉ có thể tham chiếu tệp"), { code: "BAD_REQUEST", field: "path" });
+    if (!info.isFile()) throw workspacePathError("Chỉ có thể tham chiếu tệp");
     const relativePath = rel.replace(/\\/g, "/");
     const name = basename(file);
-    if (!isSafeWorkspaceFilePath(raw) || !isSafeWorkspaceFilePath(relativePath)) throw Object.assign(new Error("Tệp này không được phép đính kèm"), { code: "FORBIDDEN", field: "path" });
-    if (info.size > MAX_WORKSPACE_FILE_BYTES) throw Object.assign(new Error("Tệp vượt giới hạn 512 KB"), { code: "BAD_REQUEST", field: "path" });
+    if (!isSafeWorkspaceFilePath(raw) || !isSafeWorkspaceFilePath(relativePath)) throw workspacePathError("Tệp này không được phép đính kèm", "FORBIDDEN");
+    if (info.size > MAX_WORKSPACE_FILE_BYTES) throw workspacePathError("Tệp vượt giới hạn 512 KB");
     const bytes = await readFile(file);
-    if (bytes.includes(0)) throw Object.assign(new Error("Chỉ hỗ trợ tệp văn bản"), { code: "BAD_REQUEST", field: "path" });
+    if (bytes.includes(0)) throw workspacePathError("Chỉ hỗ trợ tệp văn bản");
     const text = bytes.toString("utf8");
-    if (text.includes("\ufffd")) throw Object.assign(new Error("Tệp không phải UTF-8 hợp lệ"), { code: "BAD_REQUEST", field: "path" });
+    if (text.includes("\ufffd")) throw workspacePathError("Tệp không phải UTF-8 hợp lệ");
     return { name, path: relativePath, type: "text/plain", size: bytes.length, text: text.slice(0, MAX_WORKSPACE_FILE_TEXT_CHARS), truncated: text.length > MAX_WORKSPACE_FILE_TEXT_CHARS, source: "workspace" };
+  }
+
+  async snapshotWorkspaceFile(contextId, value, { allowMissing = true } = {}) {
+    const context = this.get(contextId);
+    const raw = workspacePathInput(value);
+    if (!raw || raw.startsWith("~") || raw.startsWith("../") || raw.includes("\0")) throw workspacePathError("Đường dẫn tệp workspace không hợp lệ");
+    const root = await realpath(context.cwd);
+    const candidate = resolve(root, raw);
+    const parent = await realpath(dirname(candidate)).catch(() => null);
+    const parentRel = parent ? relative(root, parent) : "..";
+    if (!parent || parentRel.startsWith("..") || isAbsolute(parentRel) || (parentRel && !isSafeWorkspaceDirectory(parentRel))) throw workspacePathError("Tệp nằm ngoài workspace", "FORBIDDEN");
+    const current = await realpath(candidate).catch(() => null);
+    const file = current || candidate;
+    const rel = relative(root, file).replace(/\\/g, "/");
+    if (rel.startsWith("..") || isAbsolute(rel) || !isSafeWorkspaceFilePath(rel)) throw workspacePathError("Tệp này không được phép snapshot", "FORBIDDEN");
+    const link = await lstat(candidate).catch(() => null);
+    if (link?.isSymbolicLink()) throw workspacePathError("Không hỗ trợ snapshot symlink", "FORBIDDEN");
+    const info = current ? await stat(current).catch(() => null) : null;
+    if (!info) {
+      if (!allowMissing) throw workspacePathError("Tệp không tồn tại", "NOT_FOUND");
+      return { path: rel, name: basename(rel), exists: false, size: 0, sha256: null, text: null };
+    }
+    if (!info.isFile()) throw workspacePathError("Chỉ hỗ trợ snapshot tệp", "BAD_REQUEST");
+    if (info.size > MAX_WORKSPACE_FILE_BYTES) throw workspacePathError("Tệp vượt giới hạn 512 KB", "BAD_REQUEST");
+    const bytes = await readFile(current);
+    if (bytes.includes(0)) throw workspacePathError("Chỉ hỗ trợ tệp văn bản", "BAD_REQUEST");
+    const text = bytes.toString("utf8");
+    if (text.includes("\ufffd")) throw workspacePathError("Tệp không phải UTF-8 hợp lệ", "BAD_REQUEST");
+    return { path: rel, name: basename(rel), exists: true, size: bytes.length, sha256: fileSha256(bytes), text };
+  }
+
+  async restoreWorkspaceFiles(contextId, files) {
+    const context = this.get(contextId);
+    if (!Array.isArray(files) || !files.length || files.length > MAX_WORKSPACE_CHANGE_FILES) throw Object.assign(new Error("Danh sách file-change không hợp lệ"), { code: "BAD_REQUEST", field: "files" });
+    const root = await realpath(context.cwd);
+    const plan = [];
+    let totalBytes = 0;
+    for (const item of files) {
+      const before = item?.before;
+      const raw = workspacePathInput(item?.path);
+      if (!raw || raw.startsWith("~") || raw.startsWith("../") || raw.includes("\0") || !before || typeof before !== "object") throw Object.assign(new Error("Snapshot file-change không hợp lệ"), { code: "BAD_REQUEST", field: "files" });
+      const candidate = resolve(root, raw);
+      const parent = await realpath(dirname(candidate)).catch(() => null);
+      const parentRel = parent ? relative(root, parent) : "..";
+      if (!parent || parentRel.startsWith("..") || isAbsolute(parentRel) || (parentRel && !isSafeWorkspaceDirectory(parentRel))) throw workspacePathError("Tệp nằm ngoài workspace", "FORBIDDEN");
+      const currentLink = await lstat(candidate).catch(() => null);
+      if (currentLink?.isSymbolicLink()) throw workspacePathError("Không hỗ trợ ghi qua symlink", "FORBIDDEN");
+      const current = await realpath(candidate).catch(() => null);
+      const rel = relative(root, current || candidate).replace(/\\/g, "/");
+      if (rel.startsWith("..") || isAbsolute(rel) || !isSafeWorkspaceFilePath(rel)) throw workspacePathError("Tệp này không được phép phục hồi", "FORBIDDEN");
+      const info = current ? await stat(current).catch(() => null) : null;
+      if (info && !info.isFile()) throw workspacePathError("Chỉ hỗ trợ phục hồi tệp", "BAD_REQUEST");
+      const currentBytes = info ? await readFile(current) : null;
+      const currentHash = currentBytes ? fileSha256(currentBytes) : null;
+      if (currentHash !== (item.afterHash || null)) throw Object.assign(new Error(`Tệp đã thay đổi ngoài phiên: ${rel}`), { code: "CONFLICT", field: "files" });
+      const beforeText = before.exists === true ? String(before.text ?? "") : null;
+      if (before.exists === true) {
+        const bytes = Buffer.from(beforeText, "utf8");
+        if (bytes.includes(0) || bytes.length > MAX_WORKSPACE_FILE_BYTES || fileSha256(bytes) !== before.sha256) throw Object.assign(new Error(`Snapshot không hợp lệ: ${rel}`), { code: "CONFLICT", field: "files" });
+        totalBytes += bytes.length;
+      }
+      plan.push({ path: current || candidate, rel, before, beforeText, currentBytes, currentMode: info?.mode });
+    }
+    if (totalBytes > MAX_WORKSPACE_CHANGE_BYTES) throw Object.assign(new Error("Snapshot file-change vượt giới hạn"), { code: "BAD_REQUEST", field: "files" });
+    const tempFiles = [];
+    const cleanup = async () => Promise.all(tempFiles.map((file) => rm(file, { force: true }).catch(() => {})));
+    try {
+      for (const item of plan) {
+        if (item.before.exists !== true) continue;
+        const temp = `${item.path}.omp-restore-${randomUUID()}.tmp`;
+        await writeFile(temp, item.beforeText, { mode: item.currentMode ? item.currentMode & 0o777 : 0o600, flag: "wx" });
+        tempFiles.push(temp);
+        item.temp = temp;
+      }
+      for (const item of plan) {
+        if (item.before.exists === true) await rename(item.temp, item.path);
+        else await rm(item.path, { force: true });
+      }
+    } catch (error) {
+      await cleanup();
+      for (const item of plan) {
+        try {
+          if (item.currentBytes == null) await rm(item.path, { force: true });
+          else {
+            const temp = `${item.path}.omp-rollback-${randomUUID()}.tmp`;
+            await writeFile(temp, item.currentBytes, { mode: item.currentMode ? item.currentMode & 0o777 : 0o600, flag: "wx" });
+            await rename(temp, item.path);
+          }
+        } catch {}
+      }
+      throw Object.assign(new Error("Không thể hoàn tác nguyên tử file-change"), { code: "UPSTREAM_ERROR", cause: error });
+    }
+    return { files: plan.map((item) => ({ path: item.rel, sha256: item.before.exists === true ? item.before.sha256 : null, exists: item.before.exists === true })) };
   }
 
   async listWorkspaceFiles(contextId, mention = "@") {
