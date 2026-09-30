@@ -825,7 +825,7 @@ async function runContract() {
     assert.match(chatClient, /syncOmpCatalog/);
     assert.match(chatClient, /omp\.planYoloModel/);
     assert.match(chatClient, /function syncPlanYoloModelControl\(\)/);
-    assert.match(chatClient, /id = 'modesPlanYoloModelSelect'/);
+    assert.match(chatClient, /createModelListbox\('modesPlanYoloModelSelect'/);
     assert.match(chatClient, /function renderOmpModes\(\)/);
     assert.doesNotMatch(chatClient, /const basicIds/);
     assert.doesNotMatch(chatClient, /const glyphs/);

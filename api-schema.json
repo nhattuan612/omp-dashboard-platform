@@ -595,6 +595,20 @@
       }
     },
     "/api/v1/workspaces": {
+      "post": {
+        "tags": ["Chat & AI Streaming"],
+        "summary": "Mở hộp thoại Finder chọn thư mục",
+        "description": "Mở hộp thoại chọn thư mục native trên macOS. Thư mục người dùng chọn có thể gắn vào dự án trong 5 phút.",
+        "operationId": "chooseNativeWorkspaceDirectory",
+        "responses": {
+          "200": {
+            "description": "Thư mục đã chọn hoặc trạng thái hủy",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "cwd": { "type": "string" }, "name": { "type": "string" }, "cancelled": { "type": "boolean" } } } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "403": { "description": "Request không được phép." }
+        }
+      },
       "get": {
         "tags": ["Chat & AI Streaming"],
         "summary": "Liệt kê thư mục workspace",

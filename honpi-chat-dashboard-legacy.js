@@ -248,12 +248,16 @@
       }
       function toggleDrawer(open) {
         if (!toolsDrawer) return;
-        const isOpen = open !== undefined ? open : toolsDrawer.classList.contains('collapsed');
+        const mobile = window.matchMedia('(max-width: 920px)').matches;
+        const currentlyOpen = mobile ? toolsDrawer.classList.contains('mobile-open') : !toolsDrawer.classList.contains('collapsed');
+        const isOpen = open !== undefined ? open : !currentlyOpen;
         if (isOpen) {
           toolsDrawer.classList.remove('collapsed');
+          toolsDrawer.classList.toggle('mobile-open', mobile);
           if (toggleToolsBtn) toggleToolsBtn.classList.add('active');
         } else {
           toolsDrawer.classList.add('collapsed');
+          toolsDrawer.classList.remove('mobile-open');
           if (toggleToolsBtn) toggleToolsBtn.classList.remove('active');
         }
       }
@@ -1108,7 +1112,10 @@
       }
       if (mobileMenuBtn) {
         mobileMenuBtn.addEventListener('click', () => {
-          appSidebar.classList.toggle('mobile-open');
+          const open = !appSidebar.classList.contains('mobile-open');
+          appSidebar.classList.toggle('mobile-open', open);
+          mobileMenuBtn.setAttribute('aria-expanded', String(open));
+          mobileMenuBtn.setAttribute('aria-label', open ? 'Đóng thanh điều hướng' : 'Mở thanh điều hướng');
         });
       }
 
@@ -1133,6 +1140,14 @@
 
       if (collapseSidebarBtn) {
         collapseSidebarBtn.addEventListener('click', () => {
+          if (window.matchMedia('(max-width: 920px)').matches) {
+            appSidebar.classList.remove('mobile-open');
+            if (mobileMenuBtn) {
+              mobileMenuBtn.setAttribute('aria-expanded', 'false');
+              mobileMenuBtn.setAttribute('aria-label', 'Mở thanh điều hướng');
+            }
+            return;
+          }
           setSidebarCollapsed(true);
           showToast('Đã thu gọn thanh bên (Ctrl+B)');
         });
@@ -4202,6 +4217,12 @@
       const settingsLanguageSelect = document.getElementById('settingsLanguageSelect');
       const settingsConvDisplaySelect = document.getElementById('settingsConvDisplaySelect');
       const settingsEnterBehaviorSelect = document.getElementById('settingsEnterBehaviorSelect');
+      const canvasToneCards = document.querySelectorAll('.canvas-tone-card');
+      const canvasToneCurrentBadge = document.getElementById('canvasToneCurrentBadge');
+      const toneNamesMap = { 'deep-tech': 'Deep Tech Navy', obsidian: 'Obsidian Black', charcoal: 'Pure Charcoal', midnight: 'Midnight Slate', ocean: 'Ocean Deep Blue' };
+      const fontFamilyCards = document.querySelectorAll('.font-family-card');
+      const fontFamilyCurrentBadge = document.getElementById('fontFamilyCurrentBadge');
+      const fontNamesMap = { inter: 'Inter (Mặc định)', chatgptstyle: 'ChatgptStyle', 'be-vietnam': 'Be Vietnam Pro', geist: 'Geist Sans', jetbrains: 'JetBrains Mono', system: 'System Native' };
 
       // Models tab controls
       const settingsDefaultModelSelect = document.getElementById('settingsDefaultModelSelect');
@@ -4289,6 +4310,21 @@
         if (dynamicBadgesToggle) {
           dynamicBadgesToggle.checked = document.documentElement.getAttribute('data-colorful-badges') !== 'false';
         }
+        const currentTone = document.documentElement.getAttribute('data-canvas-tone') || 'deep-tech';
+        canvasToneCards.forEach(card => {
+          const active = card.getAttribute('data-tone') === currentTone;
+          card.classList.toggle('active', active);
+          card.setAttribute('aria-checked', active ? 'true' : 'false');
+        });
+        if (canvasToneCurrentBadge) canvasToneCurrentBadge.textContent = toneNamesMap[currentTone] || toneNamesMap['deep-tech'];
+
+        const currentFont = document.documentElement.getAttribute('data-font-family') || 'inter';
+        fontFamilyCards.forEach(card => {
+          const active = card.getAttribute('data-font') === currentFont;
+          card.classList.toggle('active', active);
+          card.setAttribute('aria-checked', active ? 'true' : 'false');
+        });
+        if (fontFamilyCurrentBadge) fontFamilyCurrentBadge.textContent = fontNamesMap[currentFont] || fontNamesMap.inter;
       }
 
       settingsNavBtns.forEach(btn => {
@@ -4389,6 +4425,36 @@
           applyColorfulBadges(e.target.checked, true);
         });
       }
+
+      function applyCanvasTone(toneKey, notify = true) {
+        const key = Object.hasOwn(toneNamesMap, toneKey) ? toneKey : 'deep-tech';
+        document.documentElement.setAttribute('data-canvas-tone', key);
+        try { localStorage.setItem('honpi-canvas-tone', key); } catch (_) {}
+        if (canvasToneCurrentBadge) canvasToneCurrentBadge.textContent = toneNamesMap[key];
+        canvasToneCards.forEach(card => {
+          const active = card.getAttribute('data-tone') === key;
+          card.classList.toggle('active', active);
+          card.setAttribute('aria-checked', active ? 'true' : 'false');
+        });
+        if (notify) showToast(`Đã đổi tone màu chủ đạo: ${toneNamesMap[key]}`);
+      }
+      canvasToneCards.forEach(card => card.addEventListener('click', () => applyCanvasTone(card.getAttribute('data-tone'))));
+      applyCanvasTone(localStorage.getItem('honpi-canvas-tone') || 'deep-tech', false);
+
+      function applyFontFamily(fontKey, notify = true) {
+        const key = Object.hasOwn(fontNamesMap, fontKey) ? fontKey : 'inter';
+        document.documentElement.setAttribute('data-font-family', key);
+        try { localStorage.setItem('honpi-font-family', key); } catch (_) {}
+        if (fontFamilyCurrentBadge) fontFamilyCurrentBadge.textContent = fontNamesMap[key];
+        fontFamilyCards.forEach(card => {
+          const active = card.getAttribute('data-font') === key;
+          card.classList.toggle('active', active);
+          card.setAttribute('aria-checked', active ? 'true' : 'false');
+        });
+        if (notify) showToast(`Đã áp dụng phông chữ: ${fontNamesMap[key]}`);
+      }
+      fontFamilyCards.forEach(card => card.addEventListener('click', () => applyFontFamily(card.getAttribute('data-font'))));
+      applyFontFamily(localStorage.getItem('honpi-font-family') || 'inter', false);
 
       // Font size buttons
       if (fontSizeDecBtn) {
@@ -4497,6 +4563,13 @@
           e.preventDefault();
           openSettingsModal('general');
         } else if (e.key === 'Escape') {
+          if (appSidebar.classList.contains('mobile-open')) {
+            appSidebar.classList.remove('mobile-open');
+            if (mobileMenuBtn) {
+              mobileMenuBtn.setAttribute('aria-expanded', 'false');
+              mobileMenuBtn.setAttribute('aria-label', 'Mở thanh điều hướng');
+            }
+          }
           closeSessionContextMenu();
           if (headerMoreMenu) headerMoreMenu.classList.remove('open');
           if (bottomPanel && bottomPanel.classList.contains('open')) toggleBottomPanel(false);

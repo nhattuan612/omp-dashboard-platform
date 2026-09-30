@@ -35,6 +35,8 @@
   let bound = false;
   state.folders = [];
   state.projectWorkspace = null;
+  state.projectWorkspacePickerOpen = false;
+  state.projectWorkspaceChoosing = false;
   state.projectSelectedCwd = '';
   state.pendingProjectFolderResolve = null;
   state.projectFolderEditingId = '';
@@ -280,10 +282,11 @@
     const status = $('connectionStatusLabel') || $('dev-chat-status');
     if (status) { status.textContent = label; status.dataset.state = stateName; }
     if (pill) pill.className = `status-pill status-${stateName}`;
-    const dot = $('ompGatewayStatusDot');
     const address = $('ompGatewayAddress');
-    if (dot) dot.style.background = stateName === 'connected' ? 'var(--success)' : stateName === 'syncing' ? 'var(--warn)' : 'var(--danger)';
-    if (address) address.textContent = stateName === 'connected' ? 'Đã kết nối qua dashboard' : label;
+    if (address) {
+      address.className = `gateway-status-badge is-${stateName}`;
+      address.textContent = stateName === 'connected' ? 'Đã kết nối qua dashboard' : label;
+    }
   };
   const notify = (message, error = false) => {
     const toast = $('toastNotice');
@@ -376,46 +379,62 @@
     if (mode === 'always-expanded') folder.classList.remove('collapsed');
     if (mode === 'manual' && state.folderCollapsed.has(name)) folder.classList.add('collapsed');
   }
+  function bindMenuArrowNavigation(menu, selector) {
+    menu.addEventListener('keydown', (event) => {
+      const keys = ['ArrowDown', 'ArrowUp', 'Home', 'End'];
+      if (!keys.includes(event.key)) return;
+      const items = [...menu.querySelectorAll(selector)].filter((item) => !item.disabled && item.getClientRects().length && item.getAttribute('aria-disabled') !== 'true');
+      if (!items.length) return;
+      const current = items.indexOf(document.activeElement);
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : current < 0 ? (event.key === 'ArrowUp' ? items.length - 1 : 0) : (current + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+      event.preventDefault();
+      items[next].focus({ preventScroll: true });
+    });
+  }
+
   function showFolderMenu(name, x, y) {
     if (!name) return;
     state.folderMenu?.remove();
-    const menu = document.createElement('div'); menu.className = 'neuratalk-context-menu open'; menu.id = 'liveFolderActionMenu'; menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', `Tùy chọn folder ${name}`); menu.style.left = `${Math.max(8, Math.min(x || 24, innerWidth - 228))}px`; menu.style.top = `${Math.max(8, Math.min(y || 80, innerHeight - 180))}px`; menu.style.zIndex = '3000'; menu.style.pointerEvents = 'auto';
-    const title = document.createElement('div'); title.className = 'context-menu-label'; title.textContent = name; menu.append(title);
+    const menu = document.createElement('div'); menu.className = 'neuratalk-context-menu open'; menu.id = 'liveFolderActionMenu'; menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', `Tùy chọn folder ${name}`); menu.style.minWidth = '250px'; menu.style.width = '250px'; menu.style.maxWidth = '250px'; menu.style.zIndex = '3000'; menu.style.maxHeight = 'calc(100vh - 16px)'; menu.style.overflowY = 'auto';
+    const icon = (path) => { const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('fill', 'none'); svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '2'); svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round'); svg.setAttribute('aria-hidden', 'true'); const shape = document.createElementNS('http://www.w3.org/2000/svg', 'path'); shape.setAttribute('d', path); svg.append(shape); return svg; };
+    const divider = () => { const line = document.createElement('div'); line.className = 'context-divider'; line.setAttribute('role', 'separator'); menu.append(line); };
     const projectRecord = (state.folders || []).find((folder) => folder?.name === name);
-    if (projectRecord) {
-      const configure = document.createElement('button'); configure.type = 'button'; configure.className = 'context-menu-item'; configure.textContent = 'Chọn thư mục workspace…'; configure.setAttribute('role', 'menuitem');
-      configure.addEventListener('click', async (event) => {
-        event.preventDefault(); event.stopPropagation(); menu.remove(); state.folderMenu = null;
-        if (await requestProjectFolder({ folder: projectRecord })) await loadFolders({ silent: true });
-      });
-      menu.append(configure);
-    }
+    const close = () => { menu.remove(); document.removeEventListener('pointerdown', dismissOutside); if (state.folderMenu === menu) state.folderMenu = null; };
+    const dismissOutside = (event) => { if (!menu.contains(event.target)) close(); };
+    const addItem = (label, path, handler, { danger = false, checked = false } = {}) => {
+      const item = document.createElement('button'); item.type = 'button'; item.className = `context-item${danger ? ' danger' : ''}`; item.setAttribute('role', checked === null ? 'menuitem' : 'menuitemcheckbox');
+      if (checked !== null) item.setAttribute('aria-checked', String(checked));
+      item.append(icon(path)); const textNode = document.createElement('span'); textNode.textContent = label; item.append(textNode);
+      if (checked !== null) { const mark = document.createElement('span'); mark.className = 'ctx-check-mark'; mark.textContent = '✓'; mark.hidden = !checked; item.append(mark); }
+      item.addEventListener('click', async (event) => { event.preventDefault(); event.stopPropagation(); close(); await handler(); }); menu.append(item);
+      return item;
+    };
+    addItem('Chỉnh sửa (chọn lại vị trí folder)', 'M12 20h9 M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z', async () => { if (!projectRecord) return notify('Không tìm thấy metadata dự án.', true); if (await requestProjectFolder({ folder: projectRecord })) await loadFolders({ silent: true }); }, { checked: null });
+    divider();
     const currentMode = folderMode(name);
-    [['always-expanded', 'Luôn mở rộng'], ['always-collapsed', 'Luôn thu gọn'], ['manual', 'Cho phép thu gọn / mở rộng']].forEach(([mode, label]) => {
-      const selected = currentMode === mode;
-      const item = document.createElement('button'); item.type = 'button'; item.className = `context-menu-item folder-mode-item${selected ? ' active' : ''}`; item.setAttribute('role', 'menuitemradio'); item.setAttribute('aria-checked', String(selected)); item.title = mode === 'manual' ? 'Cho phép bấm để đóng hoặc mở folder' : mode === 'always-collapsed' ? 'Khoá folder ở trạng thái thu gọn' : 'Khoá folder ở trạng thái mở rộng';
-      const textNode = document.createElement('span'); textNode.className = 'menu-label'; textNode.textContent = label;
-      const check = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); check.classList.add('folder-mode-check'); check.setAttribute('viewBox', '0 0 24 24'); check.setAttribute('fill', 'none'); check.setAttribute('stroke', 'currentColor'); check.setAttribute('stroke-width', '2.5'); check.setAttribute('aria-hidden', 'true');
-      const checkPath = document.createElementNS('http://www.w3.org/2000/svg', 'polyline'); checkPath.setAttribute('points', '20 6 9 17 4 12'); check.append(checkPath); item.append(textNode, check);
-      item.addEventListener('click', () => { setFolderMode(name, mode); state.folderMenu = null; menu.remove(); renderSessions(); notify(mode === 'always-expanded' ? `Folder “${name}” luôn mở rộng` : mode === 'always-collapsed' ? `Folder “${name}” luôn thu gọn` : `Folder “${name}” dùng chế độ thủ công`); }); menu.append(item);
-    });
+    [
+      ['always-expanded', 'Luôn mở rộng', 'M7 13l5 5 5-5 M7 6l5 5 5-5'],
+      ['always-collapsed', 'Luôn thu gọn', 'M17 11l-5-5-5 5 M17 18l-5-5-5 5'],
+      ['manual', 'Cho phép thu gọn / mở rộng', 'M8 9l4-4 4 4 M16 15l-4 4-4-4'],
+    ].forEach(([mode, label, path]) => addItem(label, path, () => { setFolderMode(name, mode); state.folderCollapsed.delete(name); renderSessions(); notify(`Folder “${name}”: ${label}`); }, { checked: currentMode === mode }));
+    bindMenuArrowNavigation(menu, '.context-item');
+    menu.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); close(); } });
     document.body.append(menu); state.folderMenu = menu;
-    setTimeout(() => document.addEventListener('click', () => { menu.remove(); state.folderMenu = null; }, { once: true }), 0);
+    const rect = menu.getBoundingClientRect();
+    menu.style.left = `${Math.max(8, Math.min(x || 24, innerWidth - rect.width - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(y || 80, innerHeight - Math.min(rect.height, innerHeight - 16) - 8))}px`;
+    document.addEventListener('pointerdown', dismissOutside);
+    menu.querySelector('.context-item')?.focus({ preventScroll: true });
   }
   function svgIcon(kind) {
     const ns = 'http://www.w3.org/2000/svg';
     const svg = document.createElementNS(ns, 'svg');
-    const attrs = kind === 'chevron'
-      ? { width: '11', height: '11', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2.2' }
-      : kind === 'pin'
-        ? { width: '12', height: '12', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2.2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }
-        : { width: '14', height: '14', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' };
+    const isPin = kind === 'pin';
+    const attrs = isPin
+      ? { width: '12', height: '12', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2.2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' }
+      : { width: '14', height: '14', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2' };
     Object.entries(attrs).forEach(([key, value]) => svg.setAttribute(key, value));
-    if (kind === 'chevron') {
-      const child = document.createElementNS(ns, 'polyline');
-      child.setAttribute('points', '6 9 12 15 18 9');
-      svg.append(child);
-    } else if (kind === 'pin') {
+    if (isPin) {
       const line = document.createElementNS(ns, 'line');
       line.setAttribute('x1', '12'); line.setAttribute('y1', '17'); line.setAttribute('x2', '12'); line.setAttribute('y2', '22');
       const path = document.createElementNS(ns, 'path');
@@ -426,7 +445,7 @@
       child.setAttribute('d', 'M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z');
       svg.append(child);
     }
-    svg.classList.add(kind === 'chevron' ? 'folder-chevron' : kind === 'pin' ? 'session-pin-icon' : 'folder-icon');
+    svg.classList.add(isPin ? 'session-pin-icon' : 'folder-icon');
     svg.setAttribute('aria-hidden', 'true');
     return svg;
   }
@@ -473,11 +492,10 @@
       applyFolderMode(folder, name);
       const header = document.createElement('div'); header.className = 'folder-header-row'; header.title = 'Nhấp để mở rộng / thu gọn · Kích phải để tùy chọn'; header.setAttribute('aria-haspopup', 'menu');
       const left = document.createElement('div'); left.className = 'folder-header-left';
-      const chevron = svgIcon('chevron');
       const icon = svgIcon('folder');
       const label = document.createElement('span'); label.className = 'folder-name'; label.textContent = name;
       const count = document.createElement('span'); count.className = 'folder-count-badge'; count.textContent = String(Math.max(items.length, sessionCount || 0));
-      left.append(chevron, icon, label, count);
+      left.append(icon, label, count);
       const actions = document.createElement('div'); actions.className = 'folder-header-actions';
       const projectRecord = (state.folders || []).find((item) => item?.id === id);
       if (id) {
@@ -501,12 +519,13 @@
       }
       header.append(left, actions);
       const list = document.createElement('div'); list.className = 'folder-sessions-container project-folder-sessions'; list.dataset.folder = name; if (id) list.dataset.folderId = id;
-      const isExpanded = state.folderExpanded.has(name);
+      const hasActiveOverflow = items.slice(5).some((item) => item.id === state.activeId);
+      const isExpanded = state.folderExpanded.has(name) || hasActiveOverflow;
       (isExpanded ? items : items.slice(0, 5)).forEach((item) => list.append(makeSessionRow(item)));
       if (!items.length) list.append(emptyNode(sessionCount ? 'Đang tải cuộc trò chuyện trong folder…' : 'Chưa có phiên trong folder'));
-      if (!isExpanded && items.length > 5) {
-        const more = document.createElement('button'); more.type = 'button'; more.className = 'folder-load-more-btn'; more.textContent = `Tải thêm (${items.length - 5})`; more.setAttribute('aria-label', `Tải thêm cuộc trò chuyện trong ${name}`);
-        more.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); state.folderExpanded.add(name); renderSessions(); }); list.append(more);
+      if (items.length > 5) {
+        const more = document.createElement('button'); more.type = 'button'; more.className = 'folder-load-more-btn'; more.textContent = isExpanded ? 'Thu gọn' : 'Tải thêm'; more.title = isExpanded ? 'Thu gọn danh sách cuộc trò chuyện' : 'Hiển thị thêm cuộc trò chuyện'; more.setAttribute('aria-label', isExpanded ? `Thu gọn danh sách cuộc trò chuyện trong ${name}` : `Tải thêm cuộc trò chuyện trong ${name}`); more.setAttribute('aria-expanded', String(isExpanded));
+        more.addEventListener('click', (event) => { event.preventDefault(); event.stopPropagation(); if (state.folderExpanded.has(name)) state.folderExpanded.delete(name); else state.folderExpanded.add(name); renderSessions(); }); list.append(more);
       }
       folder.append(header, list); tree.append(folder); bindFolderHeader(header);
     });
@@ -525,19 +544,131 @@
   function showMenu(session, x, y) {
     state.menu?.remove();
     state.folderMenu?.remove();
-    const menu = document.createElement('div'); menu.className = 'neuratalk-context-menu open'; menu.id = 'liveSessionActionMenu'; menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', `Tùy chọn cuộc trò chuyện ${session.title || session.id}`); menu.style.left = `${Math.max(8, Math.min(x || 24, innerWidth - 228))}px`; menu.style.top = `${Math.max(8, Math.min(y || 80, innerHeight - 300))}px`; menu.style.zIndex = '3000'; menu.style.pointerEvents = 'auto';
-    const actions = [['rename', 'Đặt lại tên'], [session.isPinned ? 'unpin' : 'pin', session.isPinned ? 'Bỏ ghim' : 'Ghim'], [session.isUnread ? 'read' : 'unread', session.isUnread ? 'Đánh dấu đã đọc' : 'Đánh dấu chưa đọc'], ['folder', 'Phân loại folder'], ['fork', 'Tạo nhánh'], ['reconnect', 'Kết nối lại session'], ['share', 'Chia sẻ liên kết'], ['archive', 'Lưu trữ'], ['delete', 'Xoá vĩnh viễn']];
-    actions.forEach(([action, label]) => {
-      const item = document.createElement('button'); item.type = 'button'; item.className = `context-menu-item${action === 'delete' ? ' danger' : ''}`; item.dataset.action = action; item.textContent = label;
-      item.addEventListener('click', () => {
-        menu.remove(); state.menu = null;
-        if (action === 'folder') showFolderAssignmentMenu(session, x, y);
-        else void runAction(session.id, action);
+    const template = $('sessionContextMenu');
+    if (!template) return;
+    const menu = template.cloneNode(true);
+    menu.id = 'liveSessionActionMenu';
+    menu.hidden = false;
+    menu.removeAttribute('aria-hidden');
+    menu.querySelectorAll('[id]').forEach((node) => node.removeAttribute('id'));
+    menu.classList.add('open');
+    menu.setAttribute('aria-label', `Tùy chọn cuộc trò chuyện ${session.title || session.id}`);
+    menu.style.removeProperty('display');
+    menu.style.zIndex = '3000';
+    menu.style.maxHeight = 'calc(100vh - 16px)';
+    menu.style.overflowY = 'auto';
+    menu.querySelector('.context-menu-item[data-action="section"]')?.remove();
+    menu.querySelectorAll('.context-menu-divider + .context-menu-divider').forEach((divider) => divider.remove());
+    const pinLabel = menu.querySelector('[data-action="pin"] .menu-label');
+    if (pinLabel) { pinLabel.textContent = session.isPinned ? 'Bỏ ghim' : 'Ghim'; menu.querySelector('[data-action="pin"]').dataset.action = session.isPinned ? 'unpin' : 'pin'; }
+    const unreadLabel = menu.querySelector('[data-action="unread"] .menu-label');
+    if (unreadLabel) { unreadLabel.textContent = session.isUnread ? 'Đánh dấu là đã đọc' : 'Đánh dấu là chưa đọc'; menu.querySelector('[data-action="unread"]').dataset.action = session.isUnread ? 'read' : 'unread'; }
+    const running = requestsForSession(session.id).length > 0;
+    const runningLabel = menu.querySelector('[data-action="toggle-running"] .menu-label');
+    if (runningLabel) runningLabel.textContent = running ? 'Dừng tiến trình chạy' : 'Bật tiến trình chạy';
+
+    const projectSubmenu = menu.querySelector('[data-action="project"] .context-submenu');
+    if (projectSubmenu) {
+      const prototype = projectSubmenu.querySelector('[data-project]');
+      const createProjectItem = projectSubmenu.querySelector('.new-project-item');
+      projectSubmenu.replaceChildren();
+      (state.folders || []).filter((folder) => folder?.id && folder?.name).forEach((folder) => {
+        const item = prototype.cloneNode(true);
+        item.dataset.folderId = folder.id;
+        item.querySelector('span').textContent = folder.name;
+        item.classList.toggle('active-item', session.folderId === folder.id);
+        projectSubmenu.append(item);
       });
-      menu.append(item);
+      const divider = document.createElement('div'); divider.className = 'context-menu-divider'; projectSubmenu.append(divider);
+      const unassigned = prototype.cloneNode(true); unassigned.dataset.folderId = ''; unassigned.classList.toggle('active-item', !session.folderId); unassigned.querySelector('span').textContent = 'Không thuộc dự án (Chưa phân loại)'; projectSubmenu.append(unassigned);
+      if (createProjectItem) projectSubmenu.append(createProjectItem);
+    }
+
+    const positionSubmenu = (item) => {
+      const submenu = item.querySelector('.context-submenu');
+      if (!submenu) return;
+      const row = item.getBoundingClientRect();
+      const oldDisplay = submenu.style.display;
+      const oldVisibility = submenu.style.visibility;
+      submenu.style.display = 'flex';
+      submenu.style.visibility = 'hidden';
+      const box = submenu.getBoundingClientRect();
+      submenu.style.display = oldDisplay;
+      submenu.style.visibility = oldVisibility;
+      const width = box.width || submenu.offsetWidth;
+      const height = box.height || submenu.scrollHeight;
+      const left = row.right + width <= innerWidth - 8 ? row.right - 2 : Math.max(8, row.left - width + 2);
+      submenu.style.left = `${left}px`;
+      submenu.style.right = 'auto';
+      submenu.style.top = `${Math.max(8, Math.min(row.top - 5, innerHeight - height - 8))}px`;
+    };
+    menu.querySelectorAll('.context-menu-item.has-submenu').forEach((item) => {
+      item.addEventListener('mouseenter', () => positionSubmenu(item));
+      item.addEventListener('focusin', () => positionSubmenu(item));
     });
-    document.body.append(menu); state.menu = menu;
-    setTimeout(() => document.addEventListener('click', () => { menu.remove(); state.menu = null; }, { once: true }), 0);
+    menu.addEventListener('scroll', () => {
+      const active = menu.querySelector('.context-menu-item.has-submenu:hover, .context-menu-item.has-submenu:focus-within');
+      if (active) positionSubmenu(active);
+    }, { passive: true });
+
+    const dismissOutside = (event) => { if (!menu.contains(event.target)) close(); };
+    const close = () => { menu.remove(); document.removeEventListener('pointerdown', dismissOutside); if (state.menu === menu) state.menu = null; };
+    bindMenuArrowNavigation(menu, '.context-menu-item, .context-submenu-item');
+    menu.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') { event.preventDefault(); close(); }
+      else if (event.key === 'Enter' || event.key === ' ') { const item = event.target.closest('.context-menu-item, .context-submenu-item'); if (item) { event.preventDefault(); item.click(); } }
+    });
+    menu.addEventListener('click', async (event) => {
+      const item = event.target.closest('.context-submenu-item, .context-menu-item');
+      if (!item) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (item.classList.contains('has-submenu')) return;
+      const action = item.dataset.action;
+      if (item.dataset.folderId !== undefined) {
+        close();
+        void runAction(session.id, item.dataset.folderId ? 'assign_folder' : 'unassign_folder', { folderId: item.dataset.folderId });
+      } else if (action === 'create-new-project') {
+        close();
+        const created = await requestProjectFolder();
+        if (created?.id) { await loadFolders({ silent: true }); await runAction(session.id, 'assign_folder', { folderId: created.id }); }
+      } else if (item.dataset.copyType === 'link') {
+        close(); void runAction(session.id, 'share');
+      } else if (item.dataset.copyType === 'content') {
+        close();
+        try {
+          const { payload } = await readJson(`${API}/sessions/${encodeURIComponent(session.id)}/messages`);
+          const messages = dataOf(payload, 'messages') || [];
+          const transcript = messages.map((message) => `${message.role || 'message'}: ${message.text || message.content || ''}`).join('\n\n');
+          await navigator.clipboard.writeText(transcript);
+          notify('Đã sao chép nội dung hội thoại');
+        } catch (error) { notify(`Không thể sao chép hội thoại: ${error.message}`, true); }
+      } else if (item.dataset.copyType === 'duplicate' || item.dataset.forkType) {
+        close(); void runAction(session.id, 'fork');
+      } else if (action === 'toggle-running') {
+        close();
+        const request = requestsForSession(session.id).find((candidate) => candidate.status === 'running');
+        if (!request) { notify('Cuộc trò chuyện này không có tiến trình đang chạy.', true); return; }
+        request.status = 'stopping'; request.controller.abort();
+        void fetch(`${API}/chat/abort`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId: request.requestId, sessionId: request.sessionId }) });
+        setSendState();
+      } else if (action === 'open-window') {
+        close(); window.open(`${location.origin}/chat?session=${encodeURIComponent(session.id)}`, '_blank', 'noopener');
+      } else if (item.dataset.section !== undefined) {
+        notify('Tính năng Mục chưa được nối với dữ liệu trong runtime này.', true);
+      } else if (action) {
+        close(); void runAction(session.id, action);
+      }
+    });
+    document.body.append(menu);
+    state.menu = menu;
+    const rect = menu.getBoundingClientRect();
+    const menuWidth = rect.width || 230;
+    const menuHeight = rect.height || 430;
+    menu.style.left = `${Math.max(8, Math.min(x || 24, innerWidth - menuWidth - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(y || 80, innerHeight - Math.min(menuHeight, innerHeight - 16) - 8))}px`;
+    document.addEventListener('pointerdown', dismissOutside);
+    menu.querySelector('.context-menu-item')?.focus({ preventScroll: true });
   }
   function showFolderAssignmentMenu(session, x, y) {
     if (!session?.id) return;
@@ -635,10 +766,47 @@
     const parent = $('projectWorkspaceParentBtn');
     const use = $('projectWorkspaceUseBtn');
     const selection = $('projectWorkspaceSelection');
+    const browser = $('projectWorkspaceBrowser');
+    const openButton = $('projectWorkspaceOpenBtn');
+    const selectedSummary = $('projectWorkspaceSelected');
+    const changeButton = $('projectWorkspaceChangeBtn');
+    const clearButton = $('projectWorkspaceClearBtn');
     const loading = Boolean(workspace.loading);
     const currentPath = text(workspace.currentPath).trim();
     const selectedPath = text(state.projectSelectedCwd).trim();
     const chatWorkspace = state.projectFolderPurpose === 'chat';
+    if (browser) {
+      browser.hidden = !state.projectWorkspacePickerOpen;
+      browser.classList.toggle('open', Boolean(state.projectWorkspacePickerOpen));
+      const modal = $('projectFolderModal');
+      if (modal) modal.inert = Boolean(state.projectWorkspacePickerOpen);
+    }
+    if (openButton) {
+      openButton.setAttribute('aria-expanded', String(Boolean(state.projectWorkspacePickerOpen)));
+      openButton.hidden = Boolean(selectedPath);
+      openButton.disabled = Boolean(state.projectWorkspaceChoosing);
+      const label = $('projectWorkspaceOpenLabel');
+      if (label) label.textContent = state.projectWorkspaceChoosing ? 'Đang mở Finder…' : chatWorkspace ? 'Chọn workspace trên máy tính này' : 'Thêm thư mục trên máy tính này';
+    }
+    if (selectedSummary) selectedSummary.hidden = !selectedPath;
+    if (changeButton) changeButton.onclick = () => {
+      if (!chatWorkspace) { void chooseNativeProjectWorkspace(); return; }
+      state.projectWorkspacePickerOpen = true;
+      renderProjectWorkspacePicker();
+      requestAnimationFrame(() => { if (state.projectWorkspacePickerOpen) $('closeProjectWorkspaceExplorer')?.focus(); });
+    };
+    if (clearButton) clearButton.onclick = () => {
+      state.projectSelectedCwd = '';
+      state.projectWorkspacePickerOpen = false;
+      setProjectFolderFormError();
+      renderProjectWorkspacePicker();
+    };
+    if (openButton) openButton.onclick = () => {
+      if (!chatWorkspace) { void chooseNativeProjectWorkspace(); return; }
+      state.projectWorkspacePickerOpen = !state.projectWorkspacePickerOpen;
+      renderProjectWorkspacePicker();
+      if (state.projectWorkspacePickerOpen) requestAnimationFrame(() => { if (state.projectWorkspacePickerOpen) $('closeProjectWorkspaceExplorer')?.focus(); });
+    };
     roots?.replaceChildren();
     directories?.replaceChildren();
     if (current) {
@@ -663,6 +831,7 @@
       use.disabled = !currentPath || loading;
       use.onclick = () => {
         state.projectSelectedCwd = currentPath;
+        state.projectWorkspacePickerOpen = false;
         setProjectFolderFormError();
         if (chatWorkspace) closeProjectFolderModal({ cwd: state.projectSelectedCwd });
         else renderProjectWorkspacePicker();
@@ -710,10 +879,57 @@
     } else if (currentPath && !(workspace.directories || []).length) {
       const node = document.createElement('div'); node.className = 'workspace-picker-empty'; node.textContent = 'Không có thư mục con an toàn.'; directories?.append(node);
     }
+    if (state.projectWorkspacePickerOpen) {
+      positionProjectWorkspaceExplorer();
+      requestAnimationFrame(() => {
+        if (state.projectWorkspacePickerOpen && (document.activeElement === document.body || document.activeElement === openButton)) $('closeProjectWorkspaceExplorer')?.focus();
+      });
+    }
+  }
+
+  async function chooseNativeProjectWorkspace() {
+    if (state.projectWorkspaceChoosing) return;
+    state.projectWorkspaceChoosing = true;
+    renderProjectWorkspacePicker();
+    try {
+      const { payload } = await readJson(`${API}/workspaces`, { method: 'POST', body: JSON.stringify({}) });
+      if (payload?.cwd) {
+        state.projectSelectedCwd = payload.cwd;
+        setProjectFolderFormError();
+        if (state.projectFolderPurpose === 'chat') closeProjectFolderModal({ cwd: payload.cwd });
+      }
+    } catch (error) {
+      setProjectFolderFormError(`Không mở được Finder: ${error.message}`);
+    } finally {
+      state.projectWorkspaceChoosing = false;
+      renderProjectWorkspacePicker();
+    }
+  }
+
+  function positionProjectWorkspaceExplorer() {
+    const anchor = document.querySelector('.workspace-picker-trigger')?.getBoundingClientRect();
+    const popup = document.querySelector('.workspace-explorer-popup');
+    if (!anchor || !popup) return;
+    const width = Math.min(anchor.width, innerWidth - 24);
+    const left = Math.min(Math.max(12, anchor.left), innerWidth - width - 12);
+    const desired = Math.min(popup.scrollHeight || 360, 480, innerHeight - 24);
+    let top = anchor.bottom + 8;
+    let room = innerHeight - top - 12;
+    if (room < Math.min(desired, 220)) {
+      room = Math.max(160, anchor.top - 20);
+      top = Math.max(12, anchor.top - Math.min(desired, room) - 8);
+    }
+    const maxHeight = Math.max(160, Math.min(desired, innerHeight - top - 12));
+    popup.style.left = `${left}px`;
+    popup.style.top = `${top}px`;
+    popup.style.width = `${width}px`;
+    popup.style.setProperty('--workspace-explorer-max-height', `${maxHeight}px`);
   }
 
   async function loadProjectWorkspace(path = null) {
     try {
+      const browserContent = document.querySelector('.workspace-picker-browser');
+      if (browserContent) browserContent.scrollTop = 0;
       state.projectWorkspace = { currentPath: path || state.projectWorkspace?.currentPath || '', loading: true };
       renderProjectWorkspacePicker();
       const query = path ? `?path=${encodeURIComponent(path)}` : '';
@@ -727,6 +943,9 @@
 
   function closeProjectFolderModal(result = null) {
     const modal = $('projectFolderModal');
+    state.projectWorkspacePickerOpen = false;
+    $('projectWorkspaceBrowser')?.classList.remove('open');
+    $('projectWorkspaceBrowser')?.setAttribute('hidden', '');
     modal?.classList.remove('open');
     modal?.setAttribute('aria-hidden', 'true');
     if (modal) modal.inert = true;
@@ -736,12 +955,17 @@
     state.projectFolderPurpose = 'folder';
     resolve?.(result);
   }
+  function closeMobileNavigation() {
+    $('appSidebar')?.classList.remove('mobile-open');
+    $('mobileMenuBtn')?.setAttribute('aria-expanded', 'false');
+    $('mobileMenuBtn')?.setAttribute('aria-label', 'Mở thanh điều hướng');
+  }
 
   function setProjectFolderNameVisible(visible) {
     const name = $('projectFolderNameInput');
-    const label = document.querySelector('label[for="projectFolderNameInput"]');
+    const field = $('projectFolderNameField');
+    if (field) field.hidden = !visible;
     if (name) name.hidden = !visible;
-    if (label) { label.hidden = !visible; label.style.display = visible ? 'block' : 'none'; }
   }
   function setProjectFolderFormError(message = '') {
     const error = $('projectFolderFormError');
@@ -751,44 +975,50 @@
   }
   function setProjectFolderModalDescription(value) {
     const description = $('projectFolderModalDescription');
-    if (description) description.textContent = value;
+    if (description) { description.textContent = value; description.hidden = !value; }
   }
   function requestProjectFolder({ folder = null } = {}) {
     const modal = $('projectFolderModal');
     const name = $('projectFolderNameInput');
     if (!modal || !name) return Promise.resolve(null);
+    closeMobileNavigation();
     closeProjectFolderModal();
     state.projectFolderPurpose = 'folder';
+    state.projectWorkspacePickerOpen = false;
     setProjectFolderNameVisible(true);
-    setProjectFolderModalDescription('Chọn thư mục thật trong workspace được phép. Chat mới sẽ chạy tại thư mục này.');
+    $('projectWorkspaceHeading') && ($('projectWorkspaceHeading').textContent = 'Thư mục nguồn');
+    setProjectFolderModalDescription('');
     $('projectFolderSaveBtn') && ($('projectFolderSaveBtn').hidden = false);
     $('projectWorkspaceUseBtn') && ($('projectWorkspaceUseBtn').textContent = 'Dùng thư mục này');
     state.projectFolderEditingId = folder?.id || '';
     state.projectSelectedCwd = folder?.cwd || '';
     setProjectFolderFormError();
     $('projectFolderModalTitle') && ($('projectFolderModalTitle').textContent = folder?.id ? 'Chọn thư mục workspace' : 'Tạo dự án');
-    name.value = folder?.name || '';
+    name.value = folder?.name || 'Dự án mới';
     name.disabled = Boolean(folder?.id);
     $('projectFolderSaveBtn') && ($('projectFolderSaveBtn').textContent = folder?.id ? 'Lưu thư mục' : 'Tạo dự án');
     modal.classList.add('open');
     modal.removeAttribute('aria-hidden');
     modal.inert = false;
     void loadProjectWorkspace(folder?.cwd || null);
-    setTimeout(() => name.focus(), 30);
+    setTimeout(() => { if (!state.projectWorkspacePickerOpen) name.focus(); }, 30);
     return new Promise((resolve) => { state.pendingProjectFolderResolve = resolve; });
   }
   function requestChatWorkspace() {
     const modal = $('projectFolderModal');
     const name = $('projectFolderNameInput');
     if (!modal || !name) return Promise.resolve(null);
+    closeMobileNavigation();
     closeProjectFolderModal();
     state.projectFolderPurpose = 'chat';
+    state.projectWorkspacePickerOpen = false;
     state.projectFolderEditingId = '';
     state.projectSelectedCwd = state.draftWorkspaceCwd || '';
     setProjectFolderFormError();
     $('projectFolderModalTitle') && ($('projectFolderModalTitle').textContent = 'Chọn workspace cho chat mới');
-    setProjectFolderModalDescription('Workspace chỉ chọn thư mục chạy cho chat này; không tạo hoặc gán project folder.');
+    setProjectFolderModalDescription('Chọn thư mục workspace cho cuộc trò chuyện mới.');
     setProjectFolderNameVisible(false);
+    $('projectWorkspaceHeading') && ($('projectWorkspaceHeading').textContent = 'Workspace cho chat mới');
     name.value = '';
     name.disabled = true;
     const save = $('projectFolderSaveBtn');
@@ -798,7 +1028,7 @@
     modal.removeAttribute('aria-hidden');
     modal.inert = false;
     void loadProjectWorkspace(state.projectSelectedCwd || null);
-    setTimeout(() => $('projectFolderCancelBtn')?.focus(), 30);
+    setTimeout(() => { if (!state.projectWorkspacePickerOpen) $('projectFolderCancelBtn')?.focus(); }, 30);
     return new Promise((resolve) => { state.pendingProjectFolderResolve = resolve; });
   }
 
@@ -807,6 +1037,22 @@
     $('projectFolderCancelBtn')?.addEventListener('click', cancel);
     $('projectFolderCancelActionBtn')?.addEventListener('click', cancel);
     $('projectFolderModal')?.addEventListener('click', (event) => { if (event.target === $('projectFolderModal')) cancel(); });
+    document.querySelector('.workspace-picker-trigger')?.addEventListener('click', (event) => {
+      if (event.target.closest('button')) return;
+      (state.projectSelectedCwd ? $('projectWorkspaceChangeBtn') : $('projectWorkspaceOpenBtn'))?.click();
+    });
+    const explorer = $('projectWorkspaceBrowser');
+    const closeExplorer = () => {
+      state.projectWorkspacePickerOpen = false;
+      renderProjectWorkspacePicker();
+      (state.projectSelectedCwd ? $('projectWorkspaceChangeBtn') : $('projectWorkspaceOpenBtn'))?.focus();
+    };
+    $('closeProjectWorkspaceExplorer')?.addEventListener('click', closeExplorer);
+    explorer?.addEventListener('click', (event) => { if (event.target === explorer) closeExplorer(); });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && state.projectWorkspacePickerOpen) { event.preventDefault(); event.stopPropagation(); closeExplorer(); }
+    });
+    window.addEventListener('resize', positionProjectWorkspaceExplorer);
     $('projectFolderNameInput')?.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') cancel();
       if (event.key === 'Enter') { event.preventDefault(); $('projectFolderSaveBtn')?.click(); }
@@ -822,7 +1068,13 @@
         return;
       }
       if (!editingId && !name) { setProjectFolderFormError('Nhập tên dự án để tiếp tục.'); $('projectFolderNameInput')?.focus(); return; }
-      if (!cwd) { setProjectFolderFormError('Chọn một thư mục rồi bấm “Chọn thư mục này”.'); $('projectWorkspaceUseBtn')?.focus(); return; }
+      if (!cwd) {
+        setProjectFolderFormError('Chọn một thư mục nguồn để tiếp tục.');
+        state.projectWorkspacePickerOpen = true;
+        renderProjectWorkspacePicker();
+        $('closeProjectWorkspaceExplorer')?.focus();
+        return;
+      }
       if (button) button.disabled = true;
       try {
         const url = editingId ? `${API}/folders/${encodeURIComponent(editingId)}` : `${API}/folders`;
@@ -1410,6 +1662,24 @@
     next.splice(userIndex >= 0 ? userIndex + 1 : next.length, 0, assistant);
     return next;
   }
+  const messageClock = (message) => {
+    const timestamp = text(message.timestamp).trim();
+    if (timestamp) return timestamp;
+    const date = new Date(message.createdAt || Date.now());
+    return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+  };
+  function messageActionsNode(message) {
+    const actions = document.createElement('div'); actions.className = 'msg-actions';
+    const left = document.createElement('div'); left.className = 'msg-actions-left';
+    if (text(message.content).trim()) { const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'msg-act-btn'; copy.title = 'Sao chép phản hồi'; copy.setAttribute('aria-label', copy.title); copy.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>'; copy.addEventListener('click', () => void copyText(message.content, 'Markdown')); left.append(copy); }
+    const fork = document.createElement('button'); fork.type = 'button'; fork.className = 'msg-act-btn'; fork.title = 'Tạo nhánh chat từ phản hồi này'; fork.setAttribute('aria-label', fork.title); fork.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="18" r="3"></circle><circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><path d="M18 9v1a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9"></path><path d="M12 12v3"></path></svg>'; fork.addEventListener('click', () => { if (!state.activeId) return notify('Chưa chọn cuộc trò chuyện.', true); void runAction(state.activeId, 'fork'); });
+    left.append(fork);
+    const right = document.createElement('div'); right.className = 'msg-actions-right';
+    const time = document.createElement('span'); time.className = 'msg-timestamp'; time.textContent = messageClock(message); time.title = `Thời điểm phản hồi: ${time.textContent}`;
+    right.append(time);
+    actions.append(left, right);
+    return actions;
+  }
   function messageNode(message) {
     const role = message.role === 'user' ? 'user' : 'assistant';
     if (role === 'user') {
@@ -1419,10 +1689,10 @@
       if (message.draftId) wrap.dataset.draftPreviewId = message.draftId;
       renderMessageAttachments(wrap, message.attachments);
       if (text(message.content).trim()) { const bubble = document.createElement('div'); bubble.className = 'user-msg-bubble'; bubble.textContent = text(message.content); wrap.append(bubble); }
-      const footer = document.createElement('div'); footer.className = 'user-msg-footer'; const time = document.createElement('span'); time.className = 'user-msg-time'; time.textContent = new Date(message.createdAt || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const footer = document.createElement('div'); footer.className = 'user-msg-footer'; const time = document.createElement('span'); time.className = 'user-msg-time'; time.textContent = messageClock(message);
       if (message.queueId && !message.requestId) { const queueStatus = document.createElement('span'); queueStatus.className = 'user-msg-queue-status'; queueStatus.textContent = 'Đang chờ web gửi'; queueStatus.setAttribute('aria-label', 'Đang chờ web gửi'); footer.append(queueStatus); }
-      const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'user-msg-act-btn'; copy.textContent = '⧉'; copy.title = 'Sao chép prompt'; copy.setAttribute('aria-label', 'Sao chép prompt'); copy.addEventListener('click', () => void copyText(message.content, 'prompt'));
-      const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'user-msg-act-btn'; edit.textContent = '✎'; edit.title = 'Chỉnh prompt trong ô nhập'; edit.setAttribute('aria-label', edit.title); edit.addEventListener('click', () => editUserPrompt(message));
+      const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'user-msg-act-btn btn-copy-user-msg'; copy.title = 'Sao chép câu hỏi'; copy.setAttribute('aria-label', copy.title); copy.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>'; copy.addEventListener('click', () => void copyText(message.content, 'prompt'));
+      const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'user-msg-act-btn btn-edit-user-msg'; edit.title = 'Chỉnh sửa câu hỏi'; edit.setAttribute('aria-label', edit.title); edit.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path></svg>'; edit.addEventListener('click', () => editUserPrompt(message));
       footer.append(time, copy, edit); wrap.append(footer); return wrap;
     }
     const wrap = document.createElement('div');
@@ -1446,21 +1716,13 @@
       card.append(content);
     }
     renderMessageAttachments(card, message.attachments);
-    if (text(message.content).trim() || (Array.isArray(message.attachments) && message.attachments.length)) {
-      const actions = document.createElement('div');
-      actions.className = 'msg-actions';
-      if (text(message.content).trim()) { const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'msg-act-btn'; copy.title = 'Sao chép Markdown'; copy.setAttribute('aria-label', copy.title); copy.textContent = '⧉'; copy.addEventListener('click', () => void copyText(message.content, 'Markdown')); actions.append(copy); }
-      const fork = document.createElement('button'); fork.type = 'button'; fork.className = 'msg-act-btn'; fork.title = 'Tạo nhánh chat từ phản hồi này'; fork.setAttribute('aria-label', fork.title); fork.textContent = '⌘'; fork.addEventListener('click', () => { if (!state.activeId) return notify('Chưa chọn cuộc trò chuyện.', true); void runAction(state.activeId, 'fork'); });
-      actions.append(fork);
-      card.append(actions);
-    }
+    if (text(message.content).trim() || (Array.isArray(message.attachments) && message.attachments.length) || (Array.isArray(message.body) && message.body.length)) card.append(messageActionsNode(message));
     wrap.append(status, card);
     return wrap;
   }
   function clearPrototypeData() {
     ['pinnedSessionsList', 'projectFoldersTree', 'unassignedSessionsList'].forEach((id) => $(id)?.replaceChildren());
     $('chatStream')?.replaceChildren();
-    $('greetingSection')?.querySelector('.quick-grid')?.remove();
     setGreetingVisible(!state.activeId && !state.pendingPrompts.length);
     const title = $('headerSessionTitle'); if (title) title.textContent = 'Chưa chọn cuộc trò chuyện';
     const pill = $('headerSessionPill'); if (pill) { pill.title = 'Chưa chọn cuộc trò chuyện'; pill.setAttribute('aria-label', 'Chưa chọn cuộc trò chuyện'); }
@@ -2436,6 +2698,7 @@
           view.volatile = true;
           state.sessionViews.set(sessionId, view);
         }
+        if (request.dom?.card && !request.dom.card.querySelector('.msg-actions')) request.dom.card.append(messageActionsNode(completedAssistant));
         if (isCurrentSession(guard)) syncFileChangeFloatingBar(state.messages);
       }
       await loadSessions(null, { silent: true }); if (isCurrentSession(guard)) notify('Đã nhận xong phản hồi');
@@ -2887,14 +3150,65 @@
   async function switchAccount(accountId) { try { const { payload } = await readJson(`${API}/quota/switch`, { method: 'POST', body: JSON.stringify({ accountId, ...(state.activeId ? { sessionId: state.activeId } : {}) }) }); await Promise.all([loadQuota(), loadModels()]); notify(payload?.scope === 'session' ? 'Đã ghim account Gemini cho chat này' : 'Đã đặt account Gemini mặc định'); } catch (error) { notify(`Không thể chọn tài khoản Gemini: ${error.message}`, true); } }
   async function syncQuota() { const button = $('forceSyncAllOmpBtn'); if (button) button.disabled = true; try { await readJson(`${API}/quota/sync`, { method: 'POST', body: JSON.stringify({}) }); await Promise.all([loadQuota(), loadModels()]); notify('Đã đồng bộ quota'); } catch (error) { notify(`Đồng bộ quota lỗi: ${error.message}`, true); } finally { if (button) button.disabled = false; } }
   const modelOptionValue = (model) => JSON.stringify([model.provider || '', model.id]);
+  const ompModels = () => [...new Map((state.models.length ? state.models : state.capabilities?.models || []).filter((item) => item?.id).map((item) => [item.id, item])).values()];
+  function closeModelListboxes(focus = false) {
+    document.querySelectorAll('.omp-model-dropdown-menu.open').forEach((menu) => {
+      menu.classList.remove('open'); const button = menu.closest('.omp-model-dropdown-wrap')?.querySelector('.omp-model-select-btn');
+      if (button) { button.classList.remove('is-open'); button.setAttribute('aria-expanded', 'false'); if (focus) button.focus(); }
+    });
+  }
+  let modelListboxEventsBound = false;
+  function bindModelListboxEvents() {
+    if (modelListboxEventsBound) return; modelListboxEventsBound = true;
+    document.addEventListener('click', (event) => { if (!event.target.closest('.omp-model-dropdown-wrap')) closeModelListboxes(); });
+    document.addEventListener('keydown', (event) => {
+      const wrap = event.target.closest('.omp-model-dropdown-wrap');
+      if (event.key === 'Escape' && document.querySelector('.omp-model-dropdown-menu.open')) { event.preventDefault(); closeModelListboxes(true); return; }
+      if (!wrap) return;
+      const button = wrap.querySelector('.omp-model-select-btn'); const menu = wrap.querySelector('.omp-model-dropdown-menu');
+      if (event.target === button && ['ArrowDown', 'ArrowUp'].includes(event.key)) {
+        event.preventDefault(); button.click(); menu.querySelector('.omp-listbox-option')?.focus();
+      } else if (event.target.matches('.omp-listbox-option')) {
+        const options = [...menu.querySelectorAll('.omp-listbox-option')]; const index = options.indexOf(event.target);
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); options[(index + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length]?.focus(); }
+        else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.target.click(); }
+      }
+    });
+  }
+  function updateModelListbox(button, models, selectedValue, onSelect, disabled = false, mono = false) {
+    const wrap = button.closest('.omp-model-dropdown-wrap'); const menu = wrap.querySelector('.omp-model-dropdown-menu');
+    const selected = models.find((model) => model.id === selectedValue) || models[0];
+    button.disabled = disabled || !selected; button.setAttribute('aria-expanded', String(menu.classList.contains('open')));
+    wrap.querySelector('.omp-selected-model-name').textContent = selected?.name || selected?.id || 'Chưa có model khả dụng';
+    wrap.querySelector('.omp-selected-model-name').classList.toggle('font-mono', mono);
+    wrap.querySelector('.listbox-model-badge').hidden = !selected;
+    menu.replaceChildren(...models.map((model) => {
+      const active = model.id === selected?.id; const option = document.createElement('div'); option.className = `omp-listbox-option${active ? ' active' : ''}`; option.setAttribute('role', 'option'); option.setAttribute('aria-selected', String(active)); option.tabIndex = active ? 0 : -1; option.dataset.value = model.id;
+      const main = document.createElement('div'); main.className = 'listbox-option-main'; const icon = document.createElement('span'); icon.className = 'listbox-model-icon'; icon.textContent = '✦';
+      const name = document.createElement('span'); name.className = `listbox-model-name${mono ? ' font-mono' : ''}`; name.textContent = model.name || model.id; main.append(icon, name);
+      if (active) { const badge = document.createElement('span'); badge.className = 'listbox-model-badge'; badge.textContent = 'Mặc định'; main.append(badge); }
+      const check = document.createElement('span'); check.className = 'listbox-check-icon'; check.setAttribute('aria-hidden', 'true'); check.textContent = '✓'; option.append(main, check);
+      option.addEventListener('click', (event) => { event.stopPropagation(); onSelect(model.id); updateModelListbox(button, models, model.id, onSelect, disabled, mono); closeModelListboxes(true); });
+      return option;
+    }));
+  }
+  function createModelListbox(id, labelId, models, selectedValue, onSelect, disabled = false, mono = false) {
+    bindModelListboxEvents(); const wrap = document.createElement('div'); wrap.className = 'omp-model-dropdown-wrap';
+    const button = document.createElement('button'); button.id = id; button.type = 'button'; button.className = 'omp-model-select-btn'; button.setAttribute('aria-haspopup', 'listbox'); button.setAttribute('aria-expanded', 'false'); button.setAttribute('aria-labelledby', labelId);
+    const main = document.createElement('span'); main.className = 'omp-select-btn-main'; const icon = document.createElement('span'); icon.className = 'listbox-model-icon'; icon.setAttribute('aria-hidden', 'true'); icon.textContent = '✦';
+    const name = document.createElement('span'); name.className = `omp-selected-model-name${mono ? ' font-mono' : ''}`; const badge = document.createElement('span'); badge.className = 'listbox-model-badge'; badge.textContent = 'Mặc định'; main.append(icon, name, badge);
+    const chevron = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); chevron.classList.add('omp-select-chevron'); chevron.setAttribute('width', '12'); chevron.setAttribute('height', '12'); chevron.setAttribute('viewBox', '0 0 24 24'); chevron.setAttribute('fill', 'none'); chevron.setAttribute('stroke', 'currentColor'); chevron.setAttribute('stroke-width', '2.2'); chevron.setAttribute('stroke-linecap', 'round'); chevron.setAttribute('stroke-linejoin', 'round'); chevron.setAttribute('aria-hidden', 'true'); const chevronPath = document.createElementNS('http://www.w3.org/2000/svg', 'polyline'); chevronPath.setAttribute('points', '6 9 12 15 18 9'); chevron.append(chevronPath); button.append(main, chevron);
+    const menu = document.createElement('div'); menu.className = 'omp-model-dropdown-menu omp-model-listbox'; menu.id = `${id}Listbox`; menu.setAttribute('role', 'listbox'); menu.setAttribute('aria-labelledby', labelId);
+    button.setAttribute('aria-controls', menu.id); button.addEventListener('click', (event) => { event.stopPropagation(); const open = menu.classList.contains('open'); closeModelListboxes(); if (!open) { menu.classList.add('open'); button.classList.add('is-open'); button.setAttribute('aria-expanded', 'true'); } });
+    wrap.append(button, menu); updateModelListbox(button, models, selectedValue, onSelect, disabled, mono); return wrap;
+  }
   function syncPlanYoloModelControl() {
     const select = $('modesPlanYoloModelSelect'); if (!select) return;
-    const models = [...new Map((state.models.length ? state.models : state.capabilities?.models || []).filter((item) => item?.id).map((item) => [item.id, item])).values()];
+    const models = ompModels();
     const selected = models.find((item) => item.id === state.planYoloModel) || models.find((item) => item.id === state.activeModel) || models[0];
-    if (!selected) { select.replaceChildren(new Option('Chưa có model OMP khả dụng', '')); select.disabled = true; return; }
+    if (!selected) { updateModelListbox(select, [], '', setPlanYoloModel, true); return; }
     if (state.planYoloModel !== selected.id) state.planYoloModel = selected.id;
-    select.replaceChildren(...models.map((item) => new Option(item.name || item.id, item.id, false, item.id === selected.id)));
-    select.disabled = false;
+    updateModelListbox(select, models, selected.id, setPlanYoloModel);
   }
   function setPlanYoloModel(value, notifyUser = true) {
     if (!value) return;
@@ -3138,11 +3452,17 @@
   }
   function renderOmpTools() {
     const tools = $('toolsContentArea'); const allTools = state.capabilities?.tools || []; const catalog = allTools.filter((item) => item.status === 'supported' && item.canToggle); if (!tools) return; tools.replaceChildren();
+    const metadata = state.capabilities?.catalog || {}; const statuses = { supported: 'Tắt' };
+    const version = $('ompToolsVersion'); if (version) version.textContent = `OMP ${text(metadata.audit?.ompVersion || 'chưa kiểm tra').replace(/^omp\//i, '')}`;
+    const count = $('ompToolsCountLabel'); if (count) count.textContent = `${metadata.counts?.supported || 0} TOOL DÙNG ĐƯỢC`;
+    const sync = $('btnSyncOmpTools');
+    if (sync) {
+      sync.disabled = state.toolsUpdating; sync.classList.toggle('spinning', state.toolsUpdating); sync.setAttribute('aria-label', state.toolsUpdating ? 'Đang đồng bộ OMP' : 'Đồng bộ OMP');
+      const label = $('btnSyncOmpToolsLabel'); if (label) label.textContent = state.toolsUpdating ? 'Đang đồng bộ OMP…' : 'Đồng bộ OMP';
+      if (sync.dataset.bound !== 'true') { sync.dataset.bound = 'true'; sync.addEventListener('click', () => void syncOmpCatalog()); }
+    }
     if (!allTools.length) { tools.append(emptyNode('OMP chưa công bố capability')); return; }
     tools.setAttribute('aria-label', 'Công cụ OMP. Gửi thêm order giữ nguyên trạng thái; chat mới dùng lựa chọn hiện tại; đổi toggle áp dụng từ lượt kế tiếp.');
-    const metadata = state.capabilities?.catalog || {}; const statuses = { supported: 'Tắt' };
-    const summary = document.createElement('div'); summary.className = 'tool-group-label'; summary.textContent = `OMP ${text(metadata.audit?.ompVersion || 'chưa kiểm tra').replace(/^omp\//i, '')} · ${metadata.counts?.supported || 0} tool dùng được`;
-    const sync = document.createElement('button'); sync.type = 'button'; sync.className = 'tool-sync-button'; sync.textContent = state.toolsUpdating ? 'Đang đồng bộ…' : 'Đồng bộ OMP'; sync.disabled = state.toolsUpdating; sync.setAttribute('aria-label', sync.textContent); sync.addEventListener('click', () => void syncOmpCatalog()); tools.append(summary, sync);
     const available = catalog.length; const toolsTab = $('drawerTabToolsBtn'); const badge = toolsTab?.querySelector('.drawer-tab-badge'); if (badge) badge.textContent = String(available); if (toolsTab) toolsTab.setAttribute('aria-label', `Công cụ OMP: ${available} tool khả dụng`);
     if (!catalog.length) { tools.append(emptyNode('Không có công cụ OMP dùng được; hãy đồng bộ lại.')); return; }
     const listedGroups = metadata.groups || []; const groupIds = new Set(listedGroups.map((item) => item.id)); const groups = listedGroups.map((group) => [group.label, catalog.filter((item) => item.group === group.id)]);
@@ -3171,7 +3491,7 @@
   function modeInfo(name, description, enabled) {
     const left = document.createElement('div'); left.className = 'tool-item-left'; const icon = document.createElement('div'); icon.className = 'tool-icon-avatar'; icon.setAttribute('aria-hidden', 'true'); icon.textContent = name === 'Advisor' ? '✦' : '◈'; const info = document.createElement('div'); info.className = 'tool-item-info'; const line = document.createElement('div'); line.className = 'tool-item-name-wrap'; const title = document.createElement('span'); title.className = 'tool-item-name'; title.textContent = name; const status = document.createElement('span'); status.className = `tool-item-status-tag${enabled ? ' tag-active' : ''}`; status.textContent = enabled ? 'Bật' : 'Tắt'; const detail = document.createElement('div'); detail.className = 'tool-item-desc'; detail.textContent = description; line.append(title, status); info.append(line, detail); left.append(icon, info); return left;
   }
-  function modeField(label, control) { const field = document.createElement('div'); field.className = 'mode-field'; const caption = document.createElement('label'); caption.htmlFor = control.id; caption.textContent = label; field.append(caption, control); return field; }
+  function modeField(label, control, id = control.id) { const field = document.createElement('div'); field.className = 'mode-field'; const caption = document.createElement('label'); caption.id = `${id}Label`; caption.htmlFor = id; caption.textContent = label; field.append(caption, control); return field; }
   function renderOmpModes() {
     const host = $('modesContentArea'); if (!host) return; host.replaceChildren(); const modes = state.capabilities?.sessionModes || []; const plan = modes.find((item) => item.id === 'plan-yolo'); const advisorMode = modes.find((item) => item.id === 'advisor'); const supported = [plan, advisorMode].filter((item) => item?.status === 'supported'); const badge = $('drawerTabModesBtn')?.querySelector('.drawer-tab-badge'); if (badge) badge.textContent = String(supported.length);
     if (!modes.length) { host.append(emptyNode('OMP chưa công bố chế độ runtime.')); return; }
@@ -3179,21 +3499,24 @@
     const section = document.createElement('section'); section.className = 'tool-section-group'; const heading = document.createElement('div'); heading.className = 'tool-group-label'; heading.textContent = 'CHẾ ĐỘ ÁP DỤNG CHO CHAT MỚI'; section.append(heading);
     if (plan?.status === 'supported') {
       const card = document.createElement('div'); card.className = 'mode-card'; const head = document.createElement('div'); head.className = 'mode-card-head'; head.append(modeInfo('Plan YOLO', 'Bắt đầu chỉ đọc, tự duyệt plan ở resolve đầu rồi chuyển sang model thực thi.', state.planYolo), modeToggle('modesPlanYoloToggle', state.planYolo, state.planYolo ? 'Tắt Plan YOLO' : 'Bật Plan YOLO', () => { togglePlanYolo(); renderOmpModes(); }));
-      const select = document.createElement('select'); select.id = 'modesPlanYoloModelSelect'; select.disabled = true; select.append(new Option('Đang tải model từ OMP…', '')); select.addEventListener('change', () => setPlanYoloModel(select.value)); card.append(head, modeField('MODEL MẶC ĐỊNH PLAN YOLO', select)); section.append(card); syncPlanYoloModelControl();
+      const models = ompModels(); const selected = models.find((item) => item.id === state.planYoloModel) || models.find((item) => item.id === state.activeModel) || models[0];
+      const picker = createModelListbox('modesPlanYoloModelSelect', 'modesPlanYoloModelSelectLabel', models, selected?.id, (value) => setPlanYoloModel(value), !models.length);
+      card.append(head, modeField('MODEL MẶC ĐỊNH PLAN YOLO', picker, 'modesPlanYoloModelSelect')); section.append(card);
     }
     if (advisorMode?.status === 'supported') {
       const card = document.createElement('div'); card.className = 'mode-card'; const head = document.createElement('div'); head.className = 'mode-card-head'; head.append(modeInfo('Advisor', 'Model thứ hai review thụ động mỗi lượt và chèn note khi cần; có thể tăng token/quota.', state.advisor), modeToggle('modesAdvisorToggle', state.advisor, state.advisor ? 'Tắt Advisor' : 'Bật Advisor', () => { state.advisor = !state.advisor; renderOmpModes(); notify(`Advisor ${state.advisor ? 'đã bật' : 'đã tắt'}; áp dụng cho chat mới.`); }));
       const controls = document.createElement('div'); controls.className = 'mode-card-controls'; const config = state.advisorConfig; const disabled = !state.advisor || state.advisorConfigLoading || state.advisorConfigSaving;
       if (!config) { const loading = document.createElement('div'); loading.className = 'tool-item-desc'; loading.textContent = state.advisorConfigLoading ? 'Đang đọc tuning Advisor từ OMP…' : 'Chưa đọc được tuning Advisor.'; controls.append(loading); }
       else {
-        const input = document.createElement('input'); input.id = 'advisorModelInput'; input.value = config.model; input.disabled = disabled; input.maxLength = 200;
+        let advisorModel = config.model; const advisorModels = [...new Map([{ id: 'google-antigravity/gemini-3.8-flash:high' }, { id: 'google-antigravity/gemini-2.5-pro:high' }, { id: 'anthropic/claude-3-5-sonnet:20241022' }, { id: 'openai/gpt-4o-2024-11-20' }, { id: 'honpi/neural-flash-3.8:high' }, { id: config.model }].map((model) => [model.id, model])).values()];
+        const input = createModelListbox('advisorModelInput', 'advisorModelInputLabel', advisorModels, advisorModel, (value) => { advisorModel = value; }, disabled, true);
         const tier = document.createElement('select'); tier.id = 'advisorTierSelect'; ['inherit', 'none', 'auto', 'default', 'flex', 'scale', 'priority'].forEach((value) => tier.append(new Option(value, value, false, value === config.tier))); tier.disabled = disabled;
         const backlog = document.createElement('select'); backlog.id = 'advisorBacklogSelect'; [['off', 'Tắt'], ['1', '1 lượt'], ['3', '3 lượt'], ['5', '5 lượt']].forEach(([value, label]) => backlog.append(new Option(label, value, false, value === config.syncBacklog))); backlog.disabled = disabled;
         const immune = document.createElement('select'); immune.id = 'advisorImmuneSelect'; [0, 1, 2, 3, 4, 5].forEach((value) => immune.append(new Option(`${value} lượt`, String(value), false, value === config.immuneTurns))); immune.disabled = disabled;
         const notes = document.createElement('select'); notes.id = 'advisorNotesSelect'; [1, 2, 3, 4, 5].forEach((value) => notes.append(new Option(`${value} note`, String(value), false, value === config.maxNotesPerUpdate))); notes.disabled = disabled;
         const evict = modeToggle('advisorEvictToggle', config.evictStaleResults, config.evictStaleResults ? 'Giữ dọn note cũ' : 'Tắt dọn note cũ', () => { const value = evict.dataset.value !== 'true'; evict.classList.toggle('on', value); evict.setAttribute('aria-checked', String(value)); evict.dataset.value = String(value); }); evict.disabled = disabled; evict.dataset.value = String(config.evictStaleResults);
-        controls.append(modeField('MODEL ADVISOR', input), modeField('SERVICE TIER', tier), modeField('ĐỒNG BỘ BACKLOG', backlog), modeField('IMMUNE TURNS', immune), modeField('MAX NOTES / UPDATE', notes), modeField('DỌN KẾT QUẢ CŨ', evict));
-        const save = document.createElement('button'); save.type = 'button'; save.className = 'mode-save-button'; save.disabled = disabled; save.textContent = state.advisorConfigSaving ? 'Đang lưu vào OMP…' : 'Lưu tuning Advisor vào OMP'; save.addEventListener('click', () => saveAdvisorConfig({ model: input.value, tier: tier.value, syncBacklog: backlog.value, immuneTurns: Number(immune.value), maxNotesPerUpdate: Number(notes.value), evictStaleResults: evict.dataset.value === 'true' })); controls.append(save);
+        controls.append(modeField('MODEL ADVISOR', input, 'advisorModelInput'), modeField('SERVICE TIER', tier), modeField('ĐỒNG BỘ BACKLOG', backlog), modeField('IMMUNE TURNS', immune), modeField('MAX NOTES / UPDATE', notes), modeField('DỌN KẾT QUẢ CŨ', evict));
+        const save = document.createElement('button'); save.type = 'button'; save.className = 'mode-save-button'; save.disabled = disabled; save.textContent = state.advisorConfigSaving ? 'Đang lưu vào OMP…' : 'Lưu tuning Advisor vào OMP'; save.addEventListener('click', () => saveAdvisorConfig({ model: advisorModel, tier: tier.value, syncBacklog: backlog.value, immuneTurns: Number(immune.value), maxNotesPerUpdate: Number(notes.value), evictStaleResults: evict.dataset.value === 'true' })); controls.append(save);
       }
       card.append(head, controls); section.append(card);
     }
@@ -3206,15 +3529,15 @@
     const previous = [...state.selectedTools]; const next = previous.filter((id) => id !== toolId); if (enabled) next.push(toolId);
     if (!next.length) { notify('OMP cần ít nhất một công cụ đang bật.', true); renderOmpTools(); return; }
     if (!supported.has(toolId)) { notify('Công cụ này chưa khả dụng trong OMP.', true); renderOmpTools(); return; }
-    state.selectedTools = [...new Set(next)]; saveSelectedTools(); state.toolsUpdating = true; renderOmpTools();
+    state.selectedTools = [...new Set(next)]; saveSelectedTools(); state.toolsUpdating = true; syncCapabilityControls(); renderOmpTools();
     const guard = sessionGuard();
-    if (!guard.sessionId) { state.toolsUpdating = false; renderOmpTools(); prewarmDraftWorker(); notify('Đã lưu cho session mới; gửi thêm order sẽ giữ nguyên danh sách tool.'); return; }
+    if (!guard.sessionId) { state.toolsUpdating = false; syncCapabilityControls(); renderOmpTools(); prewarmDraftWorker(); notify('Đã lưu cho session mới; gửi thêm order sẽ giữ nguyên danh sách tool.'); return; }
     try {
       await readJson(`${API}/sessions/${encodeURIComponent(guard.sessionId)}/action`, { method: 'POST', body: JSON.stringify({ action: 'tools', tools: state.selectedTools }) });
       if (isCurrentSession(guard)) notify('Đã cập nhật công cụ OMP cho phiên; áp dụng từ lượt kế tiếp.');
     } catch (error) {
-      if (isCurrentSession(guard)) { state.selectedTools = previous; saveSelectedTools(); notify(`Không cập nhật được công cụ OMP: ${error.message}`, true); }
-    } finally { state.toolsUpdating = false; renderOmpTools(); }
+      if (isCurrentSession(guard)) { state.selectedTools = previous; saveSelectedTools(); syncCapabilityControls(); notify(`Không cập nhật được công cụ OMP: ${error.message}`, true); }
+    } finally { state.toolsUpdating = false; syncCapabilityControls(); renderOmpTools(); }
   }
   async function syncOmpCatalog() {
     if (state.toolsUpdating) return; state.toolsUpdating = true; renderOmpTools();
@@ -3409,15 +3732,16 @@
   }
   function syncBrowserPill() {
     const toggle = $('egoBrowserToggle'); if (!toggle) return;
+    const browser = state.capabilities?.browsers?.find((item) => item.id === 'ego-browser');
     const mode = state.capabilities?.browsers?.find((item) => item.id === state.browserMode);
-    const enabled = state.browserMode === 'ego-browser' && Boolean(mode && mode.status !== 'unavailable');
-    const modeLabel = mode?.label || 'Ego Browser';
+    const enabled = state.browserMode === 'ego-browser' && Boolean(mode && mode.status === 'supported');
+    const modeLabel = browser?.label || 'Ego Browser';
     toggle.classList.toggle('active', enabled);
     const label = toggle.querySelector('span'); if (label) label.textContent = enabled ? modeLabel : 'Ego Browser · Tắt';
     toggle.title = enabled
       ? 'Đang bật · Gõ order trong ô chat để OMP gọi /skill:ego-browser'
       : 'Bật Ego Browser khi order cần web';
-    toggle.setAttribute('aria-label', toggle.title); toggle.setAttribute('aria-pressed', String(enabled)); toggle.hidden = false; toggle.removeAttribute('aria-hidden');
+    toggle.setAttribute('aria-label', toggle.title); toggle.setAttribute('aria-pressed', String(enabled)); setControlVisible(toggle, browser?.status === 'supported');
   }
   function syncPlanYoloPill() {
     const mode = state.capabilities?.sessionModes?.find((item) => item.id === 'plan-yolo');
@@ -3432,6 +3756,102 @@
     if (!state.planYolo && !(state.planYoloModel || state.activeModel)) { notify('Chọn model Plan YOLO trước khi bật.', true); return; }
     state.planYolo = !state.planYolo; syncPlanYoloPill();
     notify(`Plan YOLO ${state.planYolo ? 'đã bật' : 'đã tắt'}; chỉ áp dụng khi tạo chat mới.`);
+  }
+  function setControlVisible(node, visible) {
+    if (!node) return;
+    node.hidden = !visible;
+    if (visible) { node.removeAttribute('aria-hidden'); node.style.removeProperty('display'); }
+    else { node.setAttribute('aria-hidden', 'true'); node.style.setProperty('display', 'none', 'important'); }
+  }
+  const COMPOSER_TOOL_IDS = { 'Chạy mã Python': 'eval', 'Tìm kiếm Web': 'web_search' };
+  function supportedTool(id) { return (state.capabilities?.tools || []).some((tool) => tool.id === id && tool.canToggle === true && tool.status === 'supported'); }
+  function syncCapabilityControls() {
+    const modes = state.capabilities?.sessionModes || [];
+    const browsers = state.capabilities?.browsers || [];
+    document.querySelectorAll('.quick-card').forEach((card) => {
+      const action = card.dataset.action;
+      const available = action === 'plan-mode'
+        ? modes.some((mode) => mode.id === 'plan-yolo' && mode.status === 'supported')
+        : action === 'ego-browser'
+          ? browsers.some((mode) => mode.id === 'ego-browser' && mode.status === 'supported')
+          : card.dataset.requiredTool ? supportedTool(card.dataset.requiredTool) : true;
+      setControlVisible(card, available);
+    });
+    document.querySelectorAll('.plus-tool-action-item').forEach((item) => {
+      const id = COMPOSER_TOOL_IDS[item.dataset.tool];
+      item.dataset.ompToolId = id || '';
+      setControlVisible(item, Boolean(id && supportedTool(id)));
+    });
+    document.querySelectorAll('.add-tag-item[data-tag-name]').forEach((item) => {
+      const name = item.dataset.tagName;
+      const id = COMPOSER_TOOL_IDS[name];
+      const available = id ? supportedTool(id)
+        : name === 'Ego Browser' ? browsers.some((mode) => mode.id === 'ego-browser' && mode.status === 'supported')
+          : name === 'Toàn quyền tiếp cận';
+      setControlVisible(item, available);
+      const check = item.querySelector('.add-tag-check');
+      if (check && id) check.textContent = state.selectedTools.includes(id) ? '✓' : '';
+      if (check && name === 'Ego Browser') check.textContent = state.browserMode === 'ego-browser' ? '✓' : '';
+    });
+    const tagPopover = $('addTagPopover');
+    if (tagPopover) {
+      let heading = null;
+      tagPopover.querySelectorAll(':scope > .add-tag-group-title, :scope > .add-tag-item').forEach((node) => {
+        if (node.classList.contains('add-tag-group-title')) { heading = node; setControlVisible(heading, false); }
+        else if (heading && !node.hidden) setControlVisible(heading, true);
+      });
+    }
+    document.querySelectorAll('[data-production-unsupported]').forEach((node) => setControlVisible(node.closest('button, .prompt-menu-item, .settings-row') || node, false));
+  }
+  function bindQuickStartCards() {
+    document.addEventListener('click', (event) => {
+      const card = event.target.closest('.quick-card');
+      if (!card || card.hidden) return;
+      event.preventDefault(); event.stopImmediatePropagation();
+      const action = card.dataset.action;
+      if (action === 'new-chat') { beginLocalDraft(); $('chatInput')?.focus(); return; }
+      if (action === 'plan-mode') {
+        if (!(state.capabilities?.sessionModes || []).some((mode) => mode.id === 'plan-yolo' && mode.status === 'supported')) return;
+        if (!state.planYolo) togglePlanYolo();
+        return;
+      }
+      if (action === 'ego-browser') {
+        if (!(state.capabilities?.browsers || []).some((mode) => mode.id === 'ego-browser' && mode.status === 'supported')) return;
+        setBrowserMode('ego-browser'); syncBrowserPill();
+      } else if (card.dataset.requiredTool && !supportedTool(card.dataset.requiredTool)) return;
+      const input = $('chatInput');
+      const prompt = text(card.dataset.prompt).trim();
+      if (!input || !prompt) return;
+      input.value = prompt; input.dispatchEvent(new Event('input', { bubbles: true })); input.focus();
+      notify('Đã đưa prompt vào khung nhập; kiểm tra rồi gửi.');
+    }, true);
+  }
+  function bindCapabilityComposerTags() {
+    document.addEventListener('click', (event) => {
+      const item = event.target.closest('.add-tag-item[data-tag-name],.plus-tool-action-item');
+      if (!item || item.hidden) return;
+      const name = item.dataset.tagName || item.dataset.tool;
+      const toolId = item.dataset.ompToolId || COMPOSER_TOOL_IDS[name];
+      if (toolId) {
+        event.preventDefault(); event.stopImmediatePropagation();
+        if (supportedTool(toolId)) void setOmpTools(toolId, !state.selectedTools.includes(toolId));
+        return;
+      }
+      if (name === 'Ego Browser') {
+        event.preventDefault(); event.stopImmediatePropagation();
+        if (!(state.capabilities?.browsers || []).some((mode) => mode.id === 'ego-browser' && mode.status === 'supported')) return;
+        setBrowserMode(state.browserMode === 'ego-browser' ? 'none' : 'ego-browser');
+        if (!state.activeId) prewarmDraftWorker();
+        syncBrowserPill(); syncCapabilityControls();
+        notify(state.browserMode === 'ego-browser' ? 'Ego Browser đã bật cho chat mới.' : 'Ego Browser đã tắt.');
+        return;
+      }
+      if (name === 'Toàn quyền tiếp cận') {
+        event.preventDefault(); event.stopImmediatePropagation();
+        const permission = $('settingsPermissionSelect');
+        if (permission) { permission.value = 'full_access'; permission.dispatchEvent(new Event('change', { bubbles: true })); }
+      }
+    }, true);
   }
   async function loadCapabilities() {
     try {
@@ -3451,8 +3871,8 @@
       const supported = selectableTools();
       state.selectedTools = restoreSelectedTools(supported);
       saveSelectedTools();
-      renderOmpTools(); renderOmpModes(); ensureOmpSettings(); syncBrowserPill(); syncPlanYoloPill();
-    } catch (error) { state.capabilities = {}; renderOmpModes(); syncBrowserPill(); syncPlanYoloPill(); notify(`OMP capability lỗi: ${error.message}`, true); }
+      syncCapabilityControls(); renderOmpTools(); renderOmpModes(); ensureOmpSettings(); syncBrowserPill(); syncPlanYoloPill();
+    } catch (error) { state.capabilities = {}; syncCapabilityControls(); renderOmpModes(); syncBrowserPill(); syncPlanYoloPill(); notify(`OMP capability lỗi: ${error.message}`, true); }
   }
   function bindDialogAccessibility() {
     const sync = (dialog) => {
@@ -3489,7 +3909,7 @@
 
   function ensureToolsRail() {
     const drawer = $('toolsDrawer'); if (!drawer || $('toolsDrawerRail')) return;
-    const style = document.createElement('style'); style.id = 'production-tools-rail-style'; style.textContent = `.tools-drawer-rail{position:fixed;top:58px;right:0;bottom:0;width:16px;display:flex;align-items:center;justify-content:center;background:color-mix(in oklab,var(--surface),transparent 8%);border-left:1px solid var(--border);color:var(--muted);cursor:pointer;z-index:25;transition:background var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard)}.tools-drawer-rail::before{content:"";width:3.5px;height:84px;border-radius:var(--radius-pill);background:color-mix(in oklab,var(--border),var(--fg) 42%);transition:background var(--motion-fast) var(--ease-standard),transform var(--motion-fast) var(--ease-standard)}.tools-drawer-rail:hover{background:var(--surface-hover);color:var(--fg)}.tools-drawer-rail:hover::before{background:var(--accent);transform:scaleX(1.2)}.tools-drawer-rail[hidden]{display:none}@media(max-width:920px){.tools-drawer-rail{top:58px;width:14px}#mobileMenuBtn{display:inline-flex!important}.expand-sidebar-btn{display:none!important}}`;
+    const style = document.createElement('style'); style.id = 'production-tools-rail-style'; style.textContent = `.tools-drawer-rail{position:fixed;top:58px;right:0;bottom:0;width:16px;display:flex;align-items:center;justify-content:center;background:color-mix(in oklab,var(--surface),transparent 8%);border-left:1px solid var(--border);color:var(--muted);cursor:pointer;z-index:25;transition:background var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard)}.tools-drawer-rail::before{content:"";width:3.5px;height:84px;border-radius:var(--radius-pill);background:color-mix(in oklab,var(--border),var(--fg) 42%);transition:background var(--motion-fast) var(--ease-standard),transform var(--motion-fast) var(--ease-standard)}.tools-drawer-rail:hover{background:var(--surface-hover);color:var(--fg)}.tools-drawer-rail:hover::before{background:var(--accent);transform:scaleX(1.2)}.tools-drawer-rail[hidden]{display:none}@media(max-width:920px){.tools-drawer-rail{top:58px;width:14px}.expand-sidebar-btn{display:none!important}}`;
     document.head.append(style);
     const rail = document.createElement('button'); rail.id = 'toolsDrawerRail'; rail.type = 'button'; rail.className = 'tools-drawer-rail'; rail.title = 'Mở ngăn công cụ bên phải'; rail.setAttribute('aria-label', rail.title);
     rail.addEventListener('click', () => $('toggleToolsBtn')?.click());
@@ -3675,14 +4095,11 @@
       conversation.addEventListener('change', () => { state.conversationDisplay = conversation.value === 'expanded' ? 'expanded' : 'compact'; localStorage.setItem('omp.conversationDisplay', state.conversationDisplay); document.documentElement.dataset.conversationDisplay = state.conversationDisplay; }, true);
     }
     const enter = $('settingsEnterBehaviorSelect');
-    if (enter) { enter.value = 'send'; enter.disabled = true; enter.title = 'Mọi order được gửi ngay lên hàng dispatch OMP'; enter.setAttribute('aria-disabled', 'true'); const note = enter.closest('.settings-row')?.querySelector('.settings-row-subtext'); if (note) note.textContent = 'OMP gửi mọi order ngay; chế độ xếp hàng/chặn chưa khả dụng trong runtime này.'; }
-    const language = $('settingsLanguageSelect');
-    language?.addEventListener('change', (event) => { if (event.target.value !== 'vi') { event.preventDefault(); event.stopImmediatePropagation(); event.target.value = 'vi'; notify('English chưa khả dụng vì OMP dashboard chưa có gói dịch.', true); } }, true);
+    if (enter) { enter.value = 'send'; setControlVisible(enter.closest('.settings-row'), false); }
     ['sfSortNewest', 'sfSortOldest', 'sfSortAlpha'].forEach((id) => $(id)?.addEventListener('click', () => localStorage.setItem('omp.sessionSort', id === 'sfSortAlpha' ? 'alpha' : id === 'sfSortOldest' ? 'oldest' : 'newest'), true));
     ['sfFilterRunning', 'sfFilterUnread', 'sfFilterPinned'].forEach((id) => $(id)?.addEventListener('click', () => { const mode = id === 'sfFilterRunning' ? 'running' : id === 'sfFilterUnread' ? 'unread' : 'pinned'; localStorage.setItem('omp.sessionFilter', localStorage.getItem('omp.sessionFilter') === mode ? 'all' : mode); }, true));
     $('sfActionResetAll')?.addEventListener('click', () => { localStorage.setItem('omp.sessionSort', 'newest'); localStorage.setItem('omp.sessionFilter', 'all'); }, true);
-    const unsupportedSettings = ['settingsTempRange', 'settingsMaxTokensSelect'];
-    unsupportedSettings.forEach((id) => { const node = $(id); if (node) { node.disabled = true; node.title = 'OMP runtime chưa hỗ trợ tham số này qua dashboard'; const note = node.closest('.settings-row')?.querySelector('.settings-row-subtext'); if (note && !note.textContent.includes('Chưa khả dụng')) note.textContent += ' · Chưa khả dụng trong OMP runtime'; } });
+    ['settingsTempRange', 'settingsMaxTokensSelect', 'settingsLanguageSelect'].forEach((id) => setControlVisible($(id)?.closest('.settings-row'), false));
     ensureModelSourceSetting();
     const modelSourceSelect = $('settingsModelSourceSelect');
     if (modelSourceSelect) {
@@ -3695,7 +4112,7 @@
     }
   }
 
-  function unsupported(event) { const target = event.target.closest('[data-production-unsupported],.plus-tool-action-item,#confirmUpgradeBtn,#launchRealBrowserTabBtn,#btnModalApplyDiff,#btnModalRevertFile,#btnApplyAllDiff,#btnUndoCurrentDiff'); if (!target) return; event.preventDefault(); event.stopImmediatePropagation(); notify('Control này chưa có backend production.', true); }
+  function unsupported(event) { const target = event.target.closest('[data-production-unsupported],#confirmUpgradeBtn,#launchRealBrowserTabBtn,#btnModalApplyDiff,#btnModalRevertFile,#btnApplyAllDiff,#btnUndoCurrentDiff'); if (!target) return; event.preventDefault(); event.stopImmediatePropagation(); }
   function bind() {
     if (bound) return;
     bound = true;
@@ -3706,6 +4123,9 @@
     bindProductionSettings();
     bindApprovalMode();
     bindProjectFolderModal();
+    bindQuickStartCards();
+    bindCapabilityComposerTags();
+    syncCapabilityControls();
     ['addWorkspaceBtn', 'addProjectFolderHeaderBtn'].forEach((id) => {
       const node = $(id);
       if (!node) return;
@@ -3757,7 +4177,7 @@
       syncBrowserPill();
       notify(state.browserMode === 'ego-browser' ? 'Ego Browser skill đã bật · Gõ order trong ô chat.' : 'Ego Browser skill đã tắt · Prompt gửi như chat thường.');
     }, true);
-    $('newSessionBtn')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); void createSession(); }, true);
+    $('newSessionBtn')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); beginLocalDraft(); }, true);
     $('promptWorkspaceTrigger')?.addEventListener('click', async (event) => {
       event.preventDefault(); event.stopImmediatePropagation();
       if (state.activeId) return;
