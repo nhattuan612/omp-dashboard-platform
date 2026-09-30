@@ -15,6 +15,7 @@
       const closeModalBtn = document.getElementById('closeModalBtn');
       const confirmUpgradeBtn = document.getElementById('confirmUpgradeBtn');
       const mobileMenuBtn = document.getElementById('mobileMenuBtn');
+      const mobileSidebarCloseBtn = document.getElementById('mobileSidebarCloseBtn');
       const appSidebar = document.getElementById('appSidebar');
 
       let isSpeedMode = false;
@@ -248,17 +249,26 @@
       }
       function toggleDrawer(open) {
         if (!toolsDrawer) return;
-        const isOpen = open !== undefined ? open : toolsDrawer.classList.contains('collapsed');
-        if (isOpen) {
-          toolsDrawer.classList.remove('collapsed');
-          if (toggleToolsBtn) toggleToolsBtn.classList.add('active');
-        } else {
-          toolsDrawer.classList.add('collapsed');
-          if (toggleToolsBtn) toggleToolsBtn.classList.remove('active');
+        const mobile = window.matchMedia('(max-width: 920px)').matches;
+        const currentOpen = mobile ? toolsDrawer.classList.contains('mobile-open') : !toolsDrawer.classList.contains('collapsed');
+        const nextOpen = open !== undefined ? open : !currentOpen;
+        toolsDrawer.classList.toggle('collapsed', !nextOpen);
+        toolsDrawer.classList.toggle('mobile-open', mobile && nextOpen);
+        if (!mobile) toolsDrawer.classList.remove('mobile-open');
+        if (toggleToolsBtn) {
+          toggleToolsBtn.classList.toggle('active', nextOpen);
+          toggleToolsBtn.setAttribute('aria-expanded', String(nextOpen));
         }
       }
       if (toggleToolsBtn) toggleToolsBtn.addEventListener('click', () => toggleDrawer());
       if (closeToolsDrawerBtn) closeToolsDrawerBtn.addEventListener('click', () => toggleDrawer(false));
+      if (toggleToolsBtn && toolsDrawer) {
+        toggleToolsBtn.setAttribute('aria-controls', 'toolsDrawer');
+        const mobile = window.matchMedia('(max-width: 920px)').matches;
+        const initialOpen = mobile ? toolsDrawer.classList.contains('mobile-open') : !toolsDrawer.classList.contains('collapsed');
+        toggleToolsBtn.classList.toggle('active', initialOpen);
+        toggleToolsBtn.setAttribute('aria-expanded', String(initialOpen));
+      }
 
       // ─── Drawer Tab Switching (Công cụ / Tệp tin) ───
       const drawerTabs = document.querySelectorAll('.drawer-tab');
@@ -334,6 +344,26 @@
           if (counterEl) counterEl.textContent = `T ${len} ký tự · ~ ${estTokens} tokens`;
         });
       }
+
+      // Welcome cards use the same real composer path as normal messages.
+      document.addEventListener('click', (event) => {
+        const card = event.target.closest('.quick-card');
+        if (!card || !chatInput) return;
+        const action = card.dataset.action || 'fill-dock';
+        const prompt = card.dataset.prompt || '';
+        if (action === 'new-chat') {
+          event.preventDefault();
+          if (typeof createNewSession === 'function') createNewSession();
+          return;
+        }
+        if (action === 'ego-browser' && typeof toggleEgoBrowser === 'function' && !document.getElementById('egoBrowserToggle')?.classList.contains('active')) toggleEgoBrowser();
+        if (action === 'plan-mode' && !document.getElementById('planYoloToggle')?.classList.contains('active')) document.getElementById('planYoloToggle')?.click();
+        if (!prompt) return;
+        chatInput.value = prompt;
+        chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+        if (action === 'send-now' || action === 'ego-browser' || action === 'plan-mode') document.getElementById('sendBtn')?.click();
+        else chatInput.focus();
+      }, true);
 
       // Activity detail collapsible toggles (Mặc định luôn thu gọn - from image-22 & 25)
       window.toggleActivityDetails = function(headerEl) {
@@ -514,6 +544,10 @@
       const promptPlusBtn = document.getElementById('promptPlusBtn');
       const promptPlusMenu = document.getElementById('promptPlusMenu');
       if (promptPlusBtn && promptPlusMenu) {
+        const closePlusMenu = () => {
+          promptPlusMenu.classList.remove('show');
+          promptPlusBtn.setAttribute('aria-expanded', 'false');
+        };
         const plusSearchInput = document.getElementById('plusMenuSearchInput');
         const plusEmptyState = document.getElementById('plusMenuEmpty');
 
@@ -532,6 +566,7 @@
         }
 
         promptPlusBtn.addEventListener('click', (e) => {
+          if (promptPlusBtn.dataset.productionBound === 'true') return;
           e.stopPropagation();
           const willShow = !promptPlusMenu.classList.contains('show');
           promptPlusMenu.classList.toggle('show', willShow);
@@ -576,7 +611,7 @@
 
           plusSearchInput.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
-              promptPlusMenu.classList.remove('show');
+              closePlusMenu();
             }
           });
         }
@@ -585,7 +620,7 @@
         const plusAttachFile = document.getElementById('plusAttachFile');
         if (plusAttachFile) {
           plusAttachFile.addEventListener('click', () => {
-            promptPlusMenu.classList.remove('show');
+            closePlusMenu();
             toggleTagByName('contact-page.html', 'emerald', 'file', false);
             showToast('Đã chọn tệp đính kèm: contact-page.html');
           });
@@ -594,7 +629,7 @@
         const plusAttachOpenDesign = document.getElementById('plusAttachOpenDesign');
         if (plusAttachOpenDesign) {
           plusAttachOpenDesign.addEventListener('click', () => {
-            promptPlusMenu.classList.remove('show');
+            closePlusMenu();
             toggleTagByName('Open Design Canvas', 'cyan', 'image', false);
             showToast('Đã đính kèm ảnh chụp bản vẽ Open Design vào ngữ cảnh');
           });
@@ -603,7 +638,7 @@
         const plusWorkInProject = document.getElementById('plusWorkInProject');
         if (plusWorkInProject) {
           plusWorkInProject.addEventListener('click', () => {
-            promptPlusMenu.classList.remove('show');
+            closePlusMenu();
             const wsDrop = document.getElementById('promptWsDropdown');
             if (wsDrop) wsDrop.classList.add('show');
             showToast('Chọn dự án làm việc cho cuộc trò chuyện mới');
@@ -613,7 +648,7 @@
         const plusSetGoal = document.getElementById('plusSetGoal');
         if (plusSetGoal) {
           plusSetGoal.addEventListener('click', () => {
-            promptPlusMenu.classList.remove('show');
+            closePlusMenu();
             toggleTagByName('Mục tiêu dự án', 'amber', 'target', false);
             showToast('Đã đặt mục tiêu để tiếp tục theo đuổi');
           });
@@ -622,7 +657,7 @@
         const plusPlanningMode = document.getElementById('plusPlanningMode');
         if (plusPlanningMode) {
           plusPlanningMode.addEventListener('click', () => {
-            promptPlusMenu.classList.remove('show');
+            closePlusMenu();
             toggleTagByName('Chế độ lập kế hoạch', 'violet', 'lightbulb', false);
             showToast('Đã bật chế độ lập kế hoạch (Planning Mode)');
           });
@@ -631,7 +666,7 @@
         const plusRecordSkill = document.getElementById('plusRecordSkill');
         if (plusRecordSkill) {
           plusRecordSkill.addEventListener('click', () => {
-            promptPlusMenu.classList.remove('show');
+            closePlusMenu();
             toggleTagByName('Ghi kỹ năng', 'cyan', 'disc', false);
             showToast('Đã kích hoạt chế độ Ghi lại một kỹ năng mới');
           });
@@ -640,7 +675,7 @@
         const plusDrawSketch = document.getElementById('plusDrawSketch');
         if (plusDrawSketch) {
           plusDrawSketch.addEventListener('click', () => {
-            promptPlusMenu.classList.remove('show');
+            closePlusMenu();
             showToast('Mở bảng vẽ phác thảo ý tưởng (Sketch Canvas)');
           });
         }
@@ -648,7 +683,7 @@
         // Section: Công cụ thực thi (Tools)
         promptPlusMenu.querySelectorAll('.plus-tool-action-item').forEach(item => {
           item.addEventListener('click', () => {
-            promptPlusMenu.classList.remove('show');
+            closePlusMenu();
             const toolName = item.getAttribute('data-tool');
             if (toolName && typeof toggleTool === 'function') {
               toggleTool(toolName);
@@ -659,7 +694,7 @@
         // Section 2: Plugins
         promptPlusMenu.querySelectorAll('.plus-plugin-item').forEach(item => {
           item.addEventListener('click', () => {
-            promptPlusMenu.classList.remove('show');
+            closePlusMenu();
             const pluginName = item.getAttribute('data-plugin') || 'Plugin';
             const cat = item.getAttribute('data-category') || 'blue';
             const icon = item.getAttribute('data-icon') || 'code';
@@ -671,7 +706,7 @@
         // Section 3: Ứng dụng
         promptPlusMenu.querySelectorAll('.plus-app-item').forEach(item => {
           item.addEventListener('click', () => {
-            promptPlusMenu.classList.remove('show');
+            closePlusMenu();
             const appName = item.getAttribute('data-app') || 'Ứng dụng';
             const cat = item.getAttribute('data-category') || 'emerald';
             const icon = item.getAttribute('data-icon') || 'shield';
@@ -683,7 +718,7 @@
         // Section 4: Hội thoại đã lưu
         promptPlusMenu.querySelectorAll('.plus-chat-item').forEach(item => {
           item.addEventListener('click', () => {
-            promptPlusMenu.classList.remove('show');
+            closePlusMenu();
             const chatName = item.getAttribute('data-chat') || 'Hội thoại';
             if (chatInput) {
               const prefix = `[Tham chiếu hội thoại: ${chatName}] `;
@@ -837,13 +872,22 @@
       setPermissionMode(savedPermMode, false);
 
       if (fullAccessBadge && approvalPopover) {
-        fullAccessBadge.addEventListener('click', (e) => {
-          e.stopPropagation();
+        const toggleApprovalPopover = () => {
           const willShow = !approvalPopover.classList.contains('show');
           closePromptPopovers(approvalPopover);
           approvalPopover.classList.toggle('show', willShow);
           fullAccessBadge.classList.toggle('active-popover', willShow);
           fullAccessBadge.setAttribute('aria-expanded', willShow ? 'true' : 'false');
+        };
+        fullAccessBadge.addEventListener('click', (e) => {
+          e.stopPropagation();
+          toggleApprovalPopover();
+        });
+        fullAccessBadge.addEventListener('keydown', (e) => {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          e.preventDefault();
+          e.stopPropagation();
+          toggleApprovalPopover();
         });
 
         const optionItems = approvalPopover.querySelectorAll('.approval-option-item');
@@ -962,13 +1006,25 @@
       const reasoningActiveName = document.getElementById('reasoningActiveName');
       const openExecSettingsFromPopover = document.getElementById('openExecSettingsFromPopover');
 
+      const setModelPopoverOpen = (open) => {
+        modelReasoningPopover.classList.toggle('show', open);
+        modelReasoningPopover.setAttribute('aria-hidden', String(!open));
+        promptModelIconBtn.classList.toggle('active', open);
+        promptModelIconBtn.setAttribute('aria-expanded', String(open));
+      };
+
       if (promptModelIconBtn && modelReasoningPopover) {
         promptModelIconBtn.addEventListener('click', (e) => {
           e.stopPropagation();
           const willShow = !modelReasoningPopover.classList.contains('show');
           closePromptPopovers(modelReasoningPopover);
-          modelReasoningPopover.classList.toggle('show', willShow);
-          promptModelIconBtn.classList.toggle('active', willShow);
+          setModelPopoverOpen(willShow);
+        });
+        document.addEventListener('keydown', (e) => {
+          if (e.key !== 'Escape' || !modelReasoningPopover.classList.contains('show')) return;
+          e.preventDefault();
+          setModelPopoverOpen(false);
+          promptModelIconBtn.focus();
         });
       }
 
@@ -976,8 +1032,7 @@
         modelCliOption.addEventListener('click', () => {
           promptModelSelect.value = 'omp-rpc';
           promptModelSelect.dispatchEvent(new Event('change'));
-          if (modelReasoningPopover) modelReasoningPopover.classList.remove('show');
-          if (promptModelIconBtn) promptModelIconBtn.classList.remove('active');
+          setModelPopoverOpen(false);
         });
       }
 
@@ -1002,8 +1057,7 @@
 
       if (openExecSettingsFromPopover) {
         openExecSettingsFromPopover.addEventListener('click', () => {
-          if (modelReasoningPopover) modelReasoningPopover.classList.remove('show');
-          if (promptModelIconBtn) promptModelIconBtn.classList.remove('active');
+          setModelPopoverOpen(false);
           if (typeof openSettingsModal === 'function') {
             openSettingsModal('models');
           } else {
@@ -1049,8 +1103,7 @@
         const addTagPop = document.getElementById('addTagPopover');
         if (addTagPop && addTagPop !== except) addTagPop.classList.remove('show');
         if (modelReasoningPopover && modelReasoningPopover !== except) {
-          modelReasoningPopover.classList.remove('show');
-          if (promptModelIconBtn) promptModelIconBtn.classList.remove('active');
+          setModelPopoverOpen(false);
         }
         const appPop = document.getElementById('approvalPopover');
         if (appPop && appPop !== except) {
@@ -1068,15 +1121,17 @@
           if (promptWsDropdown) promptWsDropdown.classList.remove('show');
         }
         if (!e.target.closest('#promptPlusBtn') && !e.target.closest('#promptPlusMenu')) {
-          if (promptPlusMenu) promptPlusMenu.classList.remove('show');
+          if (promptPlusMenu) {
+            promptPlusMenu.classList.remove('show');
+            promptPlusBtn?.setAttribute('aria-expanded', 'false');
+          }
         }
         if (!e.target.closest('#addTagTriggerBtn') && !e.target.closest('#addTagPopover')) {
           const addTagPop = document.getElementById('addTagPopover');
           if (addTagPop) addTagPop.classList.remove('show');
         }
         if (!e.target.closest('#promptModelIconBtn') && !e.target.closest('#modelReasoningPopover')) {
-          if (modelReasoningPopover) modelReasoningPopover.classList.remove('show');
-          if (promptModelIconBtn) promptModelIconBtn.classList.remove('active');
+          setModelPopoverOpen(false);
         }
         if (!e.target.closest('#fullAccessBadge') && !e.target.closest('#approvalPopover')) {
           const appPop = document.getElementById('approvalPopover');
@@ -1114,6 +1169,7 @@
           mobileMenuBtn.setAttribute('aria-label', open ? 'Đóng thanh điều hướng' : 'Mở thanh điều hướng');
         });
       }
+      if (mobileSidebarCloseBtn) mobileSidebarCloseBtn.addEventListener('click', () => appSidebar.classList.remove('mobile-open'));
 
       // ─── Left Sidebar Collapse & Expand (from image) ───
       const collapseSidebarBtn = document.getElementById('collapseSidebarBtn');
@@ -2993,16 +3049,20 @@
       document.getElementById('codeDiffReviewModal')?.addEventListener('click', (e) => {
         if (e.target.id === 'codeDiffReviewModal') closeCodeDiffReviewModal();
       });
+      document.getElementById('btnCloseDiffReviewModal')?.addEventListener('click', closeCodeDiffReviewModal);
+      document.getElementById('btnCloseDiffReviewModalFooter')?.addEventListener('click', closeCodeDiffReviewModal);
+      document.getElementById('btnModalRevertFile')?.addEventListener('click', revertCurrentDiffFile);
+      document.getElementById('btnModalApplyDiff')?.addEventListener('click', applyDiffChanges);
 
       // ─── Theme Switcher Logic & Keyboard Shortcut ───
       const themeLightBtn = document.getElementById('themeLightBtn');
       const themeDarkBtn = document.getElementById('themeDarkBtn');
 
-      function applyTheme(theme, notify = false) {
+      function applyTheme(theme, notify = false, persist = true) {
         document.documentElement.setAttribute('data-theme', theme);
-        try {
-          localStorage.setItem('neuratalk-theme', theme);
-        } catch (e) {}
+        if (persist) {
+          try { localStorage.setItem('neuratalk-theme', theme); } catch (e) {}
+        }
 
         if (theme === 'dark') {
           themeDarkBtn.classList.add('active');
@@ -4197,6 +4257,25 @@
       const themeCards = document.querySelectorAll('.appearance-card');
       const sidebarAccentSwatches = document.querySelectorAll('.sidebar-accent-swatch');
       const sidebarAccentCurrentBadge = document.getElementById('sidebarAccentCurrentBadge');
+      const canvasToneCards = document.querySelectorAll('.canvas-tone-card');
+      const canvasToneCurrentBadge = document.getElementById('canvasToneCurrentBadge');
+      const fontFamilyCards = document.querySelectorAll('.font-family-card');
+      const fontFamilyCurrentBadge = document.getElementById('fontFamilyCurrentBadge');
+      const canvasToneNames = {
+        'deep-tech': 'Deep Tech',
+        'obsidian': 'Obsidian',
+        'charcoal': 'Charcoal',
+        'midnight': 'Midnight',
+        'ocean': 'Ocean'
+      };
+      const fontFamilyNames = {
+        'inter': 'Inter',
+        'chatgptstyle': 'Open Sans',
+        'be-vietnam': 'Be Vietnam Pro',
+        'geist': 'Geist',
+        'jetbrains': 'JetBrains Mono',
+        'system': 'System'
+      };
       const accentNamesMap = {
         'neutral': 'Đơn sắc tối giản',
         'cobalt': 'Xanh Cobalt (Hòn π)',
@@ -4213,6 +4292,12 @@
       const settingsLanguageSelect = document.getElementById('settingsLanguageSelect');
       const settingsConvDisplaySelect = document.getElementById('settingsConvDisplaySelect');
       const settingsEnterBehaviorSelect = document.getElementById('settingsEnterBehaviorSelect');
+      const settingsOmpBrowserModeSelect = document.getElementById('settingsOmpBrowserModeSelect');
+      const settingsOmpShareModeSelect = document.getElementById('settingsOmpShareModeSelect');
+      const ompMemoryState = document.getElementById('ompMemoryState');
+      const btnRefreshOmpMemory = document.getElementById('btnRefreshOmpMemory');
+      const settingsAgentRoleSelect = document.getElementById('settingsAgentRoleSelect');
+      const settingsCustomPromptArea = document.getElementById('settingsCustomPromptArea');
 
       // Models tab controls
       const settingsDefaultModelSelect = document.getElementById('settingsDefaultModelSelect');
@@ -4250,22 +4335,26 @@
       }
 
       function switchSettingsTab(tabKey) {
+        const paneSuffix = String(tabKey || '').split('-').map(part => part.charAt(0).toUpperCase() + part.slice(1)).join('');
         settingsNavBtns.forEach(btn => {
           const isActive = btn.getAttribute('data-tab') === tabKey;
           btn.classList.toggle('active', isActive);
           btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
         });
         settingsTabPanes.forEach(pane => {
-          pane.classList.toggle('active', pane.id === `settingsTab${tabKey.charAt(0).toUpperCase() + tabKey.slice(1)}`);
+          pane.classList.toggle('active', pane.id === `settingsTab${paneSuffix}`);
         });
       }
 
       function syncSettingsUIWithCurrentState() {
+        syncOmpSettingsUI();
         // Sync theme cards with current data-theme
-        const currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
+        const savedTheme = localStorage.getItem('neuratalk-theme');
+        const currentTheme = savedTheme === 'system' ? 'system' : (document.documentElement.getAttribute('data-theme') || 'dark');
         themeCards.forEach(card => {
           const val = card.getAttribute('data-theme-val');
           card.classList.toggle('active', val === currentTheme);
+          card.setAttribute('aria-checked', val === currentTheme ? 'true' : 'false');
         });
 
         // Sync font size display
@@ -4294,6 +4383,22 @@
         if (sidebarAccentCurrentBadge) {
           sidebarAccentCurrentBadge.textContent = accentNamesMap[currentSidebarAccent] || 'Đơn sắc tối giản';
         }
+
+        const currentCanvasTone = document.documentElement.getAttribute('data-canvas-tone') || 'deep-tech';
+        canvasToneCards.forEach(card => {
+          const active = card.getAttribute('data-tone') === currentCanvasTone;
+          card.classList.toggle('active', active);
+          card.setAttribute('aria-checked', active ? 'true' : 'false');
+        });
+        if (canvasToneCurrentBadge) canvasToneCurrentBadge.textContent = canvasToneNames[currentCanvasTone] || canvasToneNames['deep-tech'];
+
+        const currentFontFamily = document.documentElement.getAttribute('data-font-family') || 'inter';
+        fontFamilyCards.forEach(card => {
+          const active = card.getAttribute('data-font') === currentFontFamily;
+          card.classList.toggle('active', active);
+          card.setAttribute('aria-checked', active ? 'true' : 'false');
+        });
+        if (fontFamilyCurrentBadge) fontFamilyCurrentBadge.textContent = fontFamilyNames[currentFontFamily] || fontFamilyNames.inter;
 
         // Sync dynamic colorful badges toggle with current data-colorful-badges
         const dynamicBadgesToggle = document.getElementById('settingsDynamicBadgesToggle');
@@ -4334,8 +4439,8 @@
 
           if (val === 'system') {
             const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-            applyTheme(prefersDark ? 'dark' : 'light');
-            localStorage.setItem('neuratalk-theme', 'system');
+            applyTheme(prefersDark ? 'dark' : 'light', false, false);
+            try { localStorage.setItem('neuratalk-theme', 'system'); } catch (_) {}
             showToast('Đã áp dụng giao diện: Theo hệ điều hành');
           } else {
             applyTheme(val);
@@ -4376,6 +4481,162 @@
           if (accentKey) applySidebarAccent(accentKey, true);
         });
       });
+
+      function applyCanvasTone(toneKey, notify = true) {
+        const key = canvasToneNames[toneKey] ? toneKey : 'deep-tech';
+        document.documentElement.setAttribute('data-canvas-tone', key);
+        try { localStorage.setItem('honpi-canvas-tone', key); } catch (_) {}
+        canvasToneCards.forEach(card => {
+          const active = card.getAttribute('data-tone') === key;
+          card.classList.toggle('active', active);
+          card.setAttribute('aria-checked', active ? 'true' : 'false');
+        });
+        if (canvasToneCurrentBadge) canvasToneCurrentBadge.textContent = canvasToneNames[key];
+        if (notify) showToast(`Đã đổi tông màu toàn trang: ${canvasToneNames[key]}`);
+      }
+
+      function applyFontFamily(fontKey, notify = true) {
+        const key = fontFamilyNames[fontKey] ? fontKey : 'inter';
+        document.documentElement.setAttribute('data-font-family', key);
+        try { localStorage.setItem('honpi-font-family', key); } catch (_) {}
+        fontFamilyCards.forEach(card => {
+          const active = card.getAttribute('data-font') === key;
+          card.classList.toggle('active', active);
+          card.setAttribute('aria-checked', active ? 'true' : 'false');
+        });
+        if (fontFamilyCurrentBadge) fontFamilyCurrentBadge.textContent = fontFamilyNames[key];
+        if (notify) showToast(`Đã đổi phông chữ toàn trang: ${fontFamilyNames[key]}`);
+      }
+
+      applyCanvasTone(document.documentElement.getAttribute('data-canvas-tone') || localStorage.getItem('honpi-canvas-tone') || 'deep-tech', false);
+      applyFontFamily(document.documentElement.getAttribute('data-font-family') || localStorage.getItem('honpi-font-family') || 'inter', false);
+      canvasToneCards.forEach(card => card.addEventListener('click', () => applyCanvasTone(card.getAttribute('data-tone'))));
+      fontFamilyCards.forEach(card => card.addEventListener('click', () => applyFontFamily(card.getAttribute('data-font'))));
+
+      function syncOmpSettingsUI() {
+        const browserMode = localStorage.getItem('omp.browserMode') === 'ego-browser' ? 'on' : 'off';
+        if (settingsOmpBrowserModeSelect) settingsOmpBrowserModeSelect.value = browserMode;
+        if (settingsOmpShareModeSelect) settingsOmpShareModeSelect.value = localStorage.getItem('omp.shareMode') || 'encrypted';
+        if (settingsAgentRoleSelect) settingsAgentRoleSelect.value = localStorage.getItem('honpi-agent-role') || 'general';
+        if (settingsCustomPromptArea) settingsCustomPromptArea.value = localStorage.getItem('honpi-agent-prompt') || '';
+      }
+
+      settingsOmpBrowserModeSelect?.addEventListener('change', () => {
+        const next = settingsOmpBrowserModeSelect.value === 'on';
+        localStorage.setItem('omp.browserMode', next ? 'ego-browser' : 'none');
+        const ego = document.getElementById('egoBrowserToggle');
+        if (ego && ego.classList.contains('active') !== next) ego.click();
+        showToast(next ? 'Đã bật Browser mode OMP' : 'Đã tắt Browser mode OMP');
+      });
+      settingsOmpShareModeSelect?.addEventListener('change', () => {
+        localStorage.setItem('omp.shareMode', settingsOmpShareModeSelect.value);
+        showToast(`Đã chọn share mode OMP: ${settingsOmpShareModeSelect.options[settingsOmpShareModeSelect.selectedIndex]?.textContent || settingsOmpShareModeSelect.value}`);
+      });
+      btnRefreshOmpMemory?.addEventListener('click', () => {
+        if (ompMemoryState) ompMemoryState.textContent = 'Đang kiểm tra trạng thái Memory qua OMP…';
+        btnRefreshOmpMemory.disabled = true;
+        setTimeout(() => {
+          if (ompMemoryState) ompMemoryState.textContent = 'Runtime hiện chưa công bố endpoint Memory riêng; dữ liệu chat vẫn được lấy trực tiếp từ session OMP.';
+          btnRefreshOmpMemory.disabled = false;
+          showToast('Đã kiểm tra trạng thái Memory OMP');
+        }, 250);
+      });
+      settingsAgentRoleSelect?.addEventListener('change', () => {
+        localStorage.setItem('honpi-agent-role', settingsAgentRoleSelect.value);
+        showToast('Đã lưu tác tử mặc định cho chat mới');
+      });
+      settingsCustomPromptArea?.addEventListener('change', () => localStorage.setItem('honpi-agent-prompt', settingsCustomPromptArea.value));
+
+      const welcomeDefaults = [
+        ['cobalt', 'Cobalt', 'Mở cuộc trò chuyện mới', '', 'new-chat'],
+        ['emerald', 'Emerald', 'Bắt đầu bằng GitHub', 'Khởi tạo tác vụ phân tích repository và triage PRs trên GitHub', 'send-now'],
+        ['violet', 'Violet', 'Bắt đầu bằng Skill', 'Kích hoạt Open Design Skill để phân tích và xây dựng nguyên mẫu giao diện chuẩn Design System', 'send-now'],
+        ['cyan', 'Cyan', 'Bắt đầu bằng Ego Browser', 'Khởi chạy tác tử Ego Browser để tự động truy cập, khảo sát và thu thập dữ liệu web trực tiếp', 'ego-browser'],
+        ['rose', 'Rose', 'Bắt đầu bằng Open Design', 'Đính kèm bản thiết kế giao diện từ Open Design để hiện thực hóa mã nguồn HTML/CSS chuẩn Design System', 'send-now'],
+        ['amber', 'Amber', 'Chế độ lập kế hoạch', 'Bật chế độ lập kế hoạch để phân tích yêu cầu bài toán và chia nhỏ các bước thực thi chi tiết', 'plan-mode']
+      ];
+      let welcomeConfig = welcomeDefaults.map(([colorKey, colorName, title, prompt, option]) => ({ colorKey, colorName, title, desc: prompt || 'Mở một phiên hội thoại trống để bắt đầu', prompt, option }));
+      let welcomeEditIndex = 0;
+      try {
+        const saved = JSON.parse(localStorage.getItem('honpi_welcome_config') || 'null');
+        if (saved?.cards?.length === 6) welcomeConfig = saved.cards;
+      } catch (_) {}
+      const welcomeTitleInput = document.getElementById('welcomeTitleInput');
+      const welcomeDescInput = document.getElementById('welcomeDescInput');
+      const welcomeBlockSelector = document.getElementById('welcomeBlockSelector');
+      const welcomeBlockTitleInput = document.getElementById('welcomeBlockTitleInput');
+      const welcomeBlockDescInput = document.getElementById('welcomeBlockDescInput');
+      const welcomeBlockPromptInput = document.getElementById('welcomeBlockPromptInput');
+      const welcomeBlockOptionSelect = document.getElementById('welcomeBlockOptionSelect');
+
+      function applyWelcomeConfig() {
+        const title = localStorage.getItem('honpi_welcome_title') || 'Chào mừng bạn đến với Hòn π';
+        const desc = localStorage.getItem('honpi_welcome_desc') || 'Trợ lý AI thông minh điều phối luồng công việc, phân tích mã nguồn và tự động hóa.';
+        const heroTitle = document.querySelector('.greeting-hero-title');
+        const heroDesc = document.querySelector('.greeting-hero-desc');
+        if (heroTitle) heroTitle.textContent = title;
+        if (heroDesc) heroDesc.textContent = desc;
+        document.querySelectorAll('.quick-grid .quick-card').forEach((card, index) => {
+          const config = welcomeConfig[index];
+          if (!config) return;
+          card.querySelector('.quick-card-title')?.replaceChildren(document.createTextNode(config.title || 'Hành động nhanh'));
+          card.title = config.desc || config.prompt || config.title || '';
+          card.dataset.prompt = config.prompt || '';
+          card.dataset.action = config.option || 'fill-dock';
+        });
+      }
+      function renderWelcomeEditor() {
+        if (!welcomeBlockSelector) return;
+        welcomeBlockSelector.replaceChildren(...welcomeConfig.map((config, index) => {
+          const button = document.createElement('button');
+          button.type = 'button'; button.className = index === welcomeEditIndex ? 'active' : ''; button.dataset.index = String(index);
+          button.setAttribute('aria-selected', index === welcomeEditIndex ? 'true' : 'false'); button.textContent = `${index + 1}. ${config.colorName || 'Thẻ'}`;
+          button.addEventListener('click', () => { saveWelcomeEditorBlock(); welcomeEditIndex = index; renderWelcomeEditor(); populateWelcomeEditor(); });
+          return button;
+        }));
+      }
+      function populateWelcomeEditor() {
+        const config = welcomeConfig[welcomeEditIndex]; if (!config) return;
+        if (welcomeBlockTitleInput) welcomeBlockTitleInput.value = config.title || '';
+        if (welcomeBlockDescInput) welcomeBlockDescInput.value = config.desc || '';
+        if (welcomeBlockPromptInput) welcomeBlockPromptInput.value = config.prompt || '';
+        if (welcomeBlockOptionSelect) welcomeBlockOptionSelect.value = config.option || 'fill-dock';
+      }
+      function saveWelcomeEditorBlock() {
+        const config = welcomeConfig[welcomeEditIndex]; if (!config) return;
+        if (welcomeBlockTitleInput) config.title = welcomeBlockTitleInput.value.trim();
+        if (welcomeBlockDescInput) config.desc = welcomeBlockDescInput.value.trim();
+        if (welcomeBlockPromptInput) config.prompt = welcomeBlockPromptInput.value.trim();
+        if (welcomeBlockOptionSelect) config.option = welcomeBlockOptionSelect.value;
+      }
+      document.getElementById('btnSaveWelcomeConfig')?.addEventListener('click', () => {
+        saveWelcomeEditorBlock();
+        if (welcomeTitleInput) localStorage.setItem('honpi_welcome_title', welcomeTitleInput.value.trim() || 'Chào mừng bạn đến với Hòn π');
+        if (welcomeDescInput) localStorage.setItem('honpi_welcome_desc', welcomeDescInput.value.trim() || 'Trợ lý AI thông minh điều phối luồng công việc, phân tích mã nguồn và tự động hóa.');
+        localStorage.setItem('honpi_welcome_config', JSON.stringify({ cards: welcomeConfig }));
+        applyWelcomeConfig(); showToast('Đã lưu cài đặt màn hình chào mừng');
+      });
+      document.getElementById('btnResetWelcomeConfig')?.addEventListener('click', () => {
+        welcomeConfig = welcomeDefaults.map(([colorKey, colorName, title, prompt, option]) => ({ colorKey, colorName, title, desc: prompt || 'Mở một phiên hội thoại trống để bắt đầu', prompt, option }));
+        localStorage.removeItem('honpi_welcome_config'); localStorage.removeItem('honpi_welcome_title'); localStorage.removeItem('honpi_welcome_desc');
+        if (welcomeTitleInput) welcomeTitleInput.value = 'Chào mừng bạn đến với Hòn π';
+        if (welcomeDescInput) welcomeDescInput.value = 'Trợ lý AI thông minh điều phối luồng công việc, phân tích mã nguồn và tự động hóa.';
+        welcomeEditIndex = 0; renderWelcomeEditor(); populateWelcomeEditor(); applyWelcomeConfig(); showToast('Đã khôi phục màn hình chào mặc định');
+      });
+      const agentInstructionDefaults = '# Hòn π OMP Agent Instructions\n- Trả lời ngắn gọn bằng tiếng Việt.\n- Kiểm tra runtime thật trước khi kết luận.\n- Hoàn tất flow và báo rõ bước tiếp theo.';
+      const agentInstructionArea = document.getElementById('ompAgentInstructionsTextarea');
+      const agentPromptStats = document.getElementById('agentPromptStats');
+      function syncAgentInstructionStats() { if (agentPromptStats && agentInstructionArea) agentPromptStats.textContent = `${agentInstructionArea.value.length.toLocaleString()} ký tự · ${agentInstructionArea.value ? agentInstructionArea.value.split('\n').length : 0} dòng`; }
+      if (agentInstructionArea) {
+        agentInstructionArea.value = localStorage.getItem('honpi_omp_agent_instructions') ?? agentInstructionDefaults;
+        agentInstructionArea.addEventListener('input', syncAgentInstructionStats); syncAgentInstructionStats();
+      }
+      document.getElementById('btnSaveAgentInstructions')?.addEventListener('click', () => { localStorage.setItem('honpi_omp_agent_instructions', agentInstructionArea?.value || ''); syncAgentInstructionStats(); showToast('Đã lưu chỉ dẫn Agent OMP'); });
+      document.getElementById('btnClearAgentInstructions')?.addEventListener('click', () => { if (agentInstructionArea) agentInstructionArea.value = ''; localStorage.setItem('honpi_omp_agent_instructions', ''); syncAgentInstructionStats(); showToast('Đã xóa chỉ dẫn Agent OMP'); });
+      document.getElementById('btnResetAgentInstructions')?.addEventListener('click', () => { if (agentInstructionArea) agentInstructionArea.value = agentInstructionDefaults; localStorage.setItem('honpi_omp_agent_instructions', agentInstructionDefaults); syncAgentInstructionStats(); showToast('Đã khôi phục mẫu chỉ dẫn Agent OMP'); });
+      if (welcomeTitleInput) welcomeTitleInput.value = localStorage.getItem('honpi_welcome_title') || 'Chào mừng bạn đến với Hòn π';
+      if (welcomeDescInput) welcomeDescInput.value = localStorage.getItem('honpi_welcome_desc') || 'Trợ lý AI thông minh điều phối luồng công việc, phân tích mã nguồn và tự động hóa.';
+      renderWelcomeEditor(); populateWelcomeEditor(); applyWelcomeConfig();
 
       // Dynamic Colorful Badges toggle (image-52)
       const settingsDynamicBadgesToggle = document.getElementById('settingsDynamicBadgesToggle');
@@ -4578,18 +4839,29 @@
         }
       });
 
-      // Initialize theme: Default is darktheme
+      // Initialize theme, including a live system preference mode.
       let initialTheme = 'dark';
+      let themeMode = 'dark';
       try {
         const saved = localStorage.getItem('neuratalk-theme');
-        if (saved === 'dark' || saved === 'light') {
-          initialTheme = saved;
+        if (saved === 'dark' || saved === 'light' || saved === 'system') {
+          themeMode = saved;
+          initialTheme = saved === 'system'
+            ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+            : saved;
         } else {
           initialTheme = 'dark';
           localStorage.setItem('neuratalk-theme', 'dark');
         }
       } catch (e) {}
-      applyTheme(initialTheme, false);
+      applyTheme(initialTheme, false, themeMode !== 'system');
+      if (themeMode === 'system') {
+        const systemTheme = window.matchMedia('(prefers-color-scheme: dark)');
+        systemTheme.addEventListener?.('change', (event) => {
+          applyTheme(event.matches ? 'dark' : 'light', false, false);
+          try { localStorage.setItem('neuratalk-theme', 'system'); } catch (_) {}
+        });
+      }
       if (typeof updateWorkspaceSelectorVisibility === 'function') {
         updateWorkspaceSelectorVisibility();
       }
