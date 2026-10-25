@@ -8,6 +8,48 @@ Dashboard chạy cục bộ trên macOS để:
 
 Dashboard không phải backend cloud, không tự lưu credential Google lên GitHub và không sửa mã nguồn lõi của OMP.
 
+## Giới thiệu chi tiết
+
+OMP Dashboard Platform là giao diện quản lý chạy cùng máy với OMP CLI. Thay vì theo dõi quota bằng lệnh terminal và dùng một cửa sổ riêng để chat, người dùng có thể mở dashboard trên trình duyệt để xem trạng thái tài khoản và làm việc với OMP tại một địa chỉ local.
+
+### Dashboard hỗ trợ những việc gì?
+
+| Khu vực | Mục đích | Chức năng chính |
+|---|---|---|
+| **Chat — <code>/chat</code>** | Làm việc với OMP qua giao diện web | Tạo và quản lý session, chọn model và công cụ OMP đang cung cấp, gửi prompt, xem phản hồi streaming, xử lý yêu cầu phê duyệt và hủy lượt đang chạy. |
+| **Quota — <code>/quota</code>** | Theo dõi các tài khoản Google/OAuth dùng với OMP | Xem quota theo cửa sổ thời gian, trạng thái bảo vệ tài khoản, lịch sử token, biểu đồ sử dụng và chính sách xoay tài khoản khi đã bật cấu hình tương ứng. |
+| **Health — <code>/healthz</code>** | Kiểm tra runtime local | Cho installer và người vận hành biết dashboard có đang phản hồi hay không. |
+
+### Dashboard phối hợp với OMP ra sao?
+
+Trình duyệt gửi yêu cầu tới Node.js server trên cùng máy. Server giao tiếp với OMP CLI đã cài trong môi trường người dùng: phần chat dùng luồng ACP của OMP; phần quota đọc trạng thái tài khoản và mức sử dụng do OMP cung cấp. Dashboard là lớp giao diện và điều phối local, không thay thế OMP, không cung cấp model riêng và không tự cấp tài khoản Google.
+
+Luồng sử dụng thông thường là: cài OMP CLI → cài dashboard → mở <code>/quota</code> để đăng nhập/chọn tài khoản và kiểm tra trạng thái → mở <code>/chat</code> để tạo session và trò chuyện. Chức năng khả dụng phụ thuộc phiên bản OMP, model, công cụ và quyền mà OMP hiện có.
+
+### Phạm vi sử dụng
+
+Đây là công cụ cá nhân chạy trên máy macOS, không phải dịch vụ SaaS hay server dùng chung. Dashboard bind vào <code>127.0.0.1</code>; dữ liệu OAuth, session và trạng thái tiếp tục do OMP lưu trong vùng dữ liệu local của người dùng. Không cần cài PI/Open Design wrapper riêng để chạy dashboard. Các giới hạn cài đặt và địa chỉ truy cập được mô tả ở phần [Cần cài gì?](#cần-cài-gì) và [IP, port và phạm vi truy cập](#ip-port-và-phạm-vi-truy-cập).
+
+## Giao diện
+
+Dashboard gồm hai khu vực chính: `/quota` để theo dõi tài khoản, OAuth và quota; `/chat` để chat streaming với OMP.
+
+<p align="center">
+  <img src="product-release/honpi-dashboard-mark-8138753b.png" alt="OMP Dashboard" width="128">
+</p>
+
+### Quota và tài khoản
+
+| Sáng | Tối |
+|---|---|
+| <img src="docs/screenshots/quota-dashboard-light.png" alt="Quota dashboard giao diện sáng" width="420"> | <img src="docs/screenshots/quota-dashboard-dark.png" alt="Quota dashboard giao diện tối" width="420"> |
+
+### Chat và công cụ
+
+| Sáng | Tối |
+|---|---|
+| <img src="docs/screenshots/chat-dashboard-light.png" alt="Chat dashboard giao diện sáng" width="420"> | <img src="docs/screenshots/chat-dashboard-dark.png" alt="Chat dashboard giao diện tối" width="420"> |
+
 ## Kiến trúc và thành phần
 
 ```text
