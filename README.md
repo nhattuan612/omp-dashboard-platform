@@ -1,5 +1,19 @@
 # OMP Dashboard Platform
 
+## Giới thiệu (About)
+
+OMP Dashboard Platform là giao diện cục bộ giúp quản lý các tài khoản Google Gemini đã đăng nhập qua OMP, theo dõi quota và lịch sử sử dụng, đồng thời chọn tài khoản phù hợp cho phiên làm việc. Người dùng có thể lần lượt thêm các tài khoản mình sở hữu hoặc được ủy quyền để tạo pool tài khoản và chủ động chọn giữa chúng. Dashboard không tạo tài khoản Google và không cấp thêm quota; việc đăng nhập, xác thực và sử dụng vẫn do OMP cùng Google xử lý.
+
+### Tác giả và lưu ý sử dụng
+
+Tác giả: **Tuấn Vũng Tàu**.
+
+- Tác giả không khuyến khích dùng công cụ để spam hoặc gửi yêu cầu hàng loạt.
+- Người dùng tự chịu trách nhiệm với cách sử dụng, điều khoản dịch vụ và tình trạng tài khoản; tác giả không chịu trách nhiệm nếu Google hạn chế hoặc khóa tài khoản.
+- Theo thử nghiệm cá nhân, tài khoản dùng gói Add Family có vẻ dễ bị Google khóa hơn tài khoản mua gói trực tiếp. Đây là quan sát chưa được kiểm chứng độc lập, không phải kết luận hay cam kết của Google.
+
+Chỉ thêm tài khoản mà bạn có quyền sử dụng và tuân thủ điều khoản áp dụng của Google, OMP cùng các dịch vụ liên quan.
+
 Dashboard chạy cục bộ trên macOS để:
 
 - Chat với OMP qua giao diện `/chat`.
