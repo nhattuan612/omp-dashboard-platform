@@ -8,6 +8,22 @@ Dashboard chạy cục bộ trên macOS để:
 
 Dashboard không phải backend cloud, không tự lưu credential Google lên GitHub và không sửa mã nguồn lõi của OMP.
 
+## Giao diện
+
+Dashboard gồm hai khu vực chính: `/quota` để theo dõi tài khoản, OAuth và quota; `/chat` để chat streaming với OMP.
+
+<p align="center">
+  <img src="product-release/honpi-dashboard-mark-8138753b.png" alt="OMP Dashboard" width="128">
+</p>
+
+### Quota và tài khoản
+
+![Trang quota và tài khoản OMP](tasks/qa-screenshots/live-quota-1440.png)
+
+### Chat và công cụ
+
+![Trang chat OMP](tasks/qa-screenshots/live-chat-1440.png)
+
 ## Kiến trúc và thành phần
 
 ```text
