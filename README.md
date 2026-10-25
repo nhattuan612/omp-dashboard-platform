@@ -34,7 +34,7 @@ Luồng sử dụng thông thường là: cài OMP CLI → cài dashboard → m�
 
 OMP hỗ trợ đăng nhập Google Gemini; dashboard giúp người dùng đăng nhập lần lượt các tài khoản Gemini mà mình có quyền sử dụng, gom chúng thành một pool để theo dõi quota và chủ động chọn tài khoản cho từng phiên. Pool chỉ giúp quản lý và lựa chọn tài khoản thuận tiện hơn, không làm tăng quota riêng của tài khoản hay miễn trừ giới hạn và điều khoản dịch vụ của Google.
 
-Tác giả **Tuấn Vũng Tàu** không khuyến khích dùng nhiều tài khoản để spam hàng loạt hoặc né giới hạn dịch vụ. Google có thể yêu cầu xác minh, hạn chế hoặc khóa tài khoản; dashboard không bảo đảm tài khoản sẽ tránh được các biện pháp này. Người dùng tự chịu trách nhiệm với cách sử dụng và tình trạng tài khoản của mình.
+Tác giả **Tuấn Vũng Tàu** không khuyến khích dùng nhiều tài khoản để spam hàng loạt hoặc né giới hạn dịch vụ. Google có thể yêu cầu xác minh, hạn chế hoặc khóa tài khoản; dashboard không bảo đảm tài khoản sẽ tránh được các biện pháp này. Tác giả không chịu trách nhiệm nếu tài khoản bị Google hạn chế hoặc khóa do cách sử dụng; người dùng tự chịu trách nhiệm với cách sử dụng và tình trạng tài khoản của mình.
 
 Theo thử nghiệm nội bộ của tác giả, tài khoản **Add Family** có vẻ dễ bị Google chặn hơn tài khoản mua gói trực tiếp. Đây là quan sát cá nhân, không phải kết luận hay chính sách chính thức của Google, và không bảo đảm áp dụng cho mọi tài khoản.
 
