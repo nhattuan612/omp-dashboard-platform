@@ -35,7 +35,6 @@ Runtime production gồm `server.mjs`, `console-bridge.mjs`, ACP worker, các fi
 | npm | Có | Cài dependency production (`node-pty`, `ws`, xterm). |
 | OMP CLI | Có | Dashboard gọi trực tiếp OMP để chat, OAuth, quota và ACP. |
 | PI riêng | Không | Dashboard không cần cài một app PI riêng. Biến `PI_CODING_AGENT_DIR` chỉ là tùy chọn nếu muốn trỏ sang thư mục agent khác. |
-| Open Design PI wrapper | Không | Chỉ cần khi một app Open Design/PI khác muốn gọi OMP qua wrapper `integrations/open-design-pi-omp`. |
 | Database riêng | Không | Dashboard dùng dữ liệu OMP hiện có và state file cục bộ trong `~/.omp`. |
 
 ### Điều kiện quan trọng của OMP
