@@ -18,11 +18,15 @@ Dashboard gồm hai khu vực chính: `/quota` để theo dõi tài khoản, OAu
 
 ### Quota và tài khoản
 
-![Trang quota và tài khoản OMP](tasks/qa-screenshots/live-quota-1440.png)
+| Sáng | Tối |
+|---|---|
+| <img src="docs/screenshots/quota-dashboard-light.png" alt="Quota dashboard giao diện sáng" width="420"> | <img src="docs/screenshots/quota-dashboard-dark.png" alt="Quota dashboard giao diện tối" width="420"> |
 
 ### Chat và công cụ
 
-![Trang chat OMP](tasks/qa-screenshots/live-chat-1440.png)
+| Sáng | Tối |
+|---|---|
+| <img src="docs/screenshots/chat-dashboard-light.png" alt="Chat dashboard giao diện sáng" width="420"> | <img src="docs/screenshots/chat-dashboard-dark.png" alt="Chat dashboard giao diện tối" width="420"> |
 
 ## Kiến trúc và thành phần
 
