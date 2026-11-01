@@ -3039,7 +3039,8 @@ strong.acc-text-amber {
   align-items: center !important;
   justify-content: space-between !important;
   gap: 12px !important;
-  flex-wrap: nowrap !important;
+  row-gap: 8px !important;
+  flex-wrap: wrap !important;
   box-sizing: border-box !important;
 }
 
@@ -3050,6 +3051,7 @@ strong.acc-text-amber {
   gap: 8px !important;
   white-space: nowrap !important;
   flex-shrink: 0 !important;
+  order: 1 !important;
 }
 
 .brand-mark {
@@ -3121,10 +3123,11 @@ strong.acc-text-amber {
   border-radius: 9999px !important;
   font-size: 11.5px !important;
   white-space: nowrap !important;
-  flex-shrink: 1 !important;
+  flex: 0 0 auto !important;
   min-width: 0 !important;
-  max-width: 400px !important;
-  overflow: hidden !important;
+  max-width: 500px !important;
+  overflow: visible !important;
+  order: 2 !important;
 }
 
 .active-account-chip > span:first-child {
@@ -3144,7 +3147,8 @@ strong.acc-text-amber {
   overflow: hidden !important;
   text-overflow: ellipsis !important;
   max-width: 230px !important;
-  flex-shrink: 1 !important;
+  min-width: 0 !important;
+  flex: 1 1 auto !important;
   display: inline-block !important;
 }
 
@@ -3162,7 +3166,9 @@ strong.acc-text-amber {
   align-items: center !important;
   gap: 6px !important;
   white-space: nowrap !important;
-  flex-shrink: 0 !important;
+  flex: 1 0 100% !important;
+  justify-content: flex-end !important;
+  order: 3 !important;
 }
 
 .topbar-actions .btn {
@@ -3177,15 +3183,13 @@ strong.acc-text-amber {
   font-size: 12.5px !important;
 }
 
-@media (max-width: 1180px) {
-  .active-account-email {
-    max-width: 140px !important;
-  }
-}
-
 @media (max-width: 960px) {
   .active-account-chip {
     display: none !important;
+  }
+  .topbar-actions {
+    flex-wrap: wrap !important;
+    justify-content: flex-start !important;
   }
 }
 
