@@ -1480,6 +1480,12 @@ function quotaActivityView(entry) {
   const event = entry.event;
   if (event === "http_request" && ((entry.path === "/api/v1/quota/client-log") || (entry.path === "/api/login-status" && Number(entry.status) < 400))) return null;
   const level = ["debug", "info", "warn", "error"].includes(entry.level) ? entry.level : "info";
+  const isRequest = ["http_request", "http_slow_request", "http_request_aborted"].includes(event);
+  const responseStatus = Number(entry.status);
+  const failed = level === "error" || (isRequest && Number.isFinite(responseStatus) && responseStatus >= 400) || event.endsWith("_failed") || event.endsWith("_error");
+  const warned = !failed && (level === "warn" || ["http_slow_request", "http_request_aborted"].includes(event));
+  const succeeded = !failed && !warned && ((event === "http_request" && responseStatus >= 200 && responseStatus < 400) || /(?:_complete|_completed|_loaded|_success)$/.test(event) || ["quota_history_cache_hit", "quota_account_removed", "quota_account_selected"].includes(event));
+  const state = failed ? "error" : warned ? "warn" : succeeded ? "success" : "normal";
   let title = Object.hasOwn(ACTIVITY_EVENT_TITLES, event) ? ACTIVITY_EVENT_TITLES[event] : null;
   if (event === "quota_ui_dashboard_ui_loaded") title = "Đã tải giao diện dashboard";
   if (event === "quota_ui_dashboard_tab_changed") title = entry.tab === "check" ? "Mở tab CHECK" : "Mở tab QUOTA";
@@ -1505,7 +1511,7 @@ function quotaActivityView(entry) {
   if (typeof entry.errorCode === "string" && /^[A-Z0-9_]{1,60}$/.test(entry.errorCode)) details.push(entry.errorCode);
   const timestamp = typeof entry.timestamp === "string" && Number.isFinite(Date.parse(entry.timestamp)) ? new Date(entry.timestamp).toISOString() : null;
   if (!timestamp) return null;
-  return { timestamp, level, title, details: details.join(" · ") };
+  return { timestamp, level, state, request: isRequest, title, details: details.join(" · ") };
 }
 
 async function readObservabilityTail(file) {

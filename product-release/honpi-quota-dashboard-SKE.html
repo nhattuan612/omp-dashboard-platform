@@ -4155,14 +4155,18 @@ button:not(.modal-close)[disabled] {
 .activity-log-body { padding: 0 12px 12px; }
 .activity-log-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 7px; color: var(--muted); font-size: 10px; }
 .activity-log-list { display: grid; gap: 5px; max-height: 300px; overflow: auto; padding: 8px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--surface-hover); }
-.activity-log-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 10px; padding: 6px 7px; border-bottom: 1px solid var(--border-soft); font-size: 10px; }
+.activity-log-entry { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: start; gap: 3px 8px; padding: 6px 7px; border-bottom: 1px solid var(--border-soft); font-size: 10px; }
 .activity-log-entry:last-child { border-bottom: 0; }
-.activity-log-entry-title { color: var(--fg); font-weight: 650; overflow-wrap: anywhere; }
+.activity-log-entry-icon { display: grid; place-items: center; width: 16px; min-height: 15px; color: var(--muted); font-size: 12px; font-weight: 800; line-height: 1; }
+.activity-log-entry-icon:empty { visibility: hidden; }
+.activity-log-entry-title { grid-column: 2; color: var(--fg-2); font-weight: 550; overflow-wrap: anywhere; }
 .activity-log-entry-meta, .activity-log-entry-details, .activity-log-empty { color: var(--muted); }
-.activity-log-entry-meta { white-space: nowrap; font: 9px var(--font-mono); }
-.activity-log-entry-details { grid-column: 1 / -1; overflow-wrap: anywhere; }
-.activity-log-entry.is-error .activity-log-entry-title { color: var(--danger-text); }
-.activity-log-entry.is-warn .activity-log-entry-title { color: var(--warn-text); }
+.activity-log-entry-meta { grid-column: 3; white-space: nowrap; font: 9px var(--font-mono); }
+.activity-log-entry-details { grid-column: 2 / -1; overflow-wrap: anywhere; }
+.activity-log-entry.is-request .activity-log-entry-icon { color: var(--blue); }
+.activity-log-entry.is-success .activity-log-entry-title, .activity-log-entry.is-success .activity-log-entry-icon { color: var(--success-text); }
+.activity-log-entry.is-error .activity-log-entry-title, .activity-log-entry.is-error .activity-log-entry-icon { color: var(--danger-text); }
+.activity-log-entry.is-warn .activity-log-entry-title, .activity-log-entry.is-warn .activity-log-entry-icon { color: var(--warn-text); }
 .activity-log-empty { margin: auto; padding: 14px; text-align: center; }
 .model-test { margin: 0 0 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
 .model-test > summary { display: flex; align-items: center; gap: 10px; padding: 10px 13px; cursor: pointer; list-style: none; }
@@ -4984,8 +4988,9 @@ button:not([disabled]) { transform:none !important; transition:background-color 
         const events = Array.isArray(result.events) ? result.events : [];
         list.innerHTML = events.length ? events.map((item) => {
           const time = new Date(item.timestamp).toLocaleString('vi-VN');
-          const level = ['error', 'warn'].includes(item.level) ? item.level : '';
-          return `<article class="activity-log-entry ${level ? `is-${level}` : ''}"><strong class="activity-log-entry-title">${esc(item.title)}</strong><time class="activity-log-entry-meta">${esc(time)}</time>${item.details ? `<span class="activity-log-entry-details">${esc(item.details)}</span>` : ''}</article>`;
+          const state = ['error', 'warn', 'success'].includes(item.state) ? item.state : 'normal';
+          const icon = item.request ? '↗' : state === 'error' || state === 'warn' ? '!' : state === 'success' ? '✓' : '';
+          return `<article class="activity-log-entry is-${state}${item.request ? ' is-request' : ''}"><span class="activity-log-entry-icon" aria-hidden="true">${icon}</span><strong class="activity-log-entry-title">${esc(item.title)}</strong><time class="activity-log-entry-meta">${esc(time)}</time>${item.details ? `<span class="activity-log-entry-details">${esc(item.details)}</span>` : ''}</article>`;
         }).join('') : '<div class="activity-log-empty">Chưa có hoạt động được ghi.</div>';
         activityLogLoadedAt = Date.now();
         if (status) status.textContent = `${events.length} hoạt động gần đây`;
