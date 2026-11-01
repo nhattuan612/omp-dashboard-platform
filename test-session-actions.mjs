@@ -35,6 +35,11 @@ async function writeFakeSessions(home, sessions) {
   await writeFile(path, `${JSON.stringify(sessions)}\n`, { mode: 0o600 });
 }
 
+async function fakeSessionCatalogCalls(home) {
+  try { return (await readFile(homePath(home, "test-session-catalog-calls.log"), "utf8")).trim().split("\n").filter(Boolean).length; }
+  catch { return 0; }
+}
+
 async function writeFakeMemoryBackend(cwd, backend) {
   const directory = join(cwd, ".omp");
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -66,6 +71,38 @@ async function readFakeFrames(home) {
     }
   }
   return frames;
+}
+
+async function readFakeLaunches(home) {
+  const file = homePath(home, "test-omp-launches.jsonl");
+  const content = await readFile(file, "utf8").catch(() => "");
+  return content.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+}
+
+async function waitForFakeLaunch(home, predicate, minMatches = 1, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const matches = (await readFakeLaunches(home)).filter(predicate);
+    if (matches.length >= minMatches) return matches;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("Timed out waiting for the expected fake OMP launch");
+}
+
+async function runAcpLaunchSmoke(home, cwd) {
+  const moduleUrl = new URL("./console-bridge.mjs", import.meta.url).href;
+  const source = `import { ConsoleBridge } from ${JSON.stringify(moduleUrl)}; const bridge = new ConsoleBridge(); const context = await bridge.start({ protocol: "acp", cwd: ${JSON.stringify(cwd)}, tools: [] }); await bridge.stop(context.id); process.exit(0);`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", source], {
+    cwd,
+    env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: homePath(home, "agent"), NODE_ENV: "test", OMP_BIN: join(home, ".bun", "bin", "omp") },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const code = await new Promise((resolve, reject) => { child.once("error", reject); child.once("close", resolve); });
+  assert.equal(code, 0, `fake ACP launch failed: ${stderr || stdout}`);
 }
 
 async function waitForFakeFrame(home, predicate, timeoutMs = 5000) {
@@ -146,7 +183,7 @@ async function seedOmpSession(home, sessionId, cwd, title, { titleFirst = false 
   }
   return path;
 }
-async function seedUsageRecord(home, sessionId, { pinHash = null, provider, model, input, output, timestamp = new Date().toISOString(), pinTimestamp = timestamp, errorStatus = null, content = null }) {
+async function seedUsageRecord(home, sessionId, { pinHash = null, provider, model, input, output, cacheRead = 0, cacheWrite = 0, timestamp = new Date().toISOString(), pinTimestamp = timestamp, errorStatus = null, content = "usage-fixture" }) {
   const sessionRoot = homePath(home, "agent", "sessions");
   await mkdir(sessionRoot, { recursive: true, mode: 0o700 });
   const records = [
@@ -162,7 +199,7 @@ async function seedUsageRecord(home, sessionId, { pinHash = null, provider, mode
         model,
         ...(errorStatus != null ? { errorStatus } : {}),
         ...(content ? { content } : {}),
-        usage: { input, output, totalTokens: input + output },
+        usage: { input, output, cacheRead, cacheWrite, totalTokens: input + output + cacheRead + cacheWrite },
         completedAt: timestamp,
       },
     },
@@ -201,8 +238,16 @@ async function freePort() {
 }
 
 async function fakeOmp(args) {
+  const recordLaunch = async (protocol) => {
+    const file = homePath(process.env.HOME, "test-omp-launches.jsonl");
+    await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+    const configIndex = args.indexOf("--config");
+    const overlay = configIndex >= 0 ? await readFile(args[configIndex + 1], "utf8").then((value) => JSON.parse(value)).catch(() => null) : null;
+    await appendFile(file, `${JSON.stringify({ protocol, args, overlay, browserRelay: process.env.PI_BROWSER_RELAY || null })}\n`, { mode: 0o600 });
+  };
   if (args[0] === "--version") {
-    process.stdout.write("omp/18.3.2\n");
+    const version = await readFile(homePath(process.env.HOME, "test-omp-version.txt"), "utf8").catch(() => "18.4.6");
+    process.stdout.write(`omp/${version.trim()}\n`);
     return;
   }
   if (args[0] === "--help") {
@@ -289,11 +334,16 @@ async function fakeOmp(args) {
     return;
   }
   if (args[0] === "config" && args.includes("list")) {
+    if (await stat(homePath(process.env.HOME, "test-tool-audit-error")).then(() => true, () => false)) { process.exitCode = 7; return; }
+    const browserConfig = JSON.parse(await readFile(homePath(process.env.HOME, "test-browser-config.json"), "utf8").catch(() => "{}"));
     process.stdout.write(`${JSON.stringify({
       "grep.enabled": { value: true },
       "glob.enabled": { value: true },
       "bash.enabled": { value: true },
       "eval.js": { value: true },
+      "browser.enabled": { value: true },
+      "browser.relay": { value: false },
+      ...browserConfig,
       "lsp.enabled": { value: true },
       "debug.enabled": { value: true },
       "web_search.enabled": { value: true },
@@ -320,6 +370,7 @@ async function fakeOmp(args) {
     return;
   }
   if (args.includes("acp")) {
+    await recordLaunch("acp");
     const input = createInterface({ input: process.stdin });
     for await (const line of input) {
       let frame;
@@ -327,9 +378,14 @@ async function fakeOmp(args) {
       let result = {};
       if (frame.method === "_omp/sessions/listAll") {
         const sessions = await readFakeSessions(process.env.HOME);
-        result = { sessions, total: sessions.length };
+        const offset = Number.isSafeInteger(frame.params?.offset) ? Math.max(0, frame.params.offset) : 0;
+        const limit = Number.isSafeInteger(frame.params?.limit) ? Math.max(1, frame.params.limit) : sessions.length;
+        await appendFile(homePath(process.env.HOME, "test-session-catalog-calls.log"), "1\n", { mode: 0o600 });
+        result = { sessions: sessions.slice(offset, offset + limit), total: sessions.length };
       } else if (frame.method === "initialize") {
         result = { protocolVersion: 1 };
+      } else if (frame.method === "session/new") {
+        result = { sessionId: `fake-acp-${randomUUID()}` };
       }
       const response = { jsonrpc: "2.0", id: frame.id, result };
       if (frame.method === "_omp/sessions/listAll" && result.sessions?.some((session) => String(session.title).includes("🧪"))) {
@@ -339,6 +395,7 @@ async function fakeOmp(args) {
     return;
   }
   if (args.includes("--mode") && args.includes("rpc")) {
+    await recordLaunch("rpc");
     const contextId = randomUUID();
     let protocolVersion = 1;
     let followUpPrompt = false;
@@ -392,9 +449,14 @@ async function fakeOmp(args) {
           stateSessionId = `fixture-runtime-${randomUUID()}`;
           stateSessionPath = await seedOmpSession(process.env.HOME, stateSessionId, process.cwd(), "Recovered runtime session");
         }
-        const dumpTools = ["read", "write", "edit", "grep", "glob", "bash", "eval", "task", "todo", "wait", "web_search"]
+        const configIndex = args.indexOf("--config");
+        const unmounted = configIndex >= 0 && /xdev:\s*false/.test(await readFile(args[configIndex + 1], "utf8"));
+        const absent = await readFile(homePath(process.env.HOME, "test-absent-tool.txt"), "utf8").catch(() => "");
+        const dumpTools = ["read", "write", "edit", "grep", "glob", "bash", "eval", "task", "todo", "wait", "web_search", ...(unmounted ? ["ast_edit", "lsp", "debug"] : [])]
+          .filter((name) => name !== absent.trim())
           .map((name) => ({ name, parameters: { type: "object", properties: {} } }));
         dumpTools.push({ name: "mcp__fixture_browser_snapshot", parameters: { type: "object", properties: { url: { type: "string" } } } });
+        dumpTools.push({ name: "new_native_fixture", parameters: { type: "object", properties: {} } });
         emit({ type: "response", id: frame.id, command: frame.type, success: true, data: { sessionFile: stateSessionPath, sessionId: stateSessionId, messageCount: 0, dumpTools } });
       } else if (frame.type === "get_available_commands") {
         emit({ type: "response", id: frame.id, command: frame.type, success: true, data: { commands: [
@@ -611,6 +673,12 @@ async function fakeOmp(args) {
       } else if (frame.type === "prompt" && String(frame.message || "").includes("ACCOUNT_VERIFICATION_CONTRACT")) {
         emit({ type: "turn_start" });
         emit({ type: "agent_end", isTerminal: true, message: { role: "assistant", stopReason: "error", errorStatus: 403, errorMessage: "Account verification required for test@example.com" } });
+      } else if (frame.type === "prompt" && String(frame.message || "").includes("AGENT_CONFIG_USER_PROMPT_SENTINEL")) {
+        const content = "agent-config-prompt-received";
+        emit({ type: "turn_start" });
+        emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: content } });
+        emit({ type: "message_end", message: { role: "assistant", content } });
+        emit({ type: "agent_end", isTerminal: true, message: { role: "assistant", content, model: "smoke-model" } });
       } else if (frame.type === "prompt") {
         emit({ type: "turn_start" });
         emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "working" } });
@@ -664,6 +732,10 @@ async function runContract() {
     await writeFile(join(workspaceRoot, "large.txt"), Buffer.alloc(512 * 1024 + 1, 0x61), { mode: 0o600 });
     const fakeBin = join(home, ".bun", "bin", "omp");
     await mkdir(dirname(fakeBin), { recursive: true, mode: 0o700 });
+    const agentContextFile = homePath(home, "agent", "AGENTS.md");
+    const initialAgentInstructions = `# OMP Agent instructions fixture\n${"- Quy tắc OMP cần giữ nguyên khi đồng bộ.\n".repeat(500)}`;
+    await mkdir(dirname(agentContextFile), { recursive: true, mode: 0o700 });
+    await writeFile(agentContextFile, initialAgentInstructions, { mode: 0o600 });
     const wrapper = `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(fileURLToPath(import.meta.url))} ${FAKE_OMP_FLAG} "$@"\n`;
     await writeFile(fakeBin, wrapper, { mode: 0o700 });
 
@@ -675,6 +747,7 @@ async function runContract() {
         ...process.env,
         ...(process.platform === "darwin" ? { PATH: LAUNCHD_PATH } : {}),
         NODE_ENV: "test",
+        PI_CODING_AGENT_DIR: homePath(home, "agent"),
         OMP_DASHBOARD_TEST_CHAT_PROTOCOL: "rpc",
         OMP_DASHBOARD_TEST_APPROVAL_TIMEOUT_MS: String(TEST_APPROVAL_TIMEOUT_MS),
         OMP_DASHBOARD_TEST_CHAT_TURN_TIMEOUT_MS: "4000",
@@ -684,6 +757,7 @@ async function runContract() {
         HOME: home,
         OMP_BIN: fakeBin,
         OMP_DASHBOARD_PORT: String(port),
+        OMP_DASHBOARD_LOG_FILE: homePath(home, "usage-dashboard", "dashboard-events.jsonl"),
         OMP_DASHBOARD_WORKSPACE: workspaceRoot,
         OMP_SAFETY_STATE_FILE: homePath(home, "usage-dashboard", "safety-state.json"),
         OMP_CHAT_RATE_LIMIT: "0",
@@ -711,6 +785,8 @@ async function runContract() {
     const chatHtml = await page.text();
     assert.match(chatHtml, /\/honpi-dashboard-mark-8138753b\.png/, "chat must reuse the shared dashboard mark");
     assert.doesNotMatch(chatHtml, /data:image\/png;base64,iVBORw0KGgoAAAANSUhEUgAABMw/, "chat must not embed the repeated dashboard mark");
+    assert.match(chatHtml, /data-origin-app-template/, "source menu must render discovered apps dynamically");
+    assert.doesNotMatch(chatHtml, /data-origin-app="Open Design"/, "source menu must not hardcode a single app");
     const quotaPage = await fetch(`${baseUrl}/quota`);
     assert.equal(quotaPage.status, 200, "isolated /quota route must load");
     const quotaHtml = await quotaPage.text();
@@ -898,10 +974,14 @@ async function runContract() {
     assert.equal(capabilities.status, 200, `capabilities request failed: ${JSON.stringify(capabilities.payload)}\n${stderr}\n${stdout}`);
     assert.ok(Array.isArray(capabilities.payload.imageGenerationModels), "tool catalog must not wait for model discovery");
     assert.equal(capabilities.payload.featureStatus.memory, "supported");
+    assert.equal(capabilities.payload.featureStatus["agent-instructions"], "supported");
+    assert.equal(capabilities.payload.agentInstructions?.source, "omp-user-context-file");
+    assert.equal(capabilities.payload.agentInstructions?.scope, "global-omp-sessions");
+    assert.equal(capabilities.payload.agentInstructions?.transport, "omp-auto-loads-agents-md");
     assert.ok(capabilities.payload.features.includes("memory"));
     assert.equal(capabilities.payload.sessionActions?.steer, "unavailable");
     assert.equal(capabilities.payload.featureStatus["agent-hub"], "unavailable");
-    assert.equal(capabilities.payload.catalog?.mapVersion, "2026-09-29.3", "capabilities must identify the checked-in OMP-to-Chat map");
+    assert.equal(capabilities.payload.catalog?.mapVersion, "2026-10-02.1", "capabilities must identify the checked-in OMP-to-Chat map");
     assert.equal(capabilities.payload.sessionModes?.find((item) => item.id === "plan-yolo")?.status, "supported", "Plan YOLO must be verified from OMP help");
     assert.equal(capabilities.payload.sessionModes?.find((item) => item.id === "advisor")?.status, "supported", "Advisor must be verified from OMP help");
     const waitTool = capabilities.payload.tools.find((item) => item.id === "wait");
@@ -912,7 +992,9 @@ async function runContract() {
     assert.equal(hubTool?.status, "blocked", "Agent Hub must report the measured ACP startup failure");
     assert.equal(hubTool?.canToggle, false, "blocked tools must never reach --tools");
     assert.ok(capabilities.payload.observedToolIds.includes("wait"), "observed IDs must derive from the compiled catalog");
-    assert.equal(capabilities.payload.catalog?.audit?.ompVersion, "omp/18.3.2", "the catalog must expose the audited OMP version");
+    assert.equal(capabilities.payload.catalog?.audit?.ompVersion, "omp/18.4.6", "the catalog must expose the audited OMP version");
+    for (const id of ["ast_edit", "lsp", "debug"]) assert.equal(capabilities.payload.tools.find((item) => item.id === id)?.status, "supported", "audit must discover tools hidden behind xd://");
+    assert.equal(capabilities.payload.tools.find((item) => item.id === "new_native_fixture")?.canToggle, false, "new native tools must be listed without gaining permission");
     const dynamicTool = capabilities.payload.tools.find((item) => item.id === "mcp__fixture_browser_snapshot");
     assert.equal(dynamicTool?.status, "unmapped", "new OMP MCP tools must be visible without becoming selectable");
     assert.equal(dynamicTool?.source, "mcp", "dynamic provider tools must retain their source");
@@ -922,6 +1004,47 @@ async function runContract() {
     const audit = await api("POST", "/api/v1/omp/capabilities/audit", {});
     assert.equal(audit.status, 200, "manual OMP audit must remain dashboard-session protected and available");
     assert.equal(audit.payload.catalog?.tools?.find((item) => item.id === "mcp__fixture_browser_snapshot")?.status, "unmapped");
+    const inventoryLaunch = (await readFakeLaunches(home)).find((item) => item.protocol === "rpc" && item.args.includes("--config"));
+    assert.ok(inventoryLaunch, "inventory must use an isolated OMP config overlay");
+    await assert.rejects(stat(inventoryLaunch.args[inventoryLaunch.args.indexOf("--config") + 1]), { code: "ENOENT" }, "temporary inventory overlay must be removed");
+    passes.push("OMP inventory discovers xd tools and cleans up its temporary overlay");
+
+    const versionFixture = homePath(home, "test-omp-version.txt");
+    await writeFile(versionFixture, "18.5.0\n");
+    const upgradedAudit = await api("POST", "/api/v1/omp/capabilities/audit", {});
+    assert.equal(upgradedAudit.payload.catalog.catalog.stale, true);
+    assert.equal(upgradedAudit.payload.catalog.tools.length, capabilities.payload.tools.length, "OMP upgrade must retain every catalog row");
+    assert.equal(upgradedAudit.payload.catalog.tools.find((item) => item.id === "read")?.status, "stale");
+    assert.equal(upgradedAudit.payload.catalog.catalog.counts.supported, 0);
+    const staleSelection = await api("POST", "/api/v1/sessions", { cwd: workspaceRoot, tools: ["read"] });
+    assert.equal(staleSelection.status, 400, "stale tools must remain visible without being accepted in sessions");
+    await rm(versionFixture);
+    await api("POST", "/api/v1/omp/capabilities/audit", {});
+    passes.push("OMP upgrades retain tool rows and reject unverified selections");
+
+    const absentFixture = homePath(home, "test-absent-tool.txt");
+    await writeFile(absentFixture, "wait\n");
+    const removedAudit = await api("POST", "/api/v1/omp/capabilities/audit", {});
+    assert.equal(removedAudit.payload.catalog.tools.find((item) => item.id === "wait")?.status, "unavailable", "absent runtime tools must not be advertised as supported");
+    assert.ok(removedAudit.payload.catalog.catalog.drift.removed.includes("wait"));
+    await rm(absentFixture);
+    await api("POST", "/api/v1/omp/capabilities/audit", {});
+    passes.push("removed OMP tools stay listed but cannot be selected");
+
+    const failureFixture = homePath(home, "test-tool-audit-error");
+    await writeFile(failureFixture, "1\n");
+    const failedAudit = await api("POST", "/api/v1/omp/capabilities/audit", {});
+    assert.equal(failedAudit.payload.catalog.catalog.audit.status, "error");
+    assert.equal(failedAudit.payload.catalog.tools.length, capabilities.payload.tools.length, "probe failure must preserve mapped and last observed dynamic rows");
+    assert.equal(failedAudit.payload.catalog.tools.find((item) => item.id === "mcp__fixture_browser_snapshot")?.status, "probe_error");
+    assert.ok(failedAudit.payload.catalog.tools.every((item) => !item.canToggle));
+    const failedCatalogRefresh = await api("GET", "/api/v1/omp/capabilities");
+    assert.equal(failedCatalogRefresh.payload.catalog.audit.status, "error", "GET after a failed audit must not restore a cached success");
+    assert.ok(failedCatalogRefresh.payload.tools.every((item) => !item.canToggle));
+    await rm(failureFixture);
+    const recoveredAudit = await api("POST", "/api/v1/omp/capabilities/audit", {});
+    assert.equal(recoveredAudit.payload.catalog.catalog.counts.supported, 14);
+    passes.push("failed tool audits preserve the catalog and recover on sync");
     const supportedTools = capabilities.payload.tools.filter((item) => item.status === "supported").map((item) => item.id);
     const fullAccessSession = await api("POST", "/api/v1/sessions", { title: "Full OMP tool catalog", cwd: workspaceRoot, approvalMode: "yolo", tools: supportedTools });
     assert.equal(fullAccessSession.status, 201, `full OMP tool catalog should create a session: ${JSON.stringify(fullAccessSession.payload)}`);
@@ -948,6 +1071,78 @@ async function runContract() {
     const prewarmState = await api("GET", "/api/console/state");
     assert.ok(prewarmState.payload.acpWorkers.some((worker) => worker.pid === prewarmed.payload.worker.pid && worker.contexts === 0), "prewarm must not allocate an ACP session");
     passes.push("ACP prewarm starts and reuses one context-free worker");
+
+    const browserConfigFixture = homePath(home, "test-browser-config.json");
+    let cdpStatus = 200; let remoteWebsocket = false;
+    const browserCdp = createServer((req, res) => {
+      assert.equal(req.url, "/json/version");
+      res.writeHead(cdpStatus, { "content-type": "application/json" });
+      res.end(JSON.stringify(cdpStatus === 200 ? { Browser: "Chrome/fixture", webSocketDebuggerUrl: remoteWebsocket ? "ws://example.test:80/cdp" : `ws://127.0.0.1:${browserCdp.address().port}/cdp` } : { error: "relay extension is not connected" }));
+    });
+    await new Promise((resolve) => browserCdp.listen(0, "127.0.0.1", resolve));
+    const cdpUrl = `http://127.0.0.1:${browserCdp.address().port}`;
+    try {
+      assert.equal(capabilities.payload.browsers.find((mode) => mode.id === "chrome-electron").reasonCode, "cdp_not_configured");
+      const unavailableBrowser = await api("POST", "/api/v1/omp/prewarm", { cwd: workspaceRoot, browserMode: "chrome-electron", tools: ["read"] });
+      assert.equal(unavailableBrowser.status, 409, "native browser must not launch without a ready endpoint");
+      await writeFile(browserConfigFixture, JSON.stringify({ "browser.cdpUrl": { value: cdpUrl }, "browser.relayUrl": { value: cdpUrl } }));
+      const browserCapabilities = await api("GET", "/api/v1/omp/capabilities");
+      for (const id of ["chrome-electron", "omp-browser-relay"]) assert.equal(browserCapabilities.payload.browsers.find((mode) => mode.id === id).status, "supported");
+      const chromePrewarm = await api("POST", "/api/v1/omp/prewarm", { cwd: workspaceRoot, browserMode: "chrome-electron", tools: ["read"], approvalMode: "always-ask" });
+      assert.equal(chromePrewarm.status, 202);
+      const chromeLaunch = (await readFakeLaunches(home)).find((launch) => launch.protocol === "acp" && launch.overlay?.browser?.cdpUrl === cdpUrl);
+      assert.ok(chromeLaunch.args.includes("--tools=eval,read"), "native browser must add eval without enabling all tools");
+      assert.equal(chromeLaunch.overlay.browser.relay, false);
+      assert.equal(chromeLaunch.overlay.tools.xdev, false, "native browser must use direct eval approval rather than an xd:// transport bypass");
+      assert.equal(chromeLaunch.browserRelay, "0");
+      assert.equal(chromeLaunch.args[chromeLaunch.args.indexOf("--approval-mode") + 1], "always-ask");
+      const relayPrewarm = await api("POST", "/api/v1/omp/prewarm", { cwd: workspaceRoot, browserMode: "omp-browser-relay", tools: ["read"] });
+      assert.equal(relayPrewarm.status, 202);
+      assert.notEqual(relayPrewarm.payload.worker.pid, chromePrewarm.payload.worker.pid, "browser modes must have separate worker configuration");
+      const relayLaunch = (await readFakeLaunches(home)).find((launch) => launch.protocol === "acp" && launch.overlay?.browser?.relay === true);
+      assert.equal(relayLaunch.overlay.browser.relayUrl, cdpUrl);
+      assert.equal(relayLaunch.browserRelay, "1");
+      const browserSession = await api("POST", "/api/v1/sessions", { cwd: workspaceRoot, title: "Native browser fixture", browserMode: "chrome-electron", tools: ["read"] });
+      assert.equal(browserSession.status, 201);
+      await waitForFakeLaunch(home, (launch) => launch.protocol === "rpc" && launch.overlay?.browser?.cdpUrl === cdpUrl);
+      const nativeSessionId = (browserSession.payload.session || browserSession.payload).id;
+      const launchesBeforeOff = (await readFakeLaunches(home)).length;
+      const browserOff = await api("POST", "/api/v1/chat/send", { sessionId: nativeSessionId, prompt: "AUTO_TITLE_CONTRACT BROWSER_NATIVE_OFF_CONTRACT", model: "smoke-external-model", modelSource: "omp", browserMode: "none" });
+      assert.equal(browserOff.status, 200, `native browser should switch off without supplied tools: ${JSON.stringify(browserOff.payload)}`);
+      const offLaunch = (await readFakeLaunches(home)).slice(launchesBeforeOff).find((launch) => launch.protocol === "rpc" && !launch.args.includes("--no-session"));
+      assert.ok(offLaunch && !offLaunch.args.includes("--config"), "switching off must remove the native browser overlay");
+      assert.ok(!offLaunch.args.find((arg) => arg.startsWith("--tools="))?.split("=")[1].split(",").includes("eval"), "always-ask must remove auto-added eval when native browser is off");
+      remoteWebsocket = true;
+      const invalidCdp = await api("GET", "/api/v1/omp/capabilities");
+      assert.equal(invalidCdp.payload.browsers.find((mode) => mode.id === "chrome-electron").reasonCode, "invalid_cdp");
+      remoteWebsocket = false; cdpStatus = 503;
+      const disconnectedRelay = await api("GET", "/api/v1/omp/capabilities");
+      assert.equal(disconnectedRelay.payload.browsers.find((mode) => mode.id === "omp-browser-relay").reasonCode, "extension_disconnected");
+      assert.equal(disconnectedRelay.payload.browsers.find((mode) => mode.id === "omp-browser-relay").connectOnStart, true);
+      assert.match(disconnectedRelay.payload.browsers.find((mode) => mode.id === "omp-browser-relay").note, /load\/bật extension/);
+      const relayDuringBootstrap = await api("POST", "/api/v1/omp/prewarm", { cwd: workspaceRoot, browserMode: "omp-browser-relay", tools: ["read"] });
+      assert.equal(relayDuringBootstrap.status, 202, `Relay must remain selectable while OMP boots its server: ${JSON.stringify(relayDuringBootstrap.payload)}`);
+      assert.equal((await readFakeLaunches(home)).find((launch) => launch.protocol === "acp" && launch.overlay?.browser?.relay === true).overlay.browser.relayUrl, cdpUrl);
+      await writeFile(browserConfigFixture, JSON.stringify({ "browser.cdpUrl": { value: "http://example.test:9222" } }));
+      const remoteEndpoint = await api("GET", "/api/v1/omp/capabilities");
+      assert.equal(remoteEndpoint.payload.browsers.find((mode) => mode.id === "chrome-electron").reasonCode, "invalid_endpoint");
+      await writeFile(browserConfigFixture, JSON.stringify({ "browser.relayUrl": { value: "http://127.0.0.1:1" } }));
+      const relayMissing = await api("GET", "/api/v1/omp/capabilities");
+      assert.equal(relayMissing.payload.browsers.find((mode) => mode.id === "omp-browser-relay").reasonCode, "endpoint_unavailable");
+      assert.equal(relayMissing.payload.browsers.find((mode) => mode.id === "omp-browser-relay").connectOnStart, true);
+      const relayBootstrapped = await api("POST", "/api/v1/omp/prewarm", { cwd: workspaceRoot, browserMode: "omp-browser-relay", tools: ["read"] });
+      assert.equal(relayBootstrapped.status, 202, `OMP must be able to start the Relay endpoint: ${JSON.stringify(relayBootstrapped.payload)}`);
+      assert.ok((await readFakeLaunches(home)).some((launch) => launch.protocol === "acp" && launch.overlay?.browser?.relayUrl === "http://127.0.0.1:1"));
+      assert.match(chatClient, /mode\.connectOnStart/);
+      assert.match(chatClient, /Khởi chạy cùng chat/);
+      passes.push("native browser probes require ready loopback CDP and expose setup/disconnection reasons");
+      passes.push("OMP Browser Relay can bootstrap before its local endpoint is ready; Chrome/Electron still requires live CDP");
+      passes.push("native browser config reaches RPC/ACP workers without changing approval or global settings");
+      passes.push("switching native browser off recalculates tool policy and removes its worker overlay");
+    } finally {
+      await rm(browserConfigFixture, { force: true });
+      await new Promise((resolve) => browserCdp.close(resolve));
+    }
 
     async function createFixture(title, cwd = workspaceRoot, options) {
       const created = await api("POST", "/api/v1/sessions", { title, cwd, tools: ["read"] });
@@ -1110,6 +1305,62 @@ async function runContract() {
       assert.match(received, new RegExp(code), `${label}: ${received}`);
       return received;
     }
+    const unauthenticatedAgentConfig = await fetch(`${baseUrl}/api/v1/agent-instructions`);
+    assert.equal(unauthenticatedAgentConfig.status, 401, "Agent settings must require the dashboard session");
+    const agentConfig = await api("GET", "/api/v1/agent-instructions");
+    assert.equal(agentConfig.status, 200);
+    assert.equal(agentConfig.payload.configured, true);
+    assert.equal(agentConfig.payload.path, agentContextFile);
+    assert.equal(agentConfig.payload.instructions, initialAgentInstructions, "dashboard must read the full OMP context file");
+    assert.equal(agentConfig.payload.version, createHash("sha256").update(initialAgentInstructions, "utf8").digest("hex"));
+    assert.ok(agentConfig.payload.maxChars > initialAgentInstructions.length, "the editor must allow the full OMP context file");
+    const badAgentConfig = await api("PUT", "/api/v1/agent-instructions", { instructions: 4, version: agentConfig.payload.version });
+    assert.equal(badAgentConfig.status, 400);
+    const missingVersion = await api("PUT", "/api/v1/agent-instructions", { instructions: "lost update" });
+    assert.equal(missingVersion.status, 400, "save must carry the version read by the editor");
+    const longAgentConfig = await api("PUT", "/api/v1/agent-instructions", { instructions: "x".repeat(agentConfig.payload.maxChars + 1), version: agentConfig.payload.version });
+    assert.equal(longAgentConfig.status, 400);
+    const editedInstructions = `${initialAgentInstructions}\nDashboard edit: đã lưu trực tiếp.`;
+    const savedAgentConfig = await api("PUT", "/api/v1/agent-instructions", { instructions: editedInstructions, version: agentConfig.payload.version });
+    assert.equal(savedAgentConfig.status, 200, `Agent config save failed: ${JSON.stringify(savedAgentConfig.payload)}`);
+    assert.equal(await readFile(agentContextFile, "utf8"), editedInstructions, "dashboard save must write OMP's real context file");
+    assert.equal((await stat(agentContextFile)).mode & 0o777, 0o600, "save must preserve the context file's permissions");
+    const instructionBackups = await readdir(homePath(home, "usage-dashboard", "backups", "agent-instructions"));
+    assert.equal(instructionBackups.length, 1);
+    assert.equal(await readFile(homePath(home, "usage-dashboard", "backups", "agent-instructions", instructionBackups[0]), "utf8"), initialAgentInstructions, "old global instructions must be backed up before save");
+    const staleSave = await api("PUT", "/api/v1/agent-instructions", { instructions: "stale dashboard draft", version: agentConfig.payload.version });
+    assert.equal(staleSave.status, 409, "stale editor must not overwrite OMP changes");
+    assert.equal(await readFile(agentContextFile, "utf8"), editedInstructions);
+    const externalInstructions = `${editedInstructions}\nOMP direct edit.`;
+    await writeFile(agentContextFile, externalInstructions, { mode: 0o600 });
+    const reloadedAgentConfig = await api("GET", "/api/v1/agent-instructions");
+    assert.equal(reloadedAgentConfig.payload.instructions, externalInstructions, "dashboard reload must read edits made directly in OMP's file");
+    assert.equal(reloadedAgentConfig.payload.version, createHash("sha256").update(externalInstructions, "utf8").digest("hex"));
+    const reducedInstructions = externalInstructions.replace("- Quy tắc OMP cần giữ nguyên khi đồng bộ.\n", "");
+    const reducedAgentConfig = await api("PUT", "/api/v1/agent-instructions", { instructions: reducedInstructions, version: reloadedAgentConfig.payload.version });
+    assert.equal(reducedAgentConfig.status, 200);
+    assert.equal(await readFile(agentContextFile, "utf8"), reducedInstructions, "removing content must update the same OMP file");
+    const deleteAgentFile = await fetch(`${baseUrl}/api/v1/agent-instructions`, { method: "DELETE", headers: { cookie } });
+    assert.equal(deleteAgentFile.status, 405, "the dashboard must reject file deletion");
+    assert.equal(deleteAgentFile.headers.get("allow"), "GET, PUT");
+    await deleteAgentFile.text();
+    assert.equal(await readFile(agentContextFile, "utf8"), reducedInstructions, "rejected deletion must preserve the file and its contents");
+    const emptyAgentConfig = await api("PUT", "/api/v1/agent-instructions", { instructions: "", version: reducedAgentConfig.payload.version });
+    assert.equal(emptyAgentConfig.status, 200);
+    assert.equal((await stat(agentContextFile)).isFile(), true, "even empty instructions must keep AGENTS.md as a file");
+    assert.equal(await readFile(agentContextFile, "utf8"), "");
+    const restoredAgentConfig = await api("PUT", "/api/v1/agent-instructions", { instructions: externalInstructions, version: emptyAgentConfig.payload.version });
+    assert.equal(restoredAgentConfig.status, 200);
+    assert.equal(await readFile(agentContextFile, "utf8"), externalInstructions);
+    await runAcpLaunchSmoke(home, workspaceRoot);
+    const acpLaunch = (await readFakeLaunches(home)).find((item) => item.protocol === "acp");
+    assert.ok(acpLaunch && !acpLaunch.args.some((arg) => arg.startsWith("--append-system-prompt=")), "ACP must use OMP's automatic AGENTS.md context loading");
+    const agentSessionResult = await api("POST", "/api/v1/sessions", { title: "Agent OMP context", cwd: workspaceRoot, originApp: "Hòn π /chat" });
+    assert.equal(agentSessionResult.status, 201, `Agent session failed: ${JSON.stringify(agentSessionResult.payload)}`);
+    await waitForFakeLaunch(home, (item) => item.protocol === "rpc");
+    const rpcLaunch = (await readFakeLaunches(home)).find((item) => item.protocol === "rpc");
+    assert.ok(rpcLaunch && !rpcLaunch.args.some((arg) => arg.startsWith("--append-system-prompt=")), "RPC must use OMP's automatic AGENTS.md context loading");
+    passes.push("Agent OMP settings sync content both ways, allow additions/removals/empty content while preserving AGENTS.md, reject DELETE and stale saves, keep backups, and use native ACP/RPC context loading");
     const chunkedFolderName = "Chunked UTF-8 🧪 request";
     const chunkedFolder = await apiWithSplitUtf8("/api/v1/folders", { name: chunkedFolderName, cwd: workspaceRoot }, "🧪");
     assert.equal(chunkedFolder.status, 201, `split UTF-8 request failed: ${JSON.stringify(chunkedFolder.payload)}`);
@@ -1210,6 +1461,9 @@ async function runContract() {
     assert.equal(googleModelAccess.status, 200, `selected Gemini models failed: ${JSON.stringify(googleModelAccess.payload)}`);
     assert.equal(googleModelAccess.payload.account.id, googleAccount.id);
     assert.equal(googleModelAccess.payload.account.providerKey, "google-antigravity");
+    assert.deepEqual(googleModelAccess.payload.detectedModels.map((model) => model.id), googleModelAccess.payload.models.map((model) => model.id));
+    assert.deepEqual(googleModelAccess.payload.availableModels.map((model) => model.id), googleModelAccess.payload.models.map((model) => model.id));
+    assert.deepEqual(googleModelAccess.payload.unavailableModels, []);
     assert.deepEqual(googleModelAccess.payload.models.map((model) => model.id), ["smoke-model", "smoke-image-model", "smoke-antigravity-claude", "smoke-antigravity-gpt"]);
     assert.equal(googleModelAccess.payload.models.every((model) => model.provider === "google-antigravity"), true);
     assert.equal(googleModelAccess.payload.models.find((model) => model.id === "smoke-model")?.isDefault, true);
@@ -1352,6 +1606,26 @@ async function runContract() {
       pinTimestamp: new Date(Date.now() + 60_000).toISOString(),
       errorStatus: 429,
     });
+    await seedUsageRecord(home, randomUUID(), {
+      pinHash: googlePin,
+      provider: "google-antigravity",
+      model: "smoke-model",
+      input: 20,
+      output: 8,
+      cacheRead: 3,
+      cacheWrite: 2,
+      timestamp: new Date(Date.now() - 8 * 24 * 60 * 60_000).toISOString(),
+    });
+    await seedUsageRecord(home, randomUUID(), {
+      pinHash: googlePin,
+      provider: "google-antigravity",
+      model: "smoke-model",
+      input: 30,
+      output: 12,
+      cacheRead: 5,
+      cacheWrite: 4,
+      timestamp: new Date(Date.now() - 40 * 24 * 60 * 60_000).toISOString(),
+    });
     await seedUsageRecord(home, randomUUID(), { provider: "anthropic", model: "smoke-external-model", input: 1000, output: 1000 });
     const refreshedQuota = await api("POST", "/api/v1/quota/sync", {});
     assert.equal(refreshedQuota.status, 200, `quota refresh failed: ${JSON.stringify(refreshedQuota.payload)}`);
@@ -1378,10 +1652,62 @@ async function runContract() {
     assert.ok(blockedOverview.payload.statusCounts.warn >= 1, "a historical 429 with live quota remaining must be counted as warning");
     const quotaHistory = await api("GET", "/api/v1/quota/history?scope=all");
     assert.equal(quotaHistory.status, 200, `quota history failed: ${JSON.stringify(quotaHistory.payload)}`);
-    assert.equal(quotaHistory.payload.totalRequests, 2, `Gemini history must include only requests pinned before their timestamps: ${JSON.stringify(quotaHistory.payload)}`);
+    assert.equal(quotaHistory.payload.totalRequests, 4, `all-time Gemini history must include only requests pinned before their timestamps: ${JSON.stringify(quotaHistory.payload)}`);
     assert.deepEqual([...new Set(quotaHistory.payload.items.map((item) => item.model))], ["smoke-model"]);
     assert.ok(quotaHistory.payload.items.every((item) => item.accountId === googleAccount.id));
     assert.equal(quotaHistory.payload.items.some((item) => item.model === "smoke-openai-model"), false);
+    const successRow = quotaHistory.payload.items.find((item) => item.status === "live");
+    assert.ok(successRow, `history row exposes successful generation status: ${JSON.stringify(quotaHistory.payload.items)}`);
+    assert.ok(quotaHistory.payload.items.some((item) => item.status === "quota_blocked"), "history rows preserve quota failure status");
+    const cacheRow = quotaHistory.payload.items.find((item) => item.cacheReadTokens === 3);
+    assert.equal(cacheRow?.cacheWriteTokens, 2, "history row must expose actual cache read/write usage");
+    assert.equal(quotaHistory.payload.cacheReadTokens, 8, "summary cache reads must equal the sum of all rows");
+    assert.equal(quotaHistory.payload.cacheWriteTokens, 6, "summary cache writes must equal the sum of all rows");
+    for (const [scope, count] of [["1h", 2], ["24h", 2], ["7d", 2], ["30d", 3], ["all", 4]]) {
+      const scoped = scope === "all" ? quotaHistory : await api("GET", `/api/v1/quota/history?scope=${scope}`);
+      assert.equal(scoped.status, 200, `scope ${scope} must return successfully`);
+      assert.equal(scoped.payload.totalRequests, count, `scope ${scope} must include the correct time range`);
+      assert.equal(scoped.payload.timeZone, "Asia/Ho_Chi_Minh", `scope ${scope} reports the dashboard timezone`);
+      assert.equal(scoped.payload.scopeMode, scope === "all" ? "unbounded" : "rolling");
+      assert.equal(scoped.payload.cutoff == null, scope === "all", `scope ${scope} exposes its rolling cutoff contract`);
+      if (scope !== "all") assert.ok(Math.abs(Date.parse(scoped.payload.generatedAt) - Date.parse(scoped.payload.cutoff) - ({ "1h": 3600000, "24h": 86400000, "7d": 604800000, "30d": 2592000000 }[scope])) < 100, `scope ${scope} cutoff matches its rolling duration`);
+      assert.equal(scoped.payload.totalRecords, count);
+      assert.equal(scoped.payload.returnedRecords, count);
+      assert.equal(scoped.payload.hasMore, false);
+      assert.ok(scoped.payload.hourlyTrend.length > 0, `scope ${scope} has trend buckets`);
+      assert.ok(scoped.payload.hourlyTrend.every((bucket) => bucket.bucketStart && bucket.bucketEnd && /\d{2}\/\d{2}\/\d{4}/.test(bucket.label)), `scope ${scope} bucket labels include full date context`);
+      assert.ok(scoped.payload.hourlyTrend.every((bucket) => Date.parse(bucket.bucketEnd) > Date.parse(bucket.bucketStart)), `scope ${scope} bucket bounds are unambiguous`);
+      assert.ok(scoped.payload.bucketIntervalMs > 0);
+      assert.deepEqual(scoped.payload.hourlyTrend.map((bucket) => Date.parse(bucket.bucketStart)), [...scoped.payload.hourlyTrend.map((bucket) => Date.parse(bucket.bucketStart))].sort((a, b) => a - b), `scope ${scope} trend is chronological`);
+    }
+    const concurrentHistory = await Promise.all(["1h", "24h", "7d", "30d", "all"].map((scope) => api("GET", `/api/v1/quota/history?scope=${scope}`)));
+    assert.ok(concurrentHistory.every((response) => response.status === 200), `concurrent quota history requests must all succeed: ${JSON.stringify(concurrentHistory)}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const observabilityLog = await readFile(homePath(home, "usage-dashboard", "dashboard-events.jsonl"), "utf8");
+    assert.match(observabilityLog, /"event":"http_request"/, "dashboard must write structured HTTP request logs");
+    assert.match(observabilityLog, /"event":"quota_history_load_complete"/, "quota history cache loads must be auditable");
+    const historyEvents = observabilityLog.split("\n").filter((line) => line.includes('"event":"quota_history_load_complete"')).map((line) => JSON.parse(line));
+    assert.ok(historyEvents.some((event) => event.requestId), "history load logs correlate to HTTP requests");
+    const refreshEvents = observabilityLog.split("\n").filter((line) => line.includes('"event":"quota_refresh_complete"')).map((line) => JSON.parse(line));
+    assert.ok(refreshEvents.some((event) => event.requestId && event.refreshId && Number.isFinite(event.phases?.usageMs) && Number.isFinite(event.phases?.generationHealthMs)), "quota refresh logs include correlation and phase timings");
+    assert.doesNotMatch(observabilityLog, /SUPER_SECRET|omp_dashboard_session=/, "observability logs must not expose secrets or session cookies");
+    assert.ok(observabilityLog.split("\n").filter(Boolean).map((line) => JSON.parse(line)).every((event) => !Object.hasOwn(event, "errorMessage")), "logs omit raw error messages that may contain PII or secrets");
+
+    const bulkPath = await seedUsageRecord(home, randomUUID(), { pinHash: googlePin, provider: "google-antigravity", model: "smoke-model", input: 1, output: 1 });
+    const bulkRecords = (await readFile(bulkPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    const baseUsage = bulkRecords.find((record) => record.type === "message");
+    const bulkLines = [...bulkRecords, ...Array.from({ length: 204 }, (_, index) => ({ ...baseUsage, id: `bulk-${index}`, message: { ...baseUsage.message, id: `bulk-${index}` } }))];
+    await writeFile(bulkPath, `${bulkLines.map((record) => JSON.stringify(record)).join("\n")}\n`, { mode: 0o600 });
+    const bulkHistory = await api("GET", "/api/v1/quota/history?scope=all&refresh=1");
+    assert.equal(bulkHistory.status, 200);
+    assert.equal(bulkHistory.payload.totalRecords, 209, "History reports the full matching total above the response cap");
+    assert.equal(bulkHistory.payload.returnedRecords, 200);
+    assert.equal(bulkHistory.payload.items.length, 200);
+    assert.equal(bulkHistory.payload.hasMore, true, "History clearly identifies that more records are omitted");
+    await rm(bulkPath, { force: true });
+    const afterRemoval = await api("GET", "/api/v1/quota/history?scope=all&refresh=1");
+    assert.equal(afterRemoval.payload.totalRecords, 4, "explicit refresh drops records from a removed session file");
+    assert.ok(observabilityLog.length > 0);
     passes.push("Gemini history and Protect health remain Gemini-only; Google 429 does not auto-switch accounts");
 
     const manuallySelectedSibling = await api("POST", "/api/v1/quota/switch", { accountId: googleAltAccount.id });
@@ -2585,6 +2911,24 @@ async function runContract() {
     await writeFile(metadataPath, `${JSON.stringify(seededMetadata, null, 2)}\n`, { mode: 0o600 });
     const oldFolders = await api("GET", "/api/v1/folders");
     assert.ok(oldFolders.payload.some((folder) => folder.id === "folder-legacy"), "legacy project groups remain visible");
+    const orphanFolder = await api("POST", "/api/v1/folders", { name: "Metadata-only actions", cwd: workspaceRoot });
+    assert.equal(orphanFolder.status, 201);
+    const orphanId = randomUUID();
+    const oldTimestamp = new Date(Date.now() - 10 * 86400000).toISOString();
+    const orphanMetadata = JSON.parse(await readFile(metadataPath, "utf8"));
+    orphanMetadata.sessions[orphanId] = { title: "Metadata-only old chat", folderId: orphanFolder.payload.id, folderName: orphanFolder.payload.name, cwd: workspaceRoot, messageCount: 2, createdAt: oldTimestamp, updatedAt: oldTimestamp };
+    await writeFile(metadataPath, `${JSON.stringify(orphanMetadata, null, 2)}\n`, { mode: 0o600 });
+    for (const [on, off, field] of [["pin", "unpin", "isPinned"], ["unread", "read", "isUnread"]]) {
+      const enabled = await action(orphanId, { action: on });
+      assert.equal(enabled.status, 200, `${on} should work for a metadata-backed old chat`);
+      assert.equal(enabled.payload.session[field], true);
+      const disabled = await action(orphanId, { action: off });
+      assert.equal(disabled.status, 200, `${off} should work for a metadata-backed old chat`);
+      assert.equal(disabled.payload.session[field], false);
+    }
+    const orphanArchive = await action(orphanId, { action: "archive" });
+    assert.equal(orphanArchive.status, 404, "archive must not claim success without an OMP transcript");
+    passes.push("metadata-only old chats support metadata actions without faking transcript actions");
     const legacyProjectChat = await api("POST", "/api/v1/sessions", { title: "Legacy project needs a path", folderId: "folder-legacy" });
     assert.equal(legacyProjectChat.status, 409, "legacy virtual folders must be configured before starting new project chats");
     const configuredLegacy = await api("PATCH", "/api/v1/folders/folder-legacy", { cwd: otherRoot });
@@ -2763,6 +3107,50 @@ async function runContract() {
     await writeFile(metadataPath, validMetadata, { mode: 0o600 });
     passes.push("corrupt chat metadata fails closed without replacing its bytes");
 
+    const detectedAppCwd = join(home, "Library", "Application Support", "Detected App");
+    const detectedAppId = randomUUID();
+    const spoofedChatAppId = randomUUID();
+    await mkdir(detectedAppCwd, { recursive: true, mode: 0o700 });
+    const sourceEvents = createSseReader(await fetch(`${baseUrl}/api/v1/sessions/events`, { headers: { cookie } }));
+    await seedOmpSession(home, detectedAppId, detectedAppCwd, "Detected app session");
+    const detectedSessions = await readFakeSessions(home);
+    const detected = detectedSessions.find((session) => session.sessionId === detectedAppId);
+    detected._meta = { messageCount: 0, originType: "app", originApp: "Detected App" };
+    detectedSessions.push({ sessionId: spoofedChatAppId, cwd: detectedAppCwd, title: "Spoofed chat app", updatedAt: new Date().toISOString(), _meta: { messageCount: 0, originType: "app", originApp: "Hòn π /chat" } });
+    await writeFakeSessions(home, detectedSessions);
+    await sourceEvents.waitFor((event) => event.event === "sessions_changed", "new app source catalog");
+    const metadataBeforeGet = await readFile(metadataPath, "utf8");
+    const sourceCatalog = await api("GET", "/api/v1/sessions?limit=200&includeOrigins=1");
+    assert.equal(sourceCatalog.status, 200, `detected source catalog failed: ${JSON.stringify(sourceCatalog.payload)}`);
+    assert.ok(sourceCatalog.payload.originApps.includes("Detected App"), "the app list must come from OMP session metadata");
+    const detectedAppSession = sourceCatalog.payload.sessions.find((item) => item.id === detectedAppId);
+    assert.equal(detectedAppSession?.originType, "app");
+    assert.equal(detectedAppSession?.originApp, "Detected App");
+    assert.equal(detectedAppSession?.folderName, "Detected App", "an unconfigured app should receive its own grouping folder");
+    const spoofedChatApp = sourceCatalog.payload.sessions.find((item) => item.id === spoofedChatAppId);
+    assert.equal(spoofedChatApp?.originType, "app", "an ACP client name must not impersonate /chat");
+    assert.equal(await readFile(metadataPath, "utf8"), metadataBeforeGet, "reading an unchanged catalog must not write metadata");
+    await sourceEvents.cancel();
+    passes.push("OMP-reported app identities populate the dynamic source list, auto-group outside GET, and cannot impersonate /chat");
+
+    const dashboardChat = await api("POST", "/api/v1/sessions", { title: "Dashboard-origin session", cwd: workspaceRoot, originApp: "Hòn π /chat" });
+    assert.equal(dashboardChat.status, 201);
+    assert.equal((dashboardChat.payload.session || dashboardChat.payload).originType, "chat", "only dashboard metadata creates a no-icon /chat source");
+    const catalogCallsBefore = await fakeSessionCatalogCalls(home);
+    const [catalogA, catalogB] = await Promise.all([
+      api("GET", "/api/v1/sessions?limit=200"),
+      api("GET", "/api/v1/sessions?limit=200&includeOrigins=1"),
+    ]);
+    assert.equal(catalogA.status, 200);
+    assert.equal(catalogB.status, 200);
+    assert.equal(await fakeSessionCatalogCalls(home), catalogCallsBefore + 1, "concurrent catalog reads must share one ACP scan");
+    const metadataAfterRefresh = await readFile(metadataPath, "utf8");
+    await api("GET", "/api/v1/sessions?limit=200");
+    assert.equal(await fakeSessionCatalogCalls(home), catalogCallsBefore + 1, "cached catalog reads must not rescan ACP");
+    assert.equal(await readFile(metadataPath, "utf8"), metadataAfterRefresh, "cached catalog reads must not write metadata");
+    passes.push("catalog refresh is single-flight and repeated GET requests are read-only");
+
+    await action((dashboardChat.payload.session || dashboardChat.payload).id, { action: "pin" });
     await rm(fakeBin, { force: true });
     const acpFailure = await api("GET", "/api/v1/sessions?limit=10");
     assert.equal(acpFailure.status, 502, `ACP spawn failure should return an upstream error: ${JSON.stringify(acpFailure.payload)}`);

@@ -237,10 +237,11 @@ async function validCwd(value) {
   if (!isAbsolute(cwd)) throw new Error("cwd phải là đường dẫn tuyệt đối");
   const canonical = await realpath(cwd).catch(() => null);
   const info = canonical ? await stat(canonical).catch(() => null) : null;
-  if (!info?.isDirectory()) throw new Error("cwd không tồn tại hoặc không phải thư mục");
+  if (!info?.isDirectory()) throw Object.assign(new Error("cwd không tồn tại hoặc không phải thư mục"), { code: "BAD_REQUEST", field: "cwd" });
   let allowed = false;
   for (const root of ALLOWED_WORKSPACE_ROOTS) {
     const canonicalRoot = await realpath(root).catch(() => root);
+    if (canonicalRoot === sep) continue;
     if (canonical === canonicalRoot || canonical.startsWith(`${canonicalRoot}${sep}`)) {
       allowed = true;
       break;
@@ -317,8 +318,35 @@ async function listAcpSessions(cwd, env = process.env) {
       clientInfo: { name: "OMP Web Console", version: "0.1.0" },
     });
     await response(nextId++, "authenticate", { methodId: "agent" });
-    const result = await response(nextId++, "_omp/sessions/listAll", { limit: 1000 });
-    return { sessions: result?.sessions || [], total: result?.total || 0 };
+    const sessions = new Map();
+    let offset = 0;
+    let total = 0;
+    do {
+      const result = await response(nextId++, "_omp/sessions/listAll", { limit: 5000, offset, sort: "created" });
+      const page = result?.sessions;
+      if (!Array.isArray(page) || !Number.isSafeInteger(result.total) || result.total < 0) {
+        throw new Error("OMP trả danh sách phiên không hợp lệ");
+      }
+      total = Math.max(total, result.total);
+      let added = 0;
+      for (const session of page) {
+        if (typeof session?.sessionId !== "string" || !session.sessionId) {
+          throw new Error("OMP trả phiên không có ID");
+        }
+        if (!sessions.has(session.sessionId)) {
+          sessions.set(session.sessionId, session);
+          added++;
+        }
+      }
+      if (!page.length || !added) {
+        if (offset < total) throw new Error("OMP phân trang danh sách phiên không tiến triển");
+        break;
+      }
+      offset += page.length;
+    } while (offset < total);
+    if (sessions.size !== total) throw new Error("OMP trả danh sách phiên chưa đầy đủ");
+    const allSessions = [...sessions.values()].sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+    return { sessions: allSessions, total: allSessions.length };
   } catch (error) {
     if (error?.code === "UPSTREAM_UNAVAILABLE") throw error;
     throw new Error(`${error.message}${stderr ? ` (${safeString(stderr, 300)})` : ""}`);
@@ -336,8 +364,30 @@ function normalizeTools(value) {
   return [...new Set(items.map((item) => String(item || "").trim()).filter((item) => OMP_TOOL_ID_RE.test(item)))].slice(0, 64);
 }
 
+export function loopbackBrowserEndpoint(value) {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) || url.username || url.password || url.search || url.hash) return null;
+    return url.href.replace(/\/+$/, "");
+  } catch { return null; }
+}
+
+function browserLaunchOptions(value, env) {
+  if (value == null) return { args: [], env, config: null };
+  const url = loopbackBrowserEndpoint(value.url);
+  if (!["omp-browser-relay", "chrome-electron"].includes(value.mode) || !url) throw Object.assign(new Error("Cấu hình browser phải dùng CDP loopback hợp lệ."), { code: "BAD_REQUEST", field: "browserMode" });
+  const config = { mode: value.mode, url };
+  const relay = config.mode === "omp-browser-relay";
+  const overlay = { browser: { enabled: true, relay, relayUrl: relay ? url : "", cdpUrl: relay ? "" : url, cmux: false, tern: false }, eval: { js: true }, tools: { xdev: false } };
+  const directory = join(homedir(), ".omp", "usage-dashboard", "browser-configs");
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const path = join(directory, `${fileSha256(Buffer.from(JSON.stringify(config)))}.json`);
+  writeFileSync(path, `${JSON.stringify(overlay)}\n`, { mode: 0o600 });
+  return { args: ["--config", path], env: { ...env, PI_BROWSER_RELAY: relay ? "1" : "0", PI_BROWSER_CMUX: "0", PI_BROWSER_TERN: "0" }, config };
+}
+
 class ConsoleContext {
-  constructor({ cwd, guard, onGenerationFinished, onSafetyChanged, onIdle, approvalMode = "always-ask", planYolo = false, planYoloModel = null, advisor = false, tools = [], env = process.env }) {
+  constructor({ cwd, guard, onGenerationFinished, onSafetyChanged, onIdle, approvalMode = "always-ask", planYolo = false, planYoloModel = null, advisor = false, tools = [], browserConfig = null, env = process.env }) {
     this.id = randomUUID();
     this.cwd = cwd;
     this.approvalMode = ["always-ask", "write", "yolo"].includes(approvalMode) ? approvalMode : "always-ask";
@@ -345,6 +395,7 @@ class ConsoleContext {
     this.planYoloModel = this.planYolo && typeof planYoloModel === "string" ? planYoloModel : null;
     this.advisor = advisor === true;
     this.tools = normalizeTools(tools);
+    this.browserConfig = browserConfig;
     this.env = env;
     this.guard = guard;
     this.onGenerationFinished = onGenerationFinished;
@@ -412,9 +463,11 @@ class ConsoleContext {
     this.#broadcast("bridge_status", this.publicSummary());
     const args = ["--approval-mode", this.approvalMode, ...(this.planYolo ? ["--plan-yolo", `--plan=${this.planYoloModel}`, `--plan-yolo-into=${this.planYoloModel}`] : []), ...(this.advisor ? ["--advisor"] : []), "--mode", "rpc", "--extension", GEMINI_PIN_EXTENSION];
     if (this.tools.length) args.push(`--tools=${this.tools.join(",")}`);
+    const browser = browserLaunchOptions(this.browserConfig, this.env);
+    args.push(...browser.args);
     const child = spawn(OMP_BIN, args, {
       cwd: this.cwd,
-      env: this.env,
+      env: browser.env,
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.child = child;
@@ -676,15 +729,16 @@ export class ConsoleBridge {
   async start(body = {}) {
     const cwd = await validCwd(body.cwd);
     if (body.protocol === "acp") return this.#startAcp(body, cwd);
-    const context = new ConsoleContext({ cwd, env: this.#env, guard: this.#guard, onGenerationFinished: this.#onGenerationFinished, onSafetyChanged: this.#onSafetyChanged, onIdle: (contextId) => this.#contexts.delete(contextId), approvalMode: body.approvalMode, planYolo: body.planYolo, planYoloModel: body.planYoloModel, advisor: body.advisor, tools: body.tools });
+    const context = new ConsoleContext({ cwd, env: this.#env, guard: this.#guard, onGenerationFinished: this.#onGenerationFinished, onSafetyChanged: this.#onSafetyChanged, onIdle: (contextId) => this.#contexts.delete(contextId), approvalMode: body.approvalMode, planYolo: body.planYolo, planYoloModel: body.planYoloModel, advisor: body.advisor, tools: body.tools, browserConfig: body.browserConfig });
     this.#contexts.set(context.id, context);
     await context.start();
     return context.summary();
   }
 
-  #acquireAcpWorker(cwd, approvalMode, planYolo, planYoloModel, advisor, tools) {
+  #acquireAcpWorker(cwd, approvalMode, planYolo, planYoloModel, advisor, tools, browserConfig = null) {
     const normalizedTools = [...tools].sort();
-    const key = JSON.stringify({ cwd, approvalMode, planYolo: planYolo === true, planYoloModel: planYolo ? planYoloModel : null, advisor: advisor === true, tools: normalizedTools });
+    const browser = browserLaunchOptions(browserConfig, this.#env);
+    const key = JSON.stringify({ cwd, approvalMode, planYolo: planYolo === true, planYoloModel: planYolo ? planYoloModel : null, advisor: advisor === true, tools: normalizedTools, browserConfig: browser.config });
     let record = this.#acpWorkers.get(key);
     if (record && ["error", "closed"].includes(record.worker.status)) {
       this.#acpWorkers.delete(key);
@@ -693,8 +747,9 @@ export class ConsoleBridge {
     if (!record) {
       const args = ["--approval-mode", approvalMode, ...(planYolo ? ["--plan-yolo", `--plan=${planYoloModel}`, `--plan-yolo-into=${planYoloModel}`] : []), ...(advisor ? ["--advisor"] : []), "--extension", GEMINI_PIN_EXTENSION];
       if (normalizedTools.length) args.push(`--tools=${normalizedTools.join(",")}`);
+      args.push(...browser.args);
       args.push("acp");
-      const worker = new AcpWorker({ command: OMP_BIN, args, cwd, env: this.#env });
+      const worker = new AcpWorker({ command: OMP_BIN, args, cwd, env: browser.env });
       record = { key, worker, sessions: new Map(), contexts: new Map(), idleTimer: null };
       worker.onNotification = (frame) => record.sessions.get(frame.params?.sessionId)?.onNotification(frame);
       worker.onRequest = (frame) => {
@@ -770,7 +825,7 @@ export class ConsoleBridge {
     const approvalMode = ["always-ask", "write", "yolo"].includes(body.approvalMode) ? body.approvalMode : "always-ask";
     const tools = normalizeTools(body.tools);
     const planYolo = body.planYolo === true;
-    const record = this.#acquireAcpWorker(cwd, approvalMode, planYolo, body.planYoloModel, body.advisor === true, tools);
+    const record = this.#acquireAcpWorker(cwd, approvalMode, planYolo, body.planYoloModel, body.advisor === true, tools, body.browserConfig);
     const context = this.#makeAcpContext(record, cwd, approvalMode, tools);
     try {
       await context.start({ sessionId: typeof body.ompSessionId === "string" ? body.ompSessionId : null });
@@ -791,7 +846,7 @@ export class ConsoleBridge {
     const cwd = await validCwd(body.cwd);
     const approvalMode = ["always-ask", "write", "yolo"].includes(body.approvalMode) ? body.approvalMode : "always-ask";
     const tools = normalizeTools(body.tools);
-    const record = this.#acquireAcpWorker(cwd, approvalMode, body.planYolo === true, body.planYoloModel, body.advisor === true, tools);
+    const record = this.#acquireAcpWorker(cwd, approvalMode, body.planYolo === true, body.planYoloModel, body.advisor === true, tools, body.browserConfig);
     const worker = await record.worker.start();
     if (!record.contexts.size) this.#scheduleAcpWorkerStop(record);
     return { status: worker.status, pid: worker.pid };
@@ -831,7 +886,7 @@ export class ConsoleBridge {
     for (const root of ALLOWED_WORKSPACE_ROOTS) {
       const canonical = await realpath(root).catch(() => null);
       const info = canonical ? await stat(canonical).catch(() => null) : null;
-      if (info?.isDirectory() && !roots.some((item) => item.path === canonical)) {
+      if (canonical !== sep && info?.isDirectory() && !roots.some((item) => item.path === canonical)) {
         roots.push({ path: canonical, name: basename(canonical) || canonical });
       }
     }

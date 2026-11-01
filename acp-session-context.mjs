@@ -91,6 +91,12 @@ export class AcpSessionContext {
     this.stopping = false;
     this.sessionId = null;
     this.sessionIds = new Set();
+    this.currentModel = null;
+    this.currentThinking = null;
+    this.lastUsage = null;
+    this.lastUsageUpdatedAt = null;
+    this.lastContextUsage = null;
+    this.lastContextUsageUpdatedAt = null;
     this.messageCount = 0;
     this.commands = [];
     this.commandUpdatePromise = null;
@@ -172,6 +178,12 @@ export class AcpSessionContext {
       tools: this.tools,
       protocol: "acp",
       sessionId: this.sessionId,
+      model: this.currentModel ? { id: modelId(this.currentModel), provider: modelProvider(this.currentModel) } : null,
+      usage: this.#normalizeUsage(this.lastUsage),
+      usageUpdatedAt: this.lastUsageUpdatedAt ? new Date(this.lastUsageUpdatedAt).toISOString() : null,
+      contextUsage: this.lastContextUsage,
+      contextUsageUpdatedAt: this.lastContextUsageUpdatedAt ? new Date(this.lastContextUsageUpdatedAt).toISOString() : null,
+      compactSupported: this.#supportsCommand("compact"),
     };
   }
 
@@ -282,7 +294,13 @@ export class AcpSessionContext {
         this.#emit("omp", { type: "session_info_update", title: update.title, cwd: update.cwd });
         break;
       case "usage_update":
-        this.lastUsage = update;
+        {
+          const contextUsage = this.#normalizeContextUsage(update);
+          if (contextUsage) {
+            this.lastContextUsage = { ...contextUsage, ...(contextUsage.cost || !this.lastContextUsage?.cost ? {} : { cost: this.lastContextUsage.cost }) };
+            this.lastContextUsageUpdatedAt = Date.now();
+          }
+        }
         break;
     }
   }
@@ -369,6 +387,14 @@ export class AcpSessionContext {
   }
 
   #attachSession(sessionId, configOptions) {
+    if (this.sessionId !== sessionId) {
+      this.currentModel = null;
+      this.currentThinking = null;
+      this.lastUsage = null;
+      this.lastUsageUpdatedAt = null;
+      this.lastContextUsage = null;
+      this.lastContextUsageUpdatedAt = null;
+    }
     this.sessionId = sessionId;
     this.sessionIds.add(sessionId);
     this.registerSession(sessionId, this);
@@ -401,6 +427,9 @@ export class AcpSessionContext {
         return this.#respond(frame, true, { commands: this.commands });
       case "get_available_models":
         return this.#respond(frame, true, { models: this.#models() });
+      case "compact":
+        if (!this.#supportsCommand("compact")) throw Object.assign(new Error("OMP ACP không công bố lệnh /compact cho session này"), { code: "UNSUPPORTED_ACTION" });
+        return this.#prompt({ ...frame, type: "prompt", message: "/compact" });
       case "get_subagents":
         throw Object.assign(new Error("Danh sách subagents chưa được chuẩn hóa trong ACP của OMP"), { code: "UNSUPPORTED_ACTION" });
       case "prompt":
@@ -463,7 +492,7 @@ export class AcpSessionContext {
     const commandMatch = /^\/([\w:-]+)/.exec(text);
     const commandName = commandMatch?.[1];
     this.activeLocalCommand = ["memory", "dashboard-gemini-pin"].includes(commandName)
-      && this.commands.some((item) => item.name === commandName) ? commandName : null;
+      && this.#supportsCommand(commandName) ? commandName : null;
     this.localCommandOutput = "";
     const now = Date.now();
     if (!isFollowUp) {
@@ -479,6 +508,7 @@ export class AcpSessionContext {
     this.agentTurnStarted = false;
     this.assistantContent = [];
     this.lastUsage = null;
+    this.lastUsageUpdatedAt = null;
     this.onSafetyChanged?.();
     try {
       const result = await this.worker.request("session/prompt", { sessionId: this.sessionId, prompt }, 0);
@@ -488,7 +518,7 @@ export class AcpSessionContext {
         this.promptAgentInvoked = false;
         this.localCommandOutput = "";
         this.activeLocalCommand = null;
-      } else if (!this.promptAgentInvoked && (!commandMatch || !this.commands.some((item) => item.name === commandName))) {
+      } else if (!this.promptAgentInvoked && (!commandMatch || !this.#supportsCommand(commandName))) {
         this.promptAgentInvoked = true;
         this.#startAgentTurn();
       }
@@ -501,6 +531,10 @@ export class AcpSessionContext {
         ...(promptError.status != null ? { errorStatus: promptError.status } : {}),
       };
       if (this.promptAgentInvoked) {
+        if (result?.usage) {
+          this.lastUsage = result.usage;
+          this.lastUsageUpdatedAt = Date.now();
+        }
         const usage = this.#normalizeUsage(result?.usage || this.lastUsage);
         terminalMessage = {
           ...terminalMessage,
@@ -557,6 +591,20 @@ export class AcpSessionContext {
     const output = Number(usage.outputTokens ?? usage.output ?? 0);
     const total = Number(usage.totalTokens ?? usage.total ?? input + output);
     return [input, output, total].every(Number.isFinite) && total > 0 ? { input, output, total } : null;
+  }
+
+  #normalizeContextUsage(usage) {
+    const used = Number(usage?.used);
+    const size = Number(usage?.size);
+    if (usage?.used == null || usage?.size == null || !Number.isFinite(used) || used < 0 || !Number.isFinite(size) || size <= 0) return null;
+    const amount = Number(usage?.cost?.amount);
+    const currency = String(usage?.cost?.currency || "").toUpperCase();
+    const cost = Number.isFinite(amount) && amount >= 0 && /^[A-Z]{3}$/.test(currency) ? { amount, currency } : null;
+    return { used, size, ...(cost ? { cost } : {}) };
+  }
+
+  #supportsCommand(name) {
+    return this.commands.some((item) => String(item?.name || "").replace(/^\/+/, "") === name);
   }
 
   #models() {

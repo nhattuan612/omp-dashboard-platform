@@ -2,6 +2,15 @@
 
 Trạng thái: đã triển khai source map, audit/drift, API validation và sidebar data-driven ngày 2026-09-29. Tài liệu giữ baseline, quyết định và gate vận hành khi OMP cập nhật.
 
+## Quy tắc bổ sung — 2026-10-02
+
+- **Bắt buộc hiển thị mọi công cụ trong catalog OMP**, kể cả `unavailable`, `blocked`, `stale`, `probe_error` và `unmapped`. Chỉ switch khả dụng được thao tác; lý do luôn hiện trên hàng bị khóa.
+- Khi API/audit lỗi, giữ danh sách cuối đã đồng bộ (kể cả MCP), khóa thao tác và báo lỗi; không làm danh sách biến mất hoặc báo đồng bộ thành công.
+- Baseline hiện tại: OMP `18.4.6`, map `2026-10-02.1`; 14 builtin đã xác minh RPC/ACP không gọi model. `hub` còn lỗi ACP; 5 goal/experiment không có descriptor active.
+- `tools.xdev=true` làm default RPC chỉ lộ 11 top-level tool. Audit dùng `--config` overlay tạm `tools.xdev:false` để lấy JSON descriptor đầy đủ; không sửa config OMP thật, xóa overlay trong `finally`.
+- Probe hiện tại trả 14 builtin + 38 MCP; catalog gồm thêm 6 record chưa khả dụng/bị khóa: 58 hàng, 14 dùng được. MCP chưa có adapter chọn riêng nên hiện chỉ đọc.
+- Backend chỉ nhận tool có map active, config bật, descriptor runtime hiện hành và audit hợp lệ. Tool đã mất không được báo supported dù OMP version vẫn trùng.
+
 ## Kết quả audit làm baseline
 
 - OMP đang chạy: `omp/18.3.2`, không còn là `18.2.7` như tài liệu cũ.

@@ -6,7 +6,7 @@
   const TOOL_STORAGE_KEY = 'omp.tools.v2';
   const BROWSER_MODE_PREFERENCE_VERSION = 'manual-v1';
   const initialBrowserMode = localStorage.getItem('omp.browserModePreferenceVersion') === BROWSER_MODE_PREFERENCE_VERSION ? localStorage.getItem('omp.browserMode') : 'none';
-  const state = { sessions: [], nextCursor: null, activeId: null, generation: 0, messages: [], models: [], activeModel: null, controller: null, requestId: null, activeRequest: null, createPromise: null, menu: null, folderMenu: null, quota: null, accounts: [], attachments: [], workspaceFiles: [], workspaceMention: '@', capabilities: null, selectedTools: [], toolsUpdating: false, advisor: false, advisorConfig: null, advisorConfigLoading: false, advisorConfigSaving: false, folderExpanded: new Set(), folderCollapsed: new Set(), thinking: localStorage.getItem('omp.thinking') || 'max', browserMode: initialBrowserMode === 'ego-browser' ? 'ego-browser' : 'none', planYolo: false, planYoloModel: localStorage.getItem('omp.planYoloModel') || '', shareMode: localStorage.getItem('omp.shareMode') || 'encrypted', approvalMode: localStorage.getItem('omp.approvalMode') || 'always-ask', enterBehavior: localStorage.getItem('omp.enterBehavior') || 'queue', conversationDisplay: localStorage.getItem('omp.conversationDisplay') || 'compact', pendingPrompts: [], queuePausedSessions: new Map(), editingQueueId: null, draftPromptPreview: null, browserAction: null, browserStatus: null, media: { screenCapture: { status: 'unavailable', reason: 'Native screen capture is not provided by OMP dashboard.' }, camera: { status: 'unavailable' }, microphone: { status: 'unavailable' }, video: { status: 'unavailable' } } };
+  const state = { sessions: [], nextCursor: null, activeId: null, generation: 0, messages: [], models: [], activeModel: null, controller: null, requestId: null, activeRequest: null, createPromise: null, menu: null, folderMenu: null, quota: null, accounts: [], attachments: [], workspaceFiles: [], workspaceMention: '@', capabilities: null, selectedTools: [], toolsUpdating: false, advisor: false, advisorConfig: null, advisorConfigLoading: false, advisorConfigSaving: false, folderExpanded: new Set(), folderCollapsed: new Set(), thinking: localStorage.getItem('omp.thinking') || 'max', browserMode: ['ego-browser', 'omp-browser-relay', 'chrome-electron'].includes(initialBrowserMode) ? initialBrowserMode : 'none', planYolo: false, planYoloModel: localStorage.getItem('omp.planYoloModel') || '', shareMode: localStorage.getItem('omp.shareMode') || 'encrypted', approvalMode: localStorage.getItem('omp.approvalMode') || 'always-ask', enterBehavior: localStorage.getItem('omp.enterBehavior') === 'block' ? 'block' : 'queue', conversationDisplay: localStorage.getItem('omp.conversationDisplay') || 'compact', pendingPrompts: [], queuePausedSessions: new Map(), editingQueueId: null, draftPromptPreview: null, browserAction: null, browserStatus: null, media: { screenCapture: { status: 'unavailable', reason: 'Native screen capture is not provided by OMP dashboard.' }, camera: { status: 'unavailable' }, microphone: { status: 'unavailable' }, video: { status: 'unavailable' } } };
   let voiceRecognition = null;
   let voiceStopResolve = null;
   let voiceDisclosureShown = false;
@@ -17,7 +17,6 @@
   let terminalOpenPromise = null;
   let terminalOpenCancelled = false;
   let terminalDisclosureShown = false;
-  state.enterBehavior = 'send';
   state.modelAccess = null;
   state.modelAccessInitialized = false;
   state.quotaRequestId = 0;
@@ -43,6 +42,7 @@
   state.draftWorkspaceCwd = '';
   state.projectFolderPurpose = 'folder';
   state.nativeState = null;
+  state.originApps = [];
   state.startedSessions = new Set();
   state.sessionViews = new Map();
   state.requests = new Map();
@@ -226,6 +226,11 @@
     if (options.preserveActiveView !== false && previousId) cacheSessionView(previousId);
     const draftPreview = options.preserveDraftPreview ? state.draftPromptPreview : null;
     state.activeId = null;
+    contextSnapshot = null;
+    contextRequestId += 1;
+    contextLoading = false;
+    if ($('btnRefreshContext')) { $('btnRefreshContext').disabled = false; $('btnRefreshContext').removeAttribute('aria-busy'); }
+    renderContextWindow(null, 'Chọn chat OMP để xem usage.');
     state.nativeState = null;
     state.generation += 1;
     state.messages = draftPreview ? [draftPreview] : [];
@@ -273,9 +278,11 @@
     return { model: state.activeModel || null, modelProvider: state.activeModelProvider, modelSource: state.modelSource, thinking: state.thinking, browserMode: state.browserMode, planYolo: state.planYolo, planYoloModel: state.planYoloModel || state.activeModel || null, advisor: state.advisor, approvalMode: state.approvalMode, tools: [...state.selectedTools] };
   }
   function setBrowserMode(value) {
-    state.browserMode = value === 'ego-browser' ? 'ego-browser' : 'none';
+    state.browserMode = state.capabilities?.browsers?.some((mode) => mode.id === value && (mode.status === 'supported' || mode.connectOnStart)) ? value : 'none';
     localStorage.setItem('omp.browserMode', state.browserMode);
     localStorage.setItem('omp.browserModePreferenceVersion', BROWSER_MODE_PREFERENCE_VERSION);
+    const select = $('settingsOmpBrowserModeSelect'); if (select) select.value = state.browserMode;
+    syncBrowserPill();
   }
   const setConnectionStatus = (label, stateName = 'connected') => {
     const pill = $('connectionStatusPill');
@@ -312,10 +319,40 @@
   const safeTime = (value) => value || '--';
   const relativeMinutes = (value) => { const parsed = Date.parse(value || ''); if (Number.isFinite(parsed)) return -parsed / 60000; const match = text(value).toLowerCase().match(/(\d+)\s*(g|giờ|h|n|ngày|p|phút|m)/g) || []; return match.reduce((sum, token) => { const item = token.match(/(\d+)\s*(g|giờ|h|n|ngày|p|phút|m)/); if (!item) return sum; const unit = item[2]; return sum + Number(item[1]) * (/n|ngày/.test(unit) ? 1440 : /g|giờ|h/.test(unit) ? 60 : 1); }, 0); };
   const sortSessions = (items) => { const mode = localStorage.getItem('omp.sessionSort') || 'newest'; return items.sort((a, b) => mode === 'alpha' ? text(a.title).localeCompare(text(b.title), 'vi') : mode === 'oldest' ? relativeMinutes(b.updatedAt || b.createdAt || b.updatedAgo) - relativeMinutes(a.updatedAt || a.createdAt || a.updatedAgo) : relativeMinutes(a.updatedAt || a.createdAt || a.updatedAgo) - relativeMinutes(b.updatedAt || b.createdAt || b.updatedAgo)); };
+  function sessionOrigin(session) {
+    const type = ['chat', 'app', 'omp'].includes(session.originType) ? session.originType : 'unknown';
+    const app = type === 'app' ? text(session.originApp || 'Ứng dụng ngoài') : '';
+    const label = type === 'chat' ? 'Hòn π /chat' : type === 'omp' ? 'OMP trực tiếp' : type === 'app' ? app : 'Chưa xác minh';
+    const evidence = { explicit: 'Ghi nhận khi tạo trong /chat', declared: 'Nguồn khai báo lúc tạo', engine: 'OMP ghi nhận lúc tạo', inferred: 'Suy luận từ thư mục dữ liệu Open Design', manual: 'Được gán thủ công' }[session.originConfidence];
+    const badge = type === 'unknown' ? '$' : type === 'omp' ? 'π' : '';
+    return { type, app, label, badge, title: type === 'unknown' ? 'Chưa xác minh nguồn tạo' : `${label}${evidence ? ` · ${evidence}` : ''}` };
+  }
+
+  function sessionRecords() {
+    const records = new Map();
+    (state.folders || []).forEach((folder) => (folder.sessions || []).forEach((session) => {
+      if (session?.id) records.set(session.id, { ...session, folderId: session.folderId || folder.id, folderName: session.folderName || folder.name });
+    }));
+    state.sessions.forEach((session) => records.set(session.id, { ...records.get(session.id), ...session }));
+    return [...records.values()];
+  }
+  function findSession(id) {
+    return state.sessions.find((session) => session.id === id)
+      || (state.folders || []).flatMap((folder) => folder.sessions || []).find((session) => session?.id === id)
+      || null;
+  }
+  function updateSessionRecords(id, patch) {
+    const session = findSession(id);
+    if (session) Object.assign(session, patch);
+    state.sessions.forEach((item) => { if (item.id === id) Object.assign(item, patch); });
+    (state.folders || []).forEach((folder) => (folder.sessions || []).forEach((item) => { if (item?.id === id) Object.assign(item, patch); }));
+    return session;
+  }
 
   function makeSessionRow(session) {
     const row = document.createElement('div');
     const active = state.activeId === session.id;
+    const origin = sessionOrigin(session);
     const requests = requestsForSession(session.id);
     const request = requests[0];
     const running = requests.length > 0;
@@ -325,10 +362,11 @@
     row.tabIndex = 0;
     row.setAttribute('aria-current', active ? 'true' : 'false');
     row.setAttribute('role', 'button');
-    row.setAttribute('aria-label', `${session.title || 'Phiên làm việc mới'}${active ? ' · đang chọn' : ''}${running ? ` · ${requests.length} lượt đang chạy` : ''}`);
+    row.setAttribute('aria-label', `${session.title || 'Phiên làm việc mới'} · Nguồn: ${origin.label}${active ? ' · đang chọn' : ''}${running ? ` · ${requests.length} lượt đang chạy` : ''}`);
     const left = document.createElement('div'); left.className = 'session-item-left';
     const dot = document.createElement('span'); dot.className = `session-dot${running ? ' running' : ''}`; dot.title = running ? (request?.status === 'stopping' ? 'Đang dừng lượt hiện tại' : `${requests.length} lượt đang chạy`) : 'Không có lượt chạy trong tab này'; left.append(dot);
     if (session.isPinned) left.append(svgIcon('pin'));
+    if (origin.badge) { const originBadge = document.createElement('span'); originBadge.className = 'session-origin-badge'; originBadge.dataset.origin = origin.type; originBadge.title = origin.title; originBadge.setAttribute('aria-hidden', 'true'); originBadge.textContent = origin.badge; left.append(originBadge); }
     const title = document.createElement('span'); title.className = 'session-title'; title.textContent = session.title || 'Phiên làm việc mới'; left.append(title);
     if (session.folderName && session.isPinned) { const badge = document.createElement('span'); badge.className = 'session-badge-tag'; badge.textContent = session.folderName; left.append(badge); }
     const right = document.createElement('div'); right.className = 'session-item-right';
@@ -385,10 +423,22 @@
 
   function bindMenuArrowNavigation(menu, selector) {
     menu.addEventListener('keydown', (event) => {
-      const keys = ['ArrowDown', 'ArrowUp', 'Home', 'End'];
+      const keys = ['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End'];
       if (!keys.includes(event.key)) return;
       const items = [...menu.querySelectorAll(selector)].filter((item) => !item.disabled && item.getClientRects().length && item.getAttribute('aria-disabled') !== 'true');
       if (!items.length) return;
+      if (event.key === 'ArrowRight') {
+        const parent = document.activeElement.closest(selector);
+        const submenu = parent?.querySelector(':scope > .context-submenu');
+        const child = submenu && [...submenu.querySelectorAll(selector)].find((item) => !item.disabled && item.getClientRects().length);
+        if (child) { event.preventDefault(); parent.focus({ preventScroll: true }); child.focus({ preventScroll: true }); }
+        return;
+      }
+      if (event.key === 'ArrowLeft') {
+        const parent = document.activeElement.closest('.context-submenu')?.parentElement;
+        if (parent) { event.preventDefault(); parent.focus({ preventScroll: true }); }
+        return;
+      }
       const current = items.indexOf(document.activeElement);
       const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : current < 0 ? (event.key === 'ArrowUp' ? items.length - 1 : 0) : (current + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
       event.preventDefault();
@@ -459,11 +509,14 @@
   function renderSessions() {
     const query = text($('sidebarSearchInput')?.value || $('sessionSearchInput')?.value).trim().toLowerCase();
     const filterMode = localStorage.getItem('omp.sessionFilter') || 'all';
-    const sessions = sortSessions(state.sessions.filter((item) => {
+    const savedOriginFilter = localStorage.getItem('omp.sessionOriginFilter');
+    const originFilter = ['all', 'chat', 'app', 'omp', 'unknown'].includes(savedOriginFilter) ? savedOriginFilter : 'all';
+    const sessions = sortSessions(sessionRecords().filter((item) => {
       if (query && !`${item.title || ''} ${item.id || ''} ${item.folderName || ''}`.toLowerCase().includes(query)) return false;
-      if (filterMode === 'pinned') return !!item.isPinned;
-      if (filterMode === 'unread') return !!item.isUnread;
-      if (filterMode === 'running') return requestsForSession(item.id).length > 0;
+      if (filterMode === 'pinned' && !item.isPinned) return false;
+      if (filterMode === 'unread' && !item.isUnread) return false;
+      if (filterMode === 'running' && !requestsForSession(item.id).length) return false;
+      if (originFilter !== 'all' && sessionOrigin(item).type !== originFilter) return false;
       return true;
     }));
     const pinnedList = $('pinnedSessionsList'); const tree = $('projectFoldersTree'); const unassigned = $('unassignedSessionsList');
@@ -482,15 +535,17 @@
       if (index < 0) group.items.push(item);
       else group.items[index] = { ...group.items[index], ...item };
     };
+    const visibleSessionIds = new Set(sessions.map((item) => item.id));
+    const hasSessionFilter = Boolean(query) || filterMode !== 'all' || originFilter !== 'all';
     (state.folders || []).forEach((folder) => {
       if (!folder?.id || !folder?.name) return;
-      const group = addFolderGroup(folder.id, folder.name, folder.sessionCount);
-      (Array.isArray(folder.sessions) ? folder.sessions : []).forEach((item) => addFolderItem(group, item));
+      const group = addFolderGroup(folder.id, folder.name, hasSessionFilter ? 0 : folder.sessionCount);
+      (Array.isArray(folder.sessions) ? folder.sessions : []).filter((item) => visibleSessionIds.has(item.id)).forEach((item) => addFolderItem(group, item));
     });
     sessions.filter((item) => item.folderName).forEach((item) => {
       addFolderItem(addFolderGroup(item.folderId, item.folderName), item);
     });
-    const visibleFolders = [...folderGroups.values()].filter((folder) => !query || folder.items.length || folder.name.toLowerCase().includes(query));
+    const visibleFolders = [...folderGroups.values()].filter((folder) => query ? folder.items.length || folder.name.toLowerCase().includes(query) : !hasSessionFilter || folder.items.length);
     const loose = sessions.filter((item) => !item.isPinned && !item.folderName);
     pinned.forEach((item) => pinnedList.append(makeSessionRow(item)));
     if (!pinned.length) pinnedList.append(emptyNode('Chưa có phiên ghim'));
@@ -542,6 +597,11 @@
     $('pinnedCountBadge') && ($('pinnedCountBadge').textContent = String(pinned.length));
     $('projectsCountBadge') && ($('projectsCountBadge').textContent = String(visibleFolders.length));
     $('unassignedCountBadge') && ($('unassignedCountBadge').textContent = String(loose.length));
+    document.querySelectorAll('.sf-origin-filter-item').forEach((item) => {
+      const active = item.dataset.originFilter === originFilter;
+      item.classList.toggle('active', active);
+      item.setAttribute('aria-checked', String(active));
+    });
     let more = $('liveSessionsMore');
     if (!more) { more = document.createElement('button'); more.id = 'liveSessionsMore'; more.type = 'button'; more.className = 'session-load-more-btn'; unassigned.after(more); }
     more.hidden = !state.nextCursor; more.textContent = state.nextCursor ? 'Tải thêm phiên' : '';
@@ -566,13 +626,34 @@
     menu.style.overflowY = 'auto';
     menu.querySelector('.context-menu-item[data-action="section"]')?.remove();
     menu.querySelectorAll('.context-menu-divider + .context-menu-divider').forEach((divider) => divider.remove());
+    const originSubmenu = menu.querySelector('[data-action="origin-source"] .context-submenu');
+    const appOriginTemplate = originSubmenu?.querySelector('[data-origin-app-template]');
+    const appOriginManual = originSubmenu?.querySelector('[data-prompt-origin-app="true"]');
+    if (appOriginTemplate) {
+      appOriginTemplate.remove();
+      for (const app of state.originApps || []) {
+        if (!text(app).trim()) continue;
+        const item = appOriginTemplate.cloneNode(true);
+        item.hidden = false;
+        item.removeAttribute('data-origin-app-template');
+        item.dataset.originApp = app;
+        item.querySelector('span').textContent = app;
+        appOriginManual?.before(item);
+      }
+    }
+    if (appOriginManual) appOriginManual.querySelector('span').textContent = 'Gán ứng dụng khác…';
+    const origin = sessionOrigin(session);
+    menu.querySelectorAll('[data-origin-type]').forEach((item) => {
+      item.classList.toggle('active-item', item.dataset.originType === origin.type && (origin.type !== 'app' || item.dataset.originApp === origin.app || (item.dataset.promptOriginApp === 'true' && !(state.originApps || []).includes(origin.app))));
+    });
     const pinLabel = menu.querySelector('[data-action="pin"] .menu-label');
     if (pinLabel) { pinLabel.textContent = session.isPinned ? 'Bỏ ghim' : 'Ghim'; menu.querySelector('[data-action="pin"]').dataset.action = session.isPinned ? 'unpin' : 'pin'; }
     const unreadLabel = menu.querySelector('[data-action="unread"] .menu-label');
     if (unreadLabel) { unreadLabel.textContent = session.isUnread ? 'Đánh dấu là đã đọc' : 'Đánh dấu là chưa đọc'; menu.querySelector('[data-action="unread"]').dataset.action = session.isUnread ? 'read' : 'unread'; }
     const running = requestsForSession(session.id).length > 0;
-    const runningLabel = menu.querySelector('[data-action="toggle-running"] .menu-label');
-    if (runningLabel) runningLabel.textContent = running ? 'Dừng tiến trình chạy' : 'Bật tiến trình chạy';
+    const runningItem = menu.querySelector('[data-action="toggle-running"]');
+    if (!running) runningItem?.remove();
+    else { const runningLabel = runningItem.querySelector('.menu-label'); if (runningLabel) runningLabel.textContent = 'Dừng tiến trình chạy'; }
 
     const projectSubmenu = menu.querySelector('[data-action="project"] .context-submenu');
     if (projectSubmenu) {
@@ -591,6 +672,13 @@
       const unassigned = prototype.cloneNode(true); unassigned.dataset.folderId = ''; unassigned.classList.toggle('active-item', !session.folderId); unassigned.querySelector('span').textContent = 'Không thuộc dự án (Chưa phân loại)'; projectSubmenu.append(unassigned);
       if (createProjectItem) projectSubmenu.append(createProjectItem);
     }
+    menu.querySelectorAll('.context-submenu-item').forEach((item) => { item.tabIndex = 0; item.setAttribute('role', 'menuitem'); });
+    const forkItem = menu.querySelector('[data-action="fork"]');
+    forkItem?.querySelector('.context-submenu')?.remove();
+    forkItem?.querySelector('.menu-chevron')?.remove();
+    forkItem?.classList.remove('has-submenu');
+    const forkLabel = forkItem?.querySelector('.menu-label');
+    if (forkLabel) forkLabel.textContent = 'Tạo nhánh hội thoại';
 
     const positionSubmenu = (item) => {
       const submenu = item.querySelector('.context-submenu');
@@ -624,7 +712,16 @@
     bindMenuArrowNavigation(menu, '.context-menu-item, .context-submenu-item');
     menu.addEventListener('keydown', (event) => {
       if (event.key === 'Escape') { event.preventDefault(); close(); }
-      else if (event.key === 'Enter' || event.key === ' ') { const item = event.target.closest('.context-menu-item, .context-submenu-item'); if (item) { event.preventDefault(); item.click(); } }
+      else if (event.key === 'Enter' || event.key === ' ') {
+        const item = event.target.closest('.context-menu-item, .context-submenu-item');
+        if (item) {
+          event.preventDefault();
+          if (item.classList.contains('has-submenu')) {
+            positionSubmenu(item);
+            item.querySelector('.context-submenu-item')?.focus({ preventScroll: true });
+          } else item.click();
+        }
+      }
     });
     menu.addEventListener('click', async (event) => {
       const item = event.target.closest('.context-submenu-item, .context-menu-item');
@@ -633,7 +730,10 @@
       event.stopPropagation();
       if (item.classList.contains('has-submenu')) return;
       const action = item.dataset.action;
-      if (item.dataset.folderId !== undefined) {
+      if (item.dataset.originType) {
+        close();
+        void runAction(session.id, 'set_origin', { originType: item.dataset.originType, originApp: item.dataset.originApp, promptOriginApp: item.dataset.promptOriginApp === 'true' });
+      } else if (item.dataset.folderId !== undefined) {
         close();
         void runAction(session.id, item.dataset.folderId ? 'assign_folder' : 'unassign_folder', { folderId: item.dataset.folderId });
       } else if (action === 'create-new-project') {
@@ -651,8 +751,8 @@
           await navigator.clipboard.writeText(transcript);
           notify('Đã sao chép nội dung hội thoại');
         } catch (error) { notify(`Không thể sao chép hội thoại: ${error.message}`, true); }
-      } else if (item.dataset.copyType === 'duplicate' || item.dataset.forkType) {
-        close(); void runAction(session.id, 'fork');
+      } else if (item.dataset.copyType === 'duplicate') {
+        close(); void runAction(session.id, 'duplicate');
       } else if (action === 'toggle-running') {
         close();
         const request = requestsForSession(session.id).find((candidate) => candidate.status === 'running');
@@ -1141,20 +1241,34 @@
   }
 
   async function runAction(id, action, actionData = {}) {
-    const session = state.sessions.find((item) => item.id === id);
+    const session = findSession(id);
     if (!session) return;
     const actionGuard = sessionGuard(id, state.generation);
     if (action === 'export') return exportSessionMarkdown(session);
     let renameTitle = '';
     if (action === 'rename') { renameTitle = (await requestTextInput('Đặt lại tên cuộc trò chuyện', session.title || 'Phiên làm việc mới')).trim(); if (!renameTitle) return; }
+    let originApp = actionData.originApp || '';
+    if (action === 'set_origin' && actionData.originType === 'app' && actionData.promptOriginApp) {
+      originApp = (await requestTextInput('Tên ứng dụng tạo cuộc trò chuyện', session.originApp || '', { description: 'Nhập tên ứng dụng đã tạo cuộc trò chuyện này.', placeholder: 'Ví dụ: Open Design' })).trim();
+      if (!originApp) return;
+    }
     if (action === 'delete' && !(await requestDeleteConfirm(session))) return;
     const body = { action };
     if (action === 'rename') body.title = renameTitle;
     if (action === 'assign_folder') body.folderId = actionData.folderId;
+    if (action === 'set_origin') { body.originType = actionData.originType; if (actionData.originType === 'app') body.originApp = originApp; }
     if (action === 'share') body.shareMode = state.shareMode;
-    const actionLabel = { assign_folder: 'phân loại folder', unassign_folder: 'bỏ phân loại folder' }[action] || action;
+    const actionLabel = { assign_folder: 'phân loại folder', unassign_folder: 'bỏ phân loại folder', set_origin: 'cập nhật nguồn tạo' }[action] || action;
     try {
       const { payload } = await readJson(`${API}/sessions/${encodeURIComponent(id)}/action`, { method: 'POST', body: JSON.stringify(body) });
+      updateSessionRecords(id, {
+        ...(action === 'set_origin' ? { originType: payload?.session?.originType, originApp: payload?.session?.originApp || null, originConfidence: payload?.session?.originConfidence } : payload?.session || {}),
+        ...(action === 'rename' ? { title: renameTitle } : {}),
+        ...(action === 'pin' ? { isPinned: true } : {}),
+        ...(action === 'unpin' ? { isPinned: false } : {}),
+        ...(action === 'unread' || action === 'mark_unread' ? { isUnread: true } : {}),
+        ...(action === 'read' || action === 'mark_read' ? { isUnread: false } : {}),
+      });
       if (action === 'share') {
         const shareUrl = String(payload?.shareUrl || '');
         const shareMode = String(payload?.shareMode || 'encrypted');
@@ -1189,6 +1303,7 @@
         notify(`Đã đổi tên “${renameTitle}”`);
         return;
       }
+      if (action === 'set_origin') { await loadSessions(null, { silent: true }); await loadFolders({ silent: true }); notify(`Nguồn tạo: ${sessionOrigin(findSession(id) || session).label}`); return; }
       if (action === 'assign_folder' && payload?.session) {
         session.folderId = payload.session.folderId;
         session.folderName = payload.session.folderName;
@@ -1199,7 +1314,7 @@
       }
       if (['fork', 'duplicate'].includes(action) && payload?.forkSession?.id) state.activeId = payload.forkSession.id;
       await loadSessions();
-      if (['assign_folder', 'unassign_folder'].includes(action)) await loadFolders({ silent: true });
+      if (['assign_folder', 'unassign_folder', 'archive', 'delete'].includes(action)) await loadFolders({ silent: true });
       if (['fork', 'duplicate'].includes(action) && payload?.forkSession?.id) await selectSession(payload.forkSession.id);
       else if (['archive', 'delete'].includes(action) && state.activeId === id) setNeutralSelection({ preserveActiveView: false });
       else if (state.activeId === id && isCurrentSession(actionGuard)) await selectSession(id, true);
@@ -1223,10 +1338,11 @@
   async function loadSessions(cursor = null, options = {}) {
     const loadGeneration = state.generation;
     const requestId = ++state.sessionLoadRequestId;
-    const url = `${API}/sessions?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+    const url = `${API}/sessions?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : '&includeOrigins=1'}`;
     try {
       const { payload, response } = await readJson(url);
       if (requestId !== state.sessionLoadRequestId) return;
+      if (!cursor && Array.isArray(payload?.originApps)) state.originApps = payload.originApps;
       const page = (Array.isArray(payload) ? payload : dataOf(payload, 'sessions') || [])
         .filter((item) => !String(item?.id || '').startsWith('models-') && item?.id)
         .map((item) => state.optimisticTitles.has(item.id) ? { ...item, title: state.optimisticTitles.get(item.id) } : item);
@@ -1235,7 +1351,8 @@
       renderSessions();
       const requested = new URLSearchParams(location.search).get('session');
       if (state.generation === loadGeneration && !state.activeId && requested) {
-        const selected = state.sessions.find((item) => item.id === requested);
+        let selected = findSession(requested);
+        if (!selected && !state.folders.length) { await loadFolders({ silent: true }); selected = findSession(requested); }
         if (selected) await selectSession(selected.id);
       }
       setConnectionStatus('Đã kết nối', 'connected');
@@ -1246,6 +1363,13 @@
     }
   }
   async function loadAllSessions() { while (state.nextCursor) await loadSessions(state.nextCursor, { silent: true }); renderSessions(); }
+  function bindSessionEvents() {
+    if (!window.EventSource) return;
+    const source = new EventSource(`${API}/sessions/events`);
+    source.addEventListener('sessions_changed', () => {
+      void loadSessions(null, { silent: true }).then(() => loadFolders({ silent: true }));
+    });
+  }
 
   function inlineBadgeType(value) {
     const token = text(value).trim();
@@ -1285,6 +1409,7 @@
     let list = null; let listType = '';
     let code = null;
     let codeLanguage = '';
+    let indentedCode = false;
     let table = null;
     const flushList = () => { if (list) container.append(list); list = null; listType = ''; };
     const tableCells = (line) => {
@@ -1306,9 +1431,22 @@
       header.append(label, copy); box.append(header, pre); container.append(box);
     };
     lines.forEach((line, index) => {
+      if (indentedCode) {
+        if (/^(?: {4,}|\t)/.test(line)) { code.push(line.replace(/^(?: {4}|\t)/, '')); return; }
+        if (!line.trim() && /^(?: {4,}|\t)/.test(lines[index + 1] || '')) { code.push(''); return; }
+        appendCode(); code = null; codeLanguage = ''; indentedCode = false;
+      }
       const fence = line.match(/^\s*```(.*)$/);
       if (fence) { if (code) { appendCode(); code = null; codeLanguage = ''; } else { flushList(); code = []; codeLanguage = text(fence[1]).trim().slice(0, 40); } return; }
       if (code) { code.push(line); return; }
+      if (/^(?: {4,}|\t)/.test(line) && (index === 0 || !lines[index - 1].trim())) {
+        flushList();
+        const value = line.replace(/^(?: {4}|\t)/, '');
+        code = [value];
+        codeLanguage = /^(?:\{|\[)/.test(value.trim()) ? 'json' : '';
+        indentedCode = true;
+        return;
+      }
       const cells = tableCells(line);
       if (table) {
         if (tableDivider(cells)) return;
@@ -1875,7 +2013,7 @@
     const area = $('chatScrollArea'); if (area) area.scrollTop = area.scrollHeight;
   }
   async function selectSession(id, quiet = false, options = {}) {
-    const session = state.sessions.find((item) => item.id === id);
+    const session = findSession(id);
     if (!session) { if (!quiet) notify('Không tìm thấy cuộc trò chuyện được chọn.', true); return false; }
     if (state.editingQueueId && state.activeId !== id) cancelQueueEdit(true);
     const previousId = state.activeId;
@@ -1889,6 +2027,11 @@
     const guard = sessionGuard(id, state.generation + 1);
     state.generation = guard.generation;
     state.activeId = id;
+    contextSnapshot = null;
+    contextRequestId += 1;
+    contextLoading = false;
+    if ($('btnRefreshContext')) { $('btnRefreshContext').disabled = false; $('btnRefreshContext').removeAttribute('aria-busy'); }
+    syncContextCompactButton();
     if (previousId !== id) { void loadQuota(); await loadModels(); }
     syncRequestAliases();
     if ($('ompMemoryStatus')) void loadOmpMemory(guard);
@@ -1916,6 +2059,7 @@
     syncWorkspaceMeta(session);
     if (options.deferMessages) {
       hideGreeting();
+      if (contextPopoverOpen()) void loadContextWindow();
       if (!quiet) notify(`Đã chọn: ${session.title || id}`);
       return;
     }
@@ -1955,7 +2099,10 @@
         notify(`Không tải được nội dung phiên: ${error.message}`, true);
       }
     } finally {
-      if (isCurrentSession(guard)) void loadAgentHub(guard);
+      if (isCurrentSession(guard)) {
+        void loadAgentHub(guard);
+        if (contextPopoverOpen()) void loadContextWindow();
+      }
     }
   }
   async function createSession(options = {}) {
@@ -1965,7 +2112,7 @@
     setNeutralSelection({ preserveDraftPreview: Boolean(state.draftPromptPreview) });
     state.createPromise = (async () => {
       try {
-        const { payload } = await readJson(`${API}/sessions`, { method: 'POST', body: JSON.stringify({ title, ...(options.folderId ? { folderId: options.folderId } : {}), ...(cwd ? { cwd } : {}), browserMode: state.browserMode, planYolo: state.planYolo, ...(state.planYolo ? { planYoloModel: state.planYoloModel || state.activeModel } : {}), advisor: state.advisor, approvalMode: state.approvalMode, ...(state.selectedTools.length ? { tools: state.selectedTools } : {}) }) });
+        const { payload } = await readJson(`${API}/sessions`, { method: 'POST', body: JSON.stringify({ title, originApp: 'Hòn π /chat', ...(options.folderId ? { folderId: options.folderId } : {}), ...(cwd ? { cwd } : {}), browserMode: state.browserMode, planYolo: state.planYolo, ...(state.planYolo ? { planYoloModel: state.planYoloModel || state.activeModel } : {}), advisor: state.advisor, approvalMode: state.approvalMode, ...(state.selectedTools.length ? { tools: state.selectedTools } : {}) }) });
         const created = payload?.session || payload;
         if (!created?.id) throw new Error('Backend không trả id session hợp lệ');
         state.sessionLoadRequestId += 1;
@@ -2621,6 +2768,7 @@
     const visibleStream = () => isCurrentSession(guard) ? $('chatStream') : null;
     state.requests.set(request.requestId, request);
     syncRequestAliases();
+    syncContextCompactButton();
     setSendState();
     if (isCurrentSession(guard)) hideGreeting();
     state.startedSessions.add(sessionId);
@@ -2881,6 +3029,8 @@
       if (!normalEnd && sessionHasQueuedPrompt(sessionId)) pauseQueue(sessionId, request.controller.signal.aborted ? 'previous_turn_stopped' : 'previous_turn_failed');
       renderQueueTray();
       setSendState();
+      syncContextCompactButton();
+      if (normalEnd && state.activeId === sessionId && contextPopoverOpen()) void loadContextWindow();
       if (normalEnd && !state.queueDrainingSessions.has(sessionId)) queueMicrotask(() => void drainQueue(sessionId));
     }
     return normalEnd;
@@ -3584,20 +3734,21 @@
     });
   }
   function renderOmpTools() {
-    const tools = $('toolsContentArea'); const allTools = state.capabilities?.tools || []; const catalog = allTools.filter((item) => item.status === 'supported' && item.canToggle); if (!tools) return; tools.replaceChildren();
-    const metadata = state.capabilities?.catalog || {}; const statuses = { supported: 'Tắt' };
+    const tools = $('toolsContentArea'); const catalog = state.capabilities?.tools || []; if (!tools) return; tools.replaceChildren();
+    const metadata = state.capabilities?.catalog || {}; const statuses = { supported: 'Tắt', unavailable: 'Chưa khả dụng', blocked: 'Bị khóa', probe_error: 'Lỗi kiểm tra', stale: 'Cần xác minh', unmapped: 'Chưa có map' };
+    const available = catalog.filter((item) => item.status === 'supported' && item.canToggle).length;
     const version = $('ompToolsVersion'); if (version) version.textContent = `OMP ${text(metadata.audit?.ompVersion || 'chưa kiểm tra').replace(/^omp\//i, '')}`;
-    const count = $('ompToolsCountLabel'); if (count) count.textContent = `${metadata.counts?.supported || 0} TOOL DÙNG ĐƯỢC`;
+    const count = $('ompToolsCountLabel'); if (count) count.textContent = `${available}/${catalog.length} TOOL DÙNG ĐƯỢC`;
+    const notice = $('ompToolsCatalogStatus'); if (notice) { notice.textContent = metadata.audit?.status === 'error' ? 'Không kiểm tra được OMP. Danh sách vẫn hiển thị; công cụ tạm khóa.' : metadata.stale ? 'Công cụ đã thay đổi hoặc OMP vừa cập nhật; cần xác minh trước khi sử dụng.' : ''; notice.hidden = !notice.textContent; }
     const sync = $('btnSyncOmpTools');
     if (sync) {
       sync.disabled = state.toolsUpdating; sync.classList.toggle('spinning', state.toolsUpdating); sync.setAttribute('aria-label', state.toolsUpdating ? 'Đang đồng bộ OMP' : 'Đồng bộ OMP');
       const label = $('btnSyncOmpToolsLabel'); if (label) label.textContent = state.toolsUpdating ? 'Đang đồng bộ OMP…' : 'Đồng bộ OMP';
       if (sync.dataset.bound !== 'true') { sync.dataset.bound = 'true'; sync.addEventListener('click', () => void syncOmpCatalog()); }
     }
-    if (!allTools.length) { tools.append(emptyNode('OMP chưa công bố capability')); return; }
     tools.setAttribute('aria-label', 'Công cụ OMP. Gửi thêm order giữ nguyên trạng thái; chat mới dùng lựa chọn hiện tại; đổi toggle áp dụng từ lượt kế tiếp.');
-    const available = catalog.length; const toolsTab = $('drawerTabToolsBtn'); const badge = toolsTab?.querySelector('.drawer-tab-badge'); if (badge) badge.textContent = String(available); if (toolsTab) toolsTab.setAttribute('aria-label', `Công cụ OMP: ${available} tool khả dụng`);
-    if (!catalog.length) { tools.append(emptyNode('Không có công cụ OMP dùng được; hãy đồng bộ lại.')); return; }
+    const toolsTab = $('drawerTabToolsBtn'); const badge = toolsTab?.querySelector('.drawer-tab-badge'); if (badge) badge.textContent = String(catalog.length); if (toolsTab) toolsTab.setAttribute('aria-label', `Công cụ OMP: ${catalog.length} công cụ, ${available} dùng được`);
+    if (!catalog.length) { tools.append(emptyNode(metadata.audit?.status === 'error' ? 'Không tải được danh sách công cụ OMP; hãy thử đồng bộ lại.' : 'OMP chưa công bố công cụ.')); return; }
     const listedGroups = metadata.groups || []; const groupIds = new Set(listedGroups.map((item) => item.id)); const groups = listedGroups.map((group) => [group.label, catalog.filter((item) => item.group === group.id)]);
     const leftovers = catalog.filter((item) => !groupIds.has(item.group)); if (leftovers.length) groups.push(['KHÁC', leftovers]);
     const renderRow = (item) => {
@@ -3677,9 +3828,11 @@
     try {
       const { payload } = await readJson(`${API}/omp/capabilities/audit`, { method: 'POST', body: '{}' });
       if (payload?.catalog?.tools) state.capabilities = { ...state.capabilities, ...payload.catalog };
-      await loadCapabilities();
-      const drift = payload?.catalog?.catalog?.drift; const changed = [...(drift?.added || []), ...(drift?.removed || []), ...(drift?.changed || [])];
-      notify(changed.length ? `Đã đồng bộ OMP: ${changed.length} thay đổi cần đối chiếu map.` : 'Đã đồng bộ catalog OMP.');
+      if (await loadCapabilities() === false) return;
+      const metadata = state.capabilities?.catalog; const available = selectableTools().length; const total = state.capabilities?.tools?.length || 0;
+      if (metadata?.audit?.status !== 'ok') notify('Không kiểm tra được OMP; danh sách vẫn hiển thị, công cụ tạm khóa.', true);
+      else if (metadata.stale) notify('Đã cập nhật danh sách; công cụ thay đổi cần xác minh trước khi sử dụng.', true);
+      else notify(`Đã đồng bộ OMP: ${total} công cụ, ${available} dùng được.`);
     } catch (error) { notify(`Không đồng bộ được OMP: ${error.message}`, true); }
     finally { state.toolsUpdating = false; renderOmpTools(); }
   }
@@ -3709,7 +3862,7 @@
     host.replaceChildren();
     const title = document.createElement('div'); title.className = 'settings-section-title'; title.textContent = 'Memory · OMP';
     const help = document.createElement('div'); help.className = 'settings-help-text'; help.textContent = 'OMP là nguồn dữ liệu và cấu hình. Dashboard không lưu nội dung Memory.';
-    const refresh = document.createElement('button'); refresh.type = 'button'; refresh.className = 'btn-secondary'; refresh.textContent = 'Làm mới';
+    const refresh = document.createElement('button'); refresh.id = 'btnRefreshOmpMemory'; refresh.type = 'button'; refresh.className = 'btn-secondary'; refresh.textContent = 'Làm mới';
     refresh.setAttribute('aria-label', 'Làm mới trạng thái Memory OMP');
     refresh.disabled = memoryPanel.loading || memoryPanel.busy || Boolean(memoryPanel.snapshot?.busy) || !state.activeId;
     refresh.addEventListener('click', () => void loadOmpMemory(sessionGuard()));
@@ -3832,33 +3985,37 @@
   }
 
   function ensureOmpSettings() {
-    const plugins = $('settingsTabPlugins'); const agents = $('settingsTabAgents');
-    const agentsNavLabel = $('settingsNavAgents')?.querySelector('span');
-    if (agentsNavLabel) agentsNavLabel.textContent = 'Tác tử OMP';
-    if (plugins && !$('ompBrowserModeSelect')) {
-      const card = document.createElement('div'); card.className = 'settings-section-card';
-      const title = document.createElement('div'); title.className = 'settings-section-title'; title.textContent = 'Browser mode OMP';
-      const help = document.createElement('div'); help.className = 'settings-help-text'; help.textContent = 'Mặc định tắt. Chỉ bật Ego Browser cho các order cần web; lựa chọn giữ nguyên đến khi tắt. Order có ảnh luôn gửi thẳng vào OMP, không qua browser skill.';
-      const select = document.createElement('select'); select.id = 'ompBrowserModeSelect'; select.className = 'settings-select';
-      const shareTitle = document.createElement('div'); shareTitle.className = 'settings-section-title'; shareTitle.textContent = 'Share mode OMP';
-      const shareHelp = document.createElement('div'); shareHelp.className = 'settings-help-text'; shareHelp.textContent = 'Encrypted tạo liên kết OMP; Local chỉ dùng trên dashboard máy này. Collab chỉ bật khi có host adapter.';
-      const shareSelect = document.createElement('select'); shareSelect.id = 'ompShareModeSelect'; shareSelect.className = 'settings-select';
-      card.append(title, help, select, shareTitle, shareHelp, shareSelect); plugins.replaceChildren(card);
-    }
-    if (plugins && !$('ompMemoryStatus')) {
-      const card = document.createElement('div'); card.id = 'ompMemoryStatus'; card.className = 'settings-section-card settings-memory-panel';
-      plugins.append(card);
-    }
-    const select = $('ompBrowserModeSelect'); const modes = [{ id: 'none', label: 'Tắt · Chat thường', status: 'supported' }, ...(state.capabilities?.browsers || [])];
+    const agents = $('settingsTabAgents');
+    const select = $('settingsOmpBrowserModeSelect');
+    const modes = [{ id: 'none', label: 'Tắt · Chat thường', status: 'supported' }, ...(state.capabilities?.browsers || [])];
     if (select) {
-      select.replaceChildren(...modes.map((mode) => { const option = document.createElement('option'); option.value = mode.id; option.textContent = `${mode.label}${mode.status === 'unavailable' ? ' · Chưa khả dụng' : mode.status === 'partial' ? ' · Một phần' : ''}`; option.disabled = mode.status === 'unavailable'; return option; }));
-      const selected = modes.find((mode) => mode.id === state.browserMode && mode.status !== 'unavailable') || modes[0];
-      state.browserMode = selected?.id || 'none'; localStorage.setItem('omp.browserMode', state.browserMode); select.value = state.browserMode;
-      if (select.dataset.bound !== 'true') { select.dataset.bound = 'true'; select.addEventListener('change', () => { setBrowserMode(select.value); syncBrowserPill(); }); }
+      select.disabled = false;
+      select.replaceChildren(...modes.map((mode) => {
+        const option = document.createElement('option'); option.value = mode.id;
+        option.textContent = `${mode.label}${mode.status === 'supported' ? '' : mode.connectOnStart ? ' · Khởi chạy cùng chat' : ' · Chưa khả dụng'}`;
+        option.disabled = mode.status !== 'supported' && !mode.connectOnStart; return option;
+      }));
+      select.value = state.browserMode;
+      if (select.dataset.bound !== 'true') { select.dataset.bound = 'true'; select.addEventListener('change', () => setBrowserMode(select.value)); }
     }
-    const shareSelect = $('ompShareModeSelect'); const shareModes = state.capabilities?.shareModes || [];
+    const status = $('ompBrowserModeStatus');
+    if (status) {
+      const list = document.createElement('ul');
+      for (const mode of state.capabilities?.browsers || []) {
+        const item = document.createElement('li');
+        item.textContent = `${mode.label}: ${mode.note || (mode.status === 'supported' ? 'Sẵn sàng' : 'Chưa kiểm tra được kết nối')}`;
+        list.append(item);
+      }
+      status.replaceChildren(list);
+    }
+    const shareSelect = $('settingsOmpShareModeSelect'); const shareModes = state.capabilities?.shareModes || [];
     if (shareSelect) {
-      shareSelect.replaceChildren(...shareModes.map((mode) => { const option = document.createElement('option'); option.value = mode.id; option.textContent = `${mode.label}${mode.status === 'unavailable' ? ' · Chưa khả dụng' : mode.status === 'partial' ? ' · Một phần' : ''}`; option.disabled = mode.status === 'unavailable'; return option; }));
+      shareSelect.disabled = false;
+      shareSelect.replaceChildren(...shareModes.map((mode) => {
+        const option = document.createElement('option'); option.value = mode.id;
+        option.textContent = `${mode.label}${mode.status === 'unavailable' ? ' · Chưa khả dụng' : mode.status === 'partial' ? ' · Một phần' : ''}`;
+        option.disabled = mode.status === 'unavailable'; return option;
+      }));
       const selected = shareModes.find((mode) => mode.id === state.shareMode && mode.status !== 'unavailable') || shareModes.find((mode) => mode.status === 'supported' || mode.status === 'partial');
       state.shareMode = selected?.id || 'encrypted'; localStorage.setItem('omp.shareMode', state.shareMode); shareSelect.value = state.shareMode;
       if (shareSelect.dataset.bound !== 'true') { shareSelect.dataset.bound = 'true'; shareSelect.addEventListener('change', () => { state.shareMode = shareSelect.value; localStorage.setItem('omp.shareMode', state.shareMode); }); }
@@ -3872,13 +4029,10 @@
     const toggle = $('egoBrowserToggle'); if (!toggle) return;
     const browser = state.capabilities?.browsers?.find((item) => item.id === 'ego-browser');
     const mode = state.capabilities?.browsers?.find((item) => item.id === state.browserMode);
-    const enabled = state.browserMode === 'ego-browser' && Boolean(mode && mode.status === 'supported');
-    const modeLabel = browser?.label || 'Ego Browser';
+    const enabled = mode?.status === 'supported';
     toggle.classList.toggle('active', enabled);
-    const label = toggle.querySelector('span'); if (label) label.textContent = enabled ? modeLabel : 'Ego Browser · Tắt';
-    toggle.title = enabled
-      ? 'Đang bật · Gõ order trong ô chat để OMP gọi /skill:ego-browser'
-      : 'Bật Ego Browser khi order cần web';
+    const label = toggle.querySelector('span'); if (label) label.textContent = enabled ? mode.label : mode ? `${mode.label} · Chưa kết nối` : 'Ego Browser · Tắt';
+    toggle.title = enabled ? `Đang bật ${mode.label}; nhấn để ${state.browserMode === 'ego-browser' ? 'tắt' : 'chuyển sang Ego Browser'}.` : mode ? `${mode.note || 'Browser đã chọn chưa kết nối'} Nhấn để chuyển sang Ego Browser.` : 'Bật Ego Browser khi order cần web';
     toggle.setAttribute('aria-label', toggle.title); toggle.setAttribute('aria-pressed', String(enabled)); setControlVisible(toggle, browser?.status === 'supported');
   }
   function syncPlanYoloPill() {
@@ -4010,7 +4164,18 @@
       state.selectedTools = restoreSelectedTools(supported);
       saveSelectedTools();
       syncCapabilityControls(); renderOmpTools(); renderOmpModes(); ensureOmpSettings(); syncBrowserPill(); syncPlanYoloPill();
-    } catch (error) { state.capabilities = {}; syncCapabilityControls(); renderOmpModes(); syncBrowserPill(); syncPlanYoloPill(); notify(`OMP capability lỗi: ${error.message}`, true); }
+      return true;
+    } catch (error) {
+      state.capabilities = { ...state.capabilities,
+        browsers: (state.capabilities?.browsers || []).map((mode) => ({ ...mode, status: 'unavailable', note: 'Không kiểm tra được kết nối OMP; hãy thử lại.' })),
+        shareModes: (state.capabilities?.shareModes || []).map((mode) => ({ ...mode, status: 'unavailable' })),
+        tools: (state.capabilities?.tools || []).map((item) => ({ ...item, status: 'probe_error', reason: 'Không kiểm tra được OMP; hãy thử đồng bộ lại.', canToggle: false })),
+        catalog: { ...state.capabilities?.catalog, audit: { ...state.capabilities?.catalog?.audit, status: 'error' } },
+      };
+      for (const id of ['settingsOmpBrowserModeSelect', 'settingsOmpShareModeSelect']) { const select = $(id); if (select) select.disabled = true; }
+      const status = $('ompBrowserModeStatus'); if (status) status.textContent = `Không kiểm tra được OMP: ${error.message}. Nhấn Kiểm tra kết nối để thử lại.`;
+      syncCapabilityControls(); renderOmpTools(); renderOmpModes(); syncBrowserPill(); syncPlanYoloPill(); notify(`OMP capability lỗi: ${error.message}`, true); return false;
+    }
   }
   function bindDialogAccessibility() {
     const sync = (dialog) => {
@@ -4043,7 +4208,7 @@
   }
 
   function bindDrawerTabs() { document.querySelectorAll('.drawer-tab[data-tab]').forEach((tab) => tab.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); const name = tab.dataset.tab; document.querySelectorAll('.drawer-tab[data-tab]').forEach((node) => { const active = node === tab; node.classList.toggle('active', active); node.setAttribute('aria-selected', String(active)); }); [['tools', 'tabToolsPane'], ['modes', 'tabModesPane'], ['files', 'tabFilesPane']].forEach(([id, paneId]) => $(paneId)?.classList.toggle('active', id === name)); if (name === 'modes') void loadAdvisorConfig(); if (name === 'files') void loadWorkspaceFiles(state.workspaceMention); }, true)); }
-  function bindOmpSurface() { ['egoBrowserToggle', 'planYoloToggle', 'drawerTabFilesBtn', 'drawerTabModesBtn', 'tabFilesPane', 'tabModesPane', 'settingsNavPlugins', 'settingsTabPlugins', 'settingsNavAgents', 'settingsTabAgents'].forEach((id) => { const node = $(id); if (node) { node.hidden = false; node.removeAttribute('aria-hidden'); node.style.removeProperty('display'); } }); ['fileChangeFloatingBar', 'fileChangeFloatingPill', 'shareSessionModal', 'openWindowModal', 'codeDiffReviewModal', 'upgradeModal', 'sessionContextMenu'].forEach((id) => { const node = $(id); if (node) { node.hidden = true; node.setAttribute('aria-hidden', 'true'); node.style.setProperty('display', 'none', 'important'); node.classList.remove('open'); } }); const fileList = $('drawerFilesList'); if (fileList) { fileList.replaceChildren(emptyNode('Chưa có tệp được đính kèm')); } const quotaRows = $('chatModalAccountsRows'); if (quotaRows) quotaRows.replaceChildren(emptyNode('Đang tải dữ liệu quota…')); const fileBadge = $('drawerTabFilesBtn')?.querySelector('.drawer-tab-badge'); if (fileBadge) fileBadge.textContent = '0'; $('drawerTabFilesBtn')?.setAttribute('aria-label', 'Tệp đính kèm thật'); $('drawerUploadFileBtn')?.removeAttribute('data-production-unsupported'); const permission = $('settingsPermissionSelect'); const map = { require_approval: 'always-ask', approve_for_me: 'write', full_access: 'yolo' }; if (permission) { permission.value = Object.entries(map).find(([, value]) => value === state.approvalMode)?.[0] || 'require_approval'; if (typeof setPermissionMode === 'function') setPermissionMode(permission.value, false); permission.addEventListener('change', () => { state.approvalMode = map[permission.value] || 'always-ask'; localStorage.setItem('omp.approvalMode', state.approvalMode); if (typeof setPermissionMode === 'function') setPermissionMode(permission.value, false); notify(`Đã chọn quyền OMP: ${permission.options[permission.selectedIndex]?.textContent || state.approvalMode}`); }, true); } const ego = $('egoBrowserToggle'); ego?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); state.browserMode = state.browserMode === 'ego-browser' ? 'none' : 'ego-browser'; localStorage.setItem('omp.browserMode', state.browserMode); syncBrowserPill(); }, true); $('planYoloToggle')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); togglePlanYolo(); }, true); document.addEventListener('click', (event) => { const plan = event.target.closest('[data-action="plan-mode"],#plusPlanningMode'); if (plan) { event.preventDefault(); event.stopImmediatePropagation(); togglePlanYolo(); return; } const option = event.target.closest('.approval-option-item'); if (!option) return; const mode = map[option.dataset.value] || 'always-ask'; state.approvalMode = mode; localStorage.setItem('omp.approvalMode', mode); }, true); bindDrawerTabs(); bindFileAttachment(); void loadAdvisorConfig(); }
+  function bindOmpSurface() { ['egoBrowserToggle', 'planYoloToggle', 'drawerTabFilesBtn', 'drawerTabModesBtn', 'tabFilesPane', 'tabModesPane', 'settingsNavAgents', 'settingsTabAgents'].forEach((id) => { const node = $(id); if (node) { node.hidden = false; node.removeAttribute('aria-hidden'); node.style.removeProperty('display'); } }); ['fileChangeFloatingBar', 'fileChangeFloatingPill', 'shareSessionModal', 'openWindowModal', 'codeDiffReviewModal', 'upgradeModal', 'sessionContextMenu'].forEach((id) => { const node = $(id); if (node) { node.hidden = true; node.setAttribute('aria-hidden', 'true'); node.style.setProperty('display', 'none', 'important'); node.classList.remove('open'); } }); const fileList = $('drawerFilesList'); if (fileList) { fileList.replaceChildren(emptyNode('Chưa có tệp được đính kèm')); } const quotaRows = $('chatModalAccountsRows'); if (quotaRows) quotaRows.replaceChildren(emptyNode('Đang tải dữ liệu quota…')); const fileBadge = $('drawerTabFilesBtn')?.querySelector('.drawer-tab-badge'); if (fileBadge) fileBadge.textContent = '0'; $('drawerTabFilesBtn')?.setAttribute('aria-label', 'Tệp đính kèm thật'); $('drawerUploadFileBtn')?.removeAttribute('data-production-unsupported'); const permission = $('settingsPermissionSelect'); const map = { require_approval: 'always-ask', approve_for_me: 'write', full_access: 'yolo' }; if (permission) { permission.value = Object.entries(map).find(([, value]) => value === state.approvalMode)?.[0] || 'require_approval'; if (typeof setPermissionMode === 'function') setPermissionMode(permission.value, false); permission.addEventListener('change', () => { state.approvalMode = map[permission.value] || 'always-ask'; localStorage.setItem('omp.approvalMode', state.approvalMode); if (typeof setPermissionMode === 'function') setPermissionMode(permission.value, false); notify(`Đã chọn quyền OMP: ${permission.options[permission.selectedIndex]?.textContent || state.approvalMode}`); }, true); } $('planYoloToggle')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); togglePlanYolo(); }, true); document.addEventListener('click', (event) => { const plan = event.target.closest('[data-action="plan-mode"],#plusPlanningMode'); if (plan) { event.preventDefault(); event.stopImmediatePropagation(); togglePlanYolo(); return; } const option = event.target.closest('.approval-option-item'); if (!option) return; const mode = map[option.dataset.value] || 'always-ask'; state.approvalMode = mode; localStorage.setItem('omp.approvalMode', mode); }, true); bindDrawerTabs(); bindFileAttachment(); void loadAdvisorConfig(); }
 
   function ensureToolsRail() {
     const drawer = $('toolsDrawer'); if (!drawer || $('toolsDrawerRail')) return;
@@ -4171,25 +4336,98 @@
   }
 
 
+  function bindAgentInstructionsSettings() {
+    const area = $('ompAgentInstructionsTextarea');
+    const nav = $('settingsNavAgentConfig');
+    if (!area || !nav || area.dataset.agentBound === 'true') return;
+    area.dataset.agentBound = 'true';
+    const status = $('agentPromptStatus') || document.createElement('div');
+    status.id = 'agentPromptStatus';
+    status.className = 'settings-help-text';
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    if (!status.isConnected) area.after(status);
+    const stats = $('agentPromptStats');
+    const saveButton = $('btnSaveAgentInstructions');
+    const reloadButton = $('btnReloadAgentInstructions');
+    let maxChars = 100000;
+    let version = '';
+    let loadedInstructions = '';
+    let sourcePath = '';
+    let loadReady = false;
+    let loading = false;
+    let busy = false;
+    let conflicted = false;
+    const syncStats = () => { if (stats) stats.textContent = `${area.value.length.toLocaleString()} / ${maxChars.toLocaleString()} ký tự · ${area.value ? area.value.split('\n').length : 0} dòng`; };
+    const setBusy = (value) => {
+      busy = value;
+      area.disabled = value || !loadReady;
+      if (saveButton) saveButton.disabled = value || !loadReady || conflicted;
+      if (reloadButton) reloadButton.disabled = value || !loadReady;
+    };
+    const setStatus = (message, error = false) => { status.textContent = message; status.dataset.state = error ? 'error' : 'ready'; };
+    const save = async (instructions, label = 'Đã lưu') => {
+      if (busy || instructions.length > maxChars) {
+        if (instructions.length > maxChars) setStatus(`Chỉ dẫn vượt giới hạn ${maxChars.toLocaleString()} ký tự.`, true);
+        return;
+      }
+      setBusy(true); setStatus('Đang lưu chỉ dẫn vào cấu hình OMP…');
+      try {
+        const { payload } = await readJson(`${API}/agent-instructions`, { method: 'PUT', body: JSON.stringify({ instructions, version }) });
+        area.value = payload.instructions;
+        version = payload.version;
+        sourcePath = payload.path || sourcePath;
+        loadedInstructions = payload.instructions;
+        maxChars = Number(payload.maxChars) || maxChars;
+        area.maxLength = maxChars;
+        syncStats(); setStatus(`${label} trực tiếp vào ${sourcePath} · OMP tự nạp cho session mới.`); notify(`${label} chỉ dẫn Agent OMP`);
+      } catch (error) {
+        let message = `Chưa lưu được chỉ dẫn: ${error.message}`;
+        if (error.status === 409) {
+          conflicted = true;
+          message = 'OMP đã có thay đổi bên ngoài. Bản nháp được giữ; nạp lại từ OMP để xem nội dung mới trước khi lưu.';
+        }
+        setStatus(message, true); notify(message, true);
+      } finally { setBusy(false); }
+    };
+    const load = async (confirmDraft = false) => {
+      if (loading || (busy && loadReady)) return;
+      if (confirmDraft && loadReady && area.value !== loadedInstructions && !window.confirm('Bỏ bản nháp hiện tại và nạp lại file Agent OMP?')) return;
+      loading = true; setBusy(true); setStatus('Đang nạp file Agent OMP…');
+      try {
+        const { payload } = await readJson(`${API}/agent-instructions`);
+        maxChars = Number(payload.maxChars) || maxChars;
+        version = payload.version;
+        sourcePath = payload.path || '~/.omp/agent/AGENTS.md';
+        area.maxLength = maxChars;
+        loadReady = true;
+        conflicted = false;
+        area.value = payload.instructions || '';
+        loadedInstructions = area.value;
+        syncStats();
+        setStatus(payload.configured ? `Đã nạp ${sourcePath} · OMP tự đọc cho session mới.` : `${sourcePath} chưa tồn tại; nội dung đang trống.`);
+      } catch (error) { setStatus(`Không nạp được file Agent OMP: ${error.message}`, true); }
+      finally { loading = false; setBusy(false); }
+    };
+    area.addEventListener('input', syncStats);
+    nav.addEventListener('click', () => { if (!loadReady || area.value === loadedInstructions) void load(); }, true);
+    saveButton?.addEventListener('click', () => { void save(area.value); }, true);
+    reloadButton?.addEventListener('click', () => { void load(true); }, true);
+    const refresh = () => {
+      if (!document.hidden && $('settingsModal')?.classList.contains('open') && nav.classList.contains('active') && (!loadReady || area.value === loadedInstructions)) void load();
+    };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    setBusy(true);
+  }
+
   function bindProductionSettings() {
-    if (!$('settingsGeneralResponsiveStyle')) {
-      const style = document.createElement('style');
-      style.id = 'settingsGeneralResponsiveStyle';
-      style.textContent = '@media (max-width: 480px) { #settingsTabGeneral .settings-row-header { align-items: stretch; flex-direction: column; gap: 10px; } #settingsTabGeneral .settings-row-header > div { width: 100%; min-width: 0; } #settingsTabGeneral .settings-row-header .settings-select { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; } #settingsTabGeneral .settings-row-header .switch-label { align-self: flex-end; } }';
-      document.head.append(style);
-    }
   function ensureModelSourceSetting() {
     if ($('settingsModelSourceSelect')) return;
     const defaultRow = $('settingsDefaultModelSelect')?.closest('.settings-row');
     if (!defaultRow) return;
     const row = document.createElement('div');
     row.className = 'settings-row';
-    if (!$('settingsModelsResponsiveStyle')) {
-      const style = document.createElement('style');
-      style.id = 'settingsModelsResponsiveStyle';
-      style.textContent = '@media (max-width: 760px) { #settingsTabModels .settings-row-header { align-items: stretch; flex-direction: column; gap: 10px; } #settingsTabModels .settings-row-header .settings-select { width: 100%; } }';
-      document.head.append(style);
-    }
     const header = document.createElement('div');
     header.className = 'settings-row-header';
     const copy = document.createElement('div');
@@ -4214,6 +4452,16 @@
     row.append(header);
     defaultRow.before(row);
   }
+    const refresh = $('btnRefreshOmpCapabilities');
+    if (refresh && refresh.dataset.bound !== 'true') {
+      refresh.dataset.bound = 'true';
+      refresh.addEventListener('click', async () => {
+        refresh.disabled = true; refresh.setAttribute('aria-busy', 'true');
+        const status = $('ompBrowserModeStatus'); if (status) status.textContent = 'Đang kiểm tra kết nối browser OMP…';
+        try { await loadCapabilities(); }
+        finally { refresh.disabled = false; refresh.removeAttribute('aria-busy'); }
+      });
+    }
     const thinkingValues = new Set(['max', 'high', 'medium', 'low', 'none']);
     const setThinking = (value) => {
       if (!thinkingValues.has(value)) return;
@@ -4233,11 +4481,11 @@
       conversation.addEventListener('change', () => { state.conversationDisplay = conversation.value === 'expanded' ? 'expanded' : 'compact'; localStorage.setItem('omp.conversationDisplay', state.conversationDisplay); document.documentElement.dataset.conversationDisplay = state.conversationDisplay; }, true);
     }
     const enter = $('settingsEnterBehaviorSelect');
-    if (enter) { enter.value = 'send'; setControlVisible(enter.closest('.settings-row'), false); }
-    ['sfSortNewest', 'sfSortOldest', 'sfSortAlpha'].forEach((id) => $(id)?.addEventListener('click', () => localStorage.setItem('omp.sessionSort', id === 'sfSortAlpha' ? 'alpha' : id === 'sfSortOldest' ? 'oldest' : 'newest'), true));
-    ['sfFilterRunning', 'sfFilterUnread', 'sfFilterPinned'].forEach((id) => $(id)?.addEventListener('click', () => { const mode = id === 'sfFilterRunning' ? 'running' : id === 'sfFilterUnread' ? 'unread' : 'pinned'; localStorage.setItem('omp.sessionFilter', localStorage.getItem('omp.sessionFilter') === mode ? 'all' : mode); }, true));
-    $('sfActionResetAll')?.addEventListener('click', () => { localStorage.setItem('omp.sessionSort', 'newest'); localStorage.setItem('omp.sessionFilter', 'all'); }, true);
-    ['settingsTempRange', 'settingsMaxTokensSelect', 'settingsLanguageSelect'].forEach((id) => setControlVisible($(id)?.closest('.settings-row'), false));
+    if (enter) { enter.value = state.enterBehavior; enter.addEventListener('change', () => { state.enterBehavior = enter.value === 'block' ? 'block' : 'queue'; localStorage.setItem('omp.enterBehavior', state.enterBehavior); }); }
+    ['sfSortNewest', 'sfSortOldest', 'sfSortAlpha'].forEach((id) => $(id)?.addEventListener('click', () => { localStorage.setItem('omp.sessionSort', id === 'sfSortAlpha' ? 'alpha' : id === 'sfSortOldest' ? 'oldest' : 'newest'); renderSessions(); }, true));
+    ['sfFilterRunning', 'sfFilterUnread', 'sfFilterPinned'].forEach((id) => $(id)?.addEventListener('click', () => { const mode = id === 'sfFilterRunning' ? 'running' : id === 'sfFilterUnread' ? 'unread' : 'pinned'; localStorage.setItem('omp.sessionFilter', localStorage.getItem('omp.sessionFilter') === mode ? 'all' : mode); renderSessions(); }, true));
+    document.querySelectorAll('.sf-origin-filter-item').forEach((item) => item.addEventListener('click', () => { localStorage.setItem('omp.sessionOriginFilter', item.dataset.originFilter || 'all'); renderSessions(); }, true));
+    $('sfActionResetAll')?.addEventListener('click', () => { localStorage.setItem('omp.sessionSort', 'newest'); localStorage.setItem('omp.sessionFilter', 'all'); localStorage.setItem('omp.sessionOriginFilter', 'all'); renderSessions(); }, true);
     ensureModelSourceSetting();
     const modelSourceSelect = $('settingsModelSourceSelect');
     if (modelSourceSelect) {
@@ -4248,8 +4496,135 @@
         void loadModels();
       }, true);
     }
+    bindAgentInstructionsSettings();
   }
 
+  let contextRequestId = 0;
+  let contextSnapshot = null;
+  let contextLoading = false;
+  let contextActionBusy = false;
+  const contextPopoverOpen = () => Boolean($('contextWindowPopover')?.classList.contains('show'));
+  const formatContextTokens = (value) => Number(value).toLocaleString('vi-VN');
+  function syncContextCompactButton() {
+    const button = $('btnRunCompact');
+    if (!button) return;
+    const sessionId = state.activeId;
+    const localBusy = Boolean(sessionId && (requestsForSession(sessionId).length || state.queueDrainingSessions.has(sessionId) || sessionHasQueuedPrompt(sessionId)));
+    const supported = Boolean(sessionId && contextSnapshot?.sessionId === sessionId && contextSnapshot.compactSupported);
+    button.disabled = contextActionBusy || contextLoading || !supported || Boolean(contextSnapshot?.busy) || localBusy;
+    button.title = !sessionId ? 'Chọn chat để kiểm tra /compact'
+      : !supported ? 'OMP chưa công bố /compact cho chat này'
+        : (contextSnapshot?.busy || localBusy) ? 'Đợi chat hoàn tất lượt đang chạy hoặc hàng chờ'
+          : contextActionBusy ? 'OMP đang chạy /compact'
+            : 'Gửi lệnh /compact đến OMP';
+  }
+  function renderContextWindow(data, message = '') {
+    const model = data?.model || null;
+    const usage = data?.usage || null;
+    const contextUsage = data?.contextUsage || null;
+    const contextSource = data?.contextUsageSource || 'OMP ACP';
+    const limit = Number(contextUsage?.size || model?.contextWindow) || 0;
+    const contextUsed = contextUsage && Number.isFinite(Number(contextUsage.used)) ? Number(contextUsage.used) : null;
+    const ratio = limit && contextUsed != null ? Math.min(1, Math.max(0, contextUsed / limit))
+      : usage && limit ? Math.min(1, Math.max(0, Number(usage.total) / limit)) : null;
+    const percent = ratio == null ? null : Math.round(ratio * 100);
+    const setText = (id, value) => { const node = $(id); if (node) node.textContent = value; };
+    const arc = $('contextUsageArc');
+    if (arc) arc.style.strokeDashoffset = String(ratio == null ? 188.5 : 188.5 * (1 - ratio));
+    const used = $('contextUsedSegment');
+    const free = $('contextFreeSegment');
+    if (used) used.style.width = `${ratio == null ? 0 : ratio * 100}%`;
+    if (free) free.style.width = `${ratio == null ? 0 : (1 - ratio) * 100}%`;
+    setText('dockContextLabel', `Context ${percent == null ? '--' : `${percent}%`}`);
+    setText('contextUsagePct', percent == null ? '--' : `${percent}%`);
+    setText('contextModelBadge', model?.name || model?.id || 'Chưa chọn model');
+    const badge = $('contextModelBadge');
+    if (badge) badge.title = model ? `${model.provider || 'OMP'} · ${model.id}` : '';
+    setText('contextWindowSize', limit ? `${formatContextTokens(limit)} token tối đa` : 'OMP chưa công bố giới hạn model');
+    setText('contextUsageHint', contextUsed != null
+      ? contextSource.includes('lượt gần nhất')
+        ? `OMP đã lưu lượt gần nhất: ${formatContextTokens(contextUsed)}${limit ? ` / ${formatContextTokens(limit)}` : ''} token context`
+        : `Đang dùng ${formatContextTokens(contextUsed)}${limit ? ` / ${formatContextTokens(limit)}` : ''} token trong context hiện tại`
+      : usage ? `${formatContextTokens(usage.total)} token lượt gần nhất${percent == null ? '' : ` · ${percent}% giới hạn model`}`
+      : message || 'OMP chưa gửi usage lượt gần nhất');
+    setText('contextInputTokens', usage ? formatContextTokens(usage.input) : '--');
+    setText('contextOutputTokens', usage ? formatContextTokens(usage.output) : '--');
+    setText('contextWindowTokensLabel', contextUsed != null
+      ? contextSource.includes('lượt gần nhất') ? 'Tokens context · lượt gần nhất' : 'Tokens đang dùng · Context'
+      : 'Tổng token · lượt gần nhất');
+    setText('contextWindowTokens', contextUsed != null ? formatContextTokens(contextUsed) : usage ? formatContextTokens(usage.total) : '--');
+    const source = $('contextUsageSource');
+    const cost = contextUsage?.cost;
+    if (source) {
+      let label = `Nguồn: ${contextSource}`;
+      if (cost && Number.isFinite(Number(cost.amount)) && /^[A-Z]{3}$/i.test(String(cost.currency || ''))) {
+        try { label = `Chi phí cộng dồn · ${new Intl.NumberFormat('en-US', { style: 'currency', currency: String(cost.currency).toUpperCase(), minimumFractionDigits: 2, maximumFractionDigits: 6 }).format(Number(cost.amount))}`; }
+        catch { label = `Chi phí cộng dồn · ${Number(cost.amount)} ${cost.currency}`; }
+      }
+      source.textContent = label;
+    }
+    const updatedAt = data?.contextUsageUpdatedAt || data?.usageUpdatedAt;
+    setText('contextUsageTimestamp', updatedAt
+      ? new Date(updatedAt).toLocaleString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      : 'Chưa có dữ liệu');
+    syncContextCompactButton();
+  }
+  async function loadContextWindow({ quiet = true } = {}) {
+    const requestId = ++contextRequestId;
+    const sessionId = state.activeId;
+    contextSnapshot = null;
+    contextLoading = true;
+    const refresh = $('btnRefreshContext');
+    if (refresh) { refresh.disabled = true; refresh.setAttribute('aria-busy', 'true'); }
+    if (!sessionId) {
+      contextLoading = false;
+      renderContextWindow(null, 'Chọn chat OMP để xem usage.');
+      if (refresh) { refresh.disabled = false; refresh.removeAttribute('aria-busy'); }
+      return;
+    }
+    renderContextWindow(null, 'Đang lấy trạng thái từ OMP…');
+    try {
+      const { payload } = await readJson(`${API}/sessions/${encodeURIComponent(sessionId)}/context`);
+      if (requestId !== contextRequestId || sessionId !== state.activeId) return;
+      contextSnapshot = payload;
+      renderContextWindow(payload);
+    } catch (error) {
+      if (requestId !== contextRequestId || sessionId !== state.activeId) return;
+      renderContextWindow(null, `Không lấy được dữ liệu OMP: ${error.message}`);
+      if (!quiet) notify(`Không làm mới được Context Window: ${error.message}`, true);
+    } finally {
+      if (requestId === contextRequestId) {
+        contextLoading = false;
+        if (refresh) { refresh.disabled = false; refresh.removeAttribute('aria-busy'); }
+        syncContextCompactButton();
+      }
+    }
+  }
+  function bindContextWindow() {
+    $('btnDockContext')?.addEventListener('click', () => setTimeout(() => {
+      if (contextPopoverOpen()) void loadContextWindow();
+    }, 0), true);
+    $('btnRefreshContext')?.addEventListener('click', (event) => {
+      event.preventDefault(); event.stopImmediatePropagation();
+      void loadContextWindow({ quiet: false });
+    }, true);
+    $('btnRunCompact')?.addEventListener('click', async (event) => {
+      event.preventDefault(); event.stopImmediatePropagation();
+      const sessionId = state.activeId;
+      if (!sessionId || !contextSnapshot?.compactSupported || contextSnapshot.sessionId !== sessionId || contextSnapshot.busy || contextActionBusy) return;
+      contextActionBusy = true; syncContextCompactButton();
+      try {
+        await readJson(`${API}/sessions/${encodeURIComponent(sessionId)}/action`, { method: 'POST', body: JSON.stringify({ action: 'compact' }) });
+        if (state.activeId !== sessionId) return;
+        notify('OMP đã hoàn tất lệnh /compact.');
+        await loadContextWindow();
+      } catch (error) {
+        if (state.activeId === sessionId) notify(`OMP không chạy được /compact: ${error.message}`, true);
+      } finally {
+        contextActionBusy = false; syncContextCompactButton();
+      }
+    }, true);
+  }
   function unsupported(event) { const target = event.target.closest('[data-production-unsupported],#confirmUpgradeBtn,#launchRealBrowserTabBtn,#btnModalApplyDiff,#btnModalRevertFile,#btnApplyAllDiff,#btnUndoCurrentDiff'); if (!target) return; event.preventDefault(); event.stopImmediatePropagation(); }
   function bind() {
     if (bound) return;
@@ -4258,6 +4633,7 @@
     sanitizeProductionSurface();
     bindDialogAccessibility();
     bindActionModals();
+    bindContextWindow();
     bindProductionSettings();
     bindApprovalMode();
     bindProjectFolderModal();
@@ -4327,7 +4703,15 @@
       notify(state.draftWorkspaceCwd ? `Workspace chat mới: ${workspaceName(state.draftWorkspaceCwd)}` : 'Chat mới dùng General workspace.');
     }, true);
     $('sendBtn')?.addEventListener('click', (event) => { event.preventDefault(); event.stopImmediatePropagation(); if (event.altKey && visibleRequest()) void stopStream(); else void sendPrompt(); }, true);
-    $('chatInput')?.addEventListener('keydown', (event) => { if (event.key === 'Escape' && state.editingQueueId) { event.preventDefault(); event.stopImmediatePropagation(); cancelQueueEdit(); return; } if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.stopImmediatePropagation(); void sendPrompt(); } }, true);
+    $('chatInput')?.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && state.editingQueueId) { event.preventDefault(); event.stopImmediatePropagation(); cancelQueueEdit(); return; }
+      if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+      event.preventDefault(); event.stopImmediatePropagation();
+      const busy = state.activeId ? Boolean(requestsForSession(state.activeId).length || state.queueDrainingSessions.has(state.activeId) || sessionHasQueuedPrompt(state.activeId) || queueIsPaused(state.activeId)) : Boolean(firstPromptPromise);
+      const block = (state.enterBehavior === 'block') !== Boolean(event.ctrlKey || event.metaKey);
+      if (busy && block && !state.editingQueueId) { notify(`OMP đang bận; nội dung được giữ lại. ${state.enterBehavior === 'block' ? 'Cmd/Ctrl+Enter' : 'Enter'} để xếp hàng.`); return; }
+      void sendPrompt();
+    }, true);
     ['sidebarSearchInput', 'sessionSearchInput'].forEach((id) => $(id)?.addEventListener('input', renderSessions, true));
     $('connectionStatusPill')?.addEventListener('click', async (event) => {
       event.preventDefault(); event.stopImmediatePropagation(); setConnectionStatus('Đang kiểm tra…', 'syncing');
@@ -4360,10 +4744,9 @@
     window.addEventListener('focus', refreshQuotaModelAccess);
     document.addEventListener('visibilitychange', refreshQuotaModelAccess);
     $('headerParametersBtn')?.closest('.header-dropdown-wrap')?.remove();
-    const pluginPane = $('settingsTabPlugins'); if (pluginPane) pluginPane.replaceChildren();
-    const pluginLabel = $('settingsNavPlugins')?.querySelector('span'); if (pluginLabel) pluginLabel.textContent = 'Tích hợp';
     updateHeaderQuota({}, []); updateQuotaModal({}, [], {});
     bindOmpSurface();
+    bindSessionEvents();
     bindFileAttachment();
     renderQueueTray();
     syncModelControls(null);
@@ -4371,7 +4754,7 @@
     void loadModels();
     void loadQuota();
     void loadFolders();
-    void loadSessions();
+    void loadSessions().then(() => loadFolders({ silent: true }));
   }
   window.HONPI_PRODUCTION_CHAT = { state, loadSessions, loadFolders, selectSession, sendPrompt, stopStream, createSession, loadQuota, loadCapabilities, renderQueueTray, enqueuePrompt, discardQueuedPrompt, sendQueuedPrompt };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind, { once: true }); else setTimeout(bind, 0);

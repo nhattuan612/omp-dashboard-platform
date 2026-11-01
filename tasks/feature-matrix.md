@@ -11,8 +11,8 @@
 | Session actions, pagination và folder persistence | `/api/v1/sessions/:id/action`, `/api/v1/folders`, `?limit=&cursor=` | supported; create/assign/unassign/reassign/reload giữ metadata thật |
 | File listing/reference | `/api/v1/sessions/:id/files`, `/files/reference` | supported; workspace-constrained; isolated API acceptance covers valid text plus traversal, symlink, `.git`, binary, and size boundaries; production file smoke chưa chạy |
 | Approval, Agent Hub, capability catalog | `/approval`, `/agents`, `/api/v1/omp/capabilities` | approval roundtrip supported for real `confirm`/`select` frames; Agent Hub partial/read-only, real subagent observed and completed; capability GET `200` |
-| OMP tool catalog & drift | `omp-tool-map.json`, `/api/v1/omp/capabilities`, `POST /api/v1/omp/capabilities/audit` | supported; source map versioned, runtime audit không gửi prompt/model, unknown/MCP chỉ read-only, `hub` blocked theo evidence |
-| Browser modes | capability catalog + Settings | partial; Ego Browser mặc định, relay/chrome unavailable |
+| OMP tool catalog & drift | `omp-tool-map.json`, `/api/v1/omp/capabilities`, `POST /api/v1/omp/capabilities/audit` | supported; OMP 18.4.6, audit inventory qua overlay xdev tạm; mọi trạng thái luôn hiện, unknown/MCP chỉ read-only, lỗi giữ catalog và khóa thao tác, `hub` blocked theo evidence |
+| Browser modes | capability probe + Settings + worker config overlay | Ego Browser supported; Chrome/Electron live CDP supported on dedicated OMP Chrome profile (`127.0.0.1:9225`, API `ready`); Relay selectable for OMP auto-start (`connectOnStart`) but extension remains disconnected at `9224` |
 | Share modes | `/api/v1/sessions/:id/action` action `share` | partial; live session đã pass local loopback và encrypted HTTPS; collab unavailable |
 | OMP-native Memory adapter | `/api/v1/sessions/:id/memory`, `/api/v1/sessions/:id/memory/action` | deployed; capability supported; live backend `off`, không có production Memory operation trong rollout |
 | Source/runtime deployment | `deploy-local-dashboard.sh` | supported; có backup/rollback |
@@ -21,6 +21,7 @@
 
 | Tính năng | Trạng thái | Lý do |
 |---|---|---|
+| Chỉ dẫn Agent OMP | Deployed 2026-10-02 | Cài đặt/API đọc và ghi nội dung `~/.omp/agent/AGENTS.md`, cho thêm/bớt/làm rỗng nhưng giữ file; DELETE 405. Có SHA-256 chống ghi đè và backup trước lưu; UI khóa lưu khi conflict, giữ bản nháp, nạp lại từ OMP khi mở tab/quay về cửa sổ. 116 scenarios và UI regression pass; live đọc 10.928 ký tự; health/chat/quota 200; backup `/Users/trannhattuan/.omp/usage-dashboard/backups/deploy/20261002-072748-75215` checksum pass. |
 | Abort/retry/steer UI | partial | Live Stop returned stream abort plus API `202`; live steer returned `200`/`steer_sent`; active reconnect guard returned `409`, persisted idle reconnect returned `200`; stream recovery remains partial |
 | Diff apply/revert, terminal execution | unavailable | Chưa có boundary quyền thực thi an toàn |
 | Collab read-only/read-write share | unavailable | Chưa có host collab adapter |
