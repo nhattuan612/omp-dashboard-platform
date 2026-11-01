@@ -1,10 +1,12 @@
 import { DatabaseSync } from "node:sqlite";
 
-export function readOmpStatsHistory(databasePath, since, now = Date.now(), limit = 30) {
+export function readOmpStatsHistory(databasePath, since, now = Date.now(), limit = 30, onSelect = null) {
   const db = new DatabaseSync(databasePath, { readOnly: true });
   try {
     const where = "recorded_at >= ? AND recorded_at <= ?";
+    onSelect?.();
     const [summary] = db.prepare(`SELECT count(*) AS records, min(recorded_at) AS earliest, COALESCE(sum(COALESCE(requests, 0)), 0) AS requests, COALESCE(sum(COALESCE(input_tokens, 0)), 0) AS input, COALESCE(sum(COALESCE(output_tokens, 0)), 0) AS output, COALESCE(sum(COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)), 0) AS cache FROM client_usage WHERE ${where}`).all(since, now);
+    onSelect?.();
     const items = db.prepare(`SELECT recorded_at, app, provider, model, requests, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, install_id FROM client_usage WHERE ${where} ORDER BY recorded_at DESC LIMIT ?`).all(since, now, limit).map((row) => ({
       timestamp: new Date(Number(row.recorded_at)).toISOString(),
       app: String(row.app || "OMP"),
@@ -36,9 +38,10 @@ export function readOmpStatsHistory(databasePath, since, now = Date.now(), limit
   }
 }
 
-export function readOmpStatsTrend(databasePath, since, now, start, bucketMs, bucketCount) {
+export function readOmpStatsTrend(databasePath, since, now, start, bucketMs, bucketCount, onSelect = null) {
   const db = new DatabaseSync(databasePath, { readOnly: true });
   try {
+    onSelect?.();
     const rows = db.prepare(`SELECT CAST((recorded_at - ?) / ? AS INTEGER) AS bucket, COALESCE(sum(COALESCE(input_tokens, 0)), 0) AS input, COALESCE(sum(COALESCE(output_tokens, 0)), 0) AS output, COALESCE(sum(COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)), 0) AS cache FROM client_usage WHERE recorded_at >= ? AND recorded_at <= ? GROUP BY bucket`).all(start, bucketMs, since, now);
     const buckets = new Map();
     for (const row of rows) {

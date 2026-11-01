@@ -4444,6 +4444,7 @@ button:not([disabled]) { transform:none !important; transition:background-color 
               <span class="section-title">Hệ Thống Quota OMP</span>
               <span class="brand-port" style="color:var(--accent-active); font-weight:700;">4 tài khoản kết nối</span>
               <span class="brand-port" id="overviewResetBadge">Reset sớm nhất: 10p</span>
+              <span class="brand-port" id="quotaUpdatedAt" title="Thời điểm tải dữ liệu quota gần nhất">Đang tải · --:--:--</span>
             </div>
           </div>
 
@@ -4927,7 +4928,12 @@ button:not([disabled]) { transform:none !important; transition:background-color 
   let ACCOUNTS = [], activeAccountId = '', activeStartTime = Date.now();
   let currentFilter = 'all', currentSearch = '', currentSort = 'usage-desc', accountsExpanded = false;
   let currentPeriod = '24h', countdownSec = 30, detailAccountEmail = '';
-  let historyItems = [], historyTotalRecords = 0, historyHasMore = false, historyPage = 1, historyCompact = false, historyExpanded = false, ompUsagePage = 1, ompUsageExpanded = false, historyScopeStats = {}, historyScopeErrors = {}, historyScopeLoading = {}, historyRequestSeq = 0, historyLatestRequests = {}, historyLoadEpoch = 0;
+  let historyItems = [], historyTotalRecords = 0, historyHasMore = false, historyPage = 1, historyCompact = false, historyExpanded = false, ompUsagePage = 1, ompUsageExpanded = false, historyScopeStats = {}, historyScopeLoadedAt = {}, historyScopeErrors = {}, historyScopeLoading = {}, historyRequestSeq = 0, historyLatestRequests = {}, historyLoadEpoch = 0;
+  const historyScopeRequests = new Map();
+  let lastQuotaLoadAt = 0, loadAllPromise = null, quotaRefreshPending = false;
+  const QUOTA_REFRESH_INTERVAL_MS = 30000;
+  // shortcut: history summaries can be 2m stale; add shared caching only if multi-tab queries remain costly.
+  const HISTORY_SCOPE_REFRESH_INTERVAL_MS = 120000;
   let quotaModelsLoadedAt = 0;
   let readinessCheckedAt = 0, readinessLoading = false;
   let modelTestCatalog = [], modelTestCatalogLoadedAt = 0, modelTestLoading = false, modelTestSending = false;
@@ -4937,14 +4943,19 @@ button:not([disabled]) { transform:none !important; transition:background-color 
     if (typeof console !== 'undefined' && typeof console[level === 'error' ? 'error' : level === 'warn' ? 'warn' : 'info'] === 'function') {
       console[level === 'error' ? 'error' : level === 'warn' ? 'warn' : 'info']('[quota-ui]', event, entry);
     }
-    if (level === 'warn' || level === 'error') void fetch('/api/v1/quota/client-log', { method: 'POST', keepalive: true, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ level, event, requestId: payload.requestId, scope: payload.scope, durationMs: payload.durationMs, errorName: payload.errorName }) }).catch(() => {});
+    if ((level === 'warn' || level === 'error') && !document.hidden) void fetch('/api/v1/quota/client-log', { method: 'POST', keepalive: true, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ level, event, requestId: payload.requestId, scope: payload.scope, durationMs: payload.durationMs, errorName: payload.errorName }) }).catch(() => {});
+  }
+  function deferQuotaLoadWhileHidden() {
+    if (!document.hidden) return false;
+    quotaRefreshPending = true;
+    return true;
   }
   const HISTORY_COLLAPSED_PAGE_SIZE = 10;
   const HISTORY_EXPANDED_PAGE_SIZE = 100;
   function currentHistoryPageSize() { return historyExpanded ? HISTORY_EXPANDED_PAGE_SIZE : HISTORY_COLLAPSED_PAGE_SIZE; }
   let safetyConfig = { enabled: true, mode: 'auto', accountIds: [] };
   let ompControl = { enabled: false };
-  let loginPoll = null;
+  let loginPoll = null, loginPollPaused = false, loginStatusRequestInFlight = false;
   const COLORS = ['cyan','orange','emerald','purple','pink','indigo','teal','amber'];
   const esc = (v) => String(v ?? '--').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
   const num = v => v == null || v === '' ? null : Number.isFinite(Number(v)) ? Number(v) : null;
@@ -5107,7 +5118,7 @@ button:not([disabled]) { transform:none !important; transition:background-color 
     const account = ACCOUNTS.find(a => a.id === id); if (!account) return;
     if (!window.confirm(`Xoá tài khoản ${account.email}? OAuth credential của tài khoản này sẽ bị xoá khỏi OMP.`)) return;
     const card = document.getElementById(`card_${id}`), button = card?.querySelector('.btn-danger'); if (button) { button.disabled = true; button.textContent = 'Đang xoá…'; }
-    try { const result = await api(`${API.deleteAccount}/${encodeURIComponent(id)}`, { method: 'DELETE' }); await loadAll(); showToast(`✓ ${result.message || `Đã xoá ${account.email}`}`); }
+    try { const result = await api(`${API.deleteAccount}/${encodeURIComponent(id)}`, { method: 'DELETE' }); await loadAll({ afterCurrent: true }); showToast(`✓ ${result.message || `Đã xoá ${account.email}`}`); }
     catch (e) { showToast(`✕ Xoá tài khoản thất bại: ${e.message}`); if (button) { button.disabled = false; button.textContent = 'Xoá'; } }
   }
   function renderQuickModalAccounts() {
@@ -5532,6 +5543,18 @@ button:not([disabled]) { transform:none !important; transition:background-color 
     renderOmpUsage(historyScopeStats[currentPeriod]?.ompUsage, true);
   }
   async function loadHistory(scope = currentPeriod, forceRefresh = false) {
+    if (deferQuotaLoadWhileHidden()) return;
+    const pending = historyScopeRequests.get(scope);
+    if (pending) {
+      if (!forceRefresh || pending.forceRefresh) return pending.promise;
+      try { await pending.promise; } catch {}
+      return loadHistory(scope, true);
+    }
+    const loadedAt = historyScopeLoadedAt[scope] || 0;
+    if (!forceRefresh && historyScopeStats[scope] && Date.now() - loadedAt < HISTORY_SCOPE_REFRESH_INTERVAL_MS) {
+      if (scope === currentPeriod) renderHistory(historyScopeStats[scope], scope);
+      return historyScopeStats[scope];
+    }
     const requestId = ++historyRequestSeq;
     const startedAt = Date.now();
     historyLatestRequests[scope] = requestId;
@@ -5539,31 +5562,49 @@ button:not([disabled]) { transform:none !important; transition:background-color 
     historyScopeLoading[scope] = true;
     delete historyScopeErrors[scope];
     renderHistoryScopeCards();
-    try {
-      clientLog('info', 'history_fetch_start', { scope, requestId });
-      const data = await api(`${API.history}?scope=${encodeURIComponent(scope)}${forceRefresh ? '&refresh=1' : ''}`, { timeoutMs: 20000 });
-      if (historyLatestRequests[scope] !== requestId || loadEpoch !== historyLoadEpoch) return data;
-      historyScopeStats[scope] = data;
-      delete historyScopeErrors[scope];
-      delete historyScopeLoading[scope];
-      renderHistoryScopeCards();
-      if (scope === currentPeriod) renderHistory(data, scope);
-      clientLog('info', 'history_fetch_success', { scope, requestId, durationMs: Date.now() - startedAt, totalTokens: data?.totalTokensFormatted, requests: data?.totalRequests });
-      return data;
-    } catch (error) {
-      if (historyLatestRequests[scope] === requestId && loadEpoch === historyLoadEpoch) {
-        historyScopeErrors[scope] = true;
+    const request = (async () => {
+      try {
+        clientLog('info', 'history_fetch_start', { scope, requestId });
+        const data = await api(`${API.history}?scope=${encodeURIComponent(scope)}${forceRefresh ? '&refresh=1' : ''}`, { timeoutMs: 20000 });
+        if (historyLatestRequests[scope] !== requestId) return data;
+        if (loadEpoch !== historyLoadEpoch) {
+          delete historyScopeLoading[scope];
+          renderHistoryScopeCards();
+          return data;
+        }
+        historyScopeStats[scope] = data;
+        historyScopeLoadedAt[scope] = Date.now();
+        delete historyScopeErrors[scope];
         delete historyScopeLoading[scope];
-        if (scope === currentPeriod) renderHistoryError(error, scope);
-        else renderHistoryScopeCards();
+        renderHistoryScopeCards();
+        if (scope === currentPeriod) renderHistory(data, scope);
+        clientLog('info', 'history_fetch_success', { scope, requestId, durationMs: Date.now() - startedAt, totalTokens: data?.totalTokensFormatted, requests: data?.totalRequests });
+        return data;
+      } catch (error) {
+        if (historyLatestRequests[scope] === requestId) {
+          delete historyScopeLoading[scope];
+          if (loadEpoch === historyLoadEpoch) {
+            historyScopeErrors[scope] = true;
+            if (scope === currentPeriod) renderHistoryError(error, scope);
+            else renderHistoryScopeCards();
+          } else renderHistoryScopeCards();
+        }
+        throw error;
       }
-      throw error;
-    }
+    })();
+    const entry = { forceRefresh, promise: null };
+    entry.promise = request.finally(() => {
+      if (historyScopeRequests.get(scope) === entry) historyScopeRequests.delete(scope);
+    });
+    historyScopeRequests.set(scope, entry);
+    return entry.promise;
   }
   async function loadHistoryScopes(forceRefresh = false) {
+    if (deferQuotaLoadWhileHidden()) return;
     const epoch = historyLoadEpoch;
     const primary = await Promise.allSettled([loadHistory('24h', forceRefresh)]);
     const loadBackground = async () => {
+      if (deferQuotaLoadWhileHidden()) return;
       const background = await Promise.allSettled(['1h', '7d', '30d', 'all'].map(scope => loadHistory(scope, forceRefresh)));
       const failed = primary.concat(background).filter(result => result.status === 'rejected').length;
       if (failed && epoch === historyLoadEpoch) showToast(`Không tải được ${failed} khoảng lịch sử; bấm lại từng nút để thử lại.`);
@@ -5605,6 +5646,7 @@ button:not([disabled]) { transform:none !important; transition:background-color 
   async function loadQuotaModels(force = false) {
     const ageMs = quotaModelsLoadedAt ? Date.now() - quotaModelsLoadedAt : null;
     if (!force && ageMs != null && ageMs < 300000) { clientLog('debug', 'quota_models_ui_cache_hit', { ageMs }); return; }
+    if (deferQuotaLoadWhileHidden()) return;
     const startedAt = Date.now(); clientLog('info', 'quota_models_ui_load_start', { force });
     const data=await api('/api/v1/quota/models'); renderModelPanel(data); const models=Array.isArray(data?.models)?data.models:[]; const selectedId=String(data?.account?.id||''); ACCOUNTS=ACCOUNTS.map((account,i)=>normalize({...account,models:account.id===selectedId?models:account.models},i)); renderAccountCards(); renderQuickModalAccounts(); quotaModelsLoadedAt = Date.now(); clientLog('info', 'quota_models_ui_load_complete', { modelCount: models.length, durationMs: Date.now() - startedAt });
   }
@@ -5627,6 +5669,7 @@ button:not([disabled]) { transform:none !important; transition:background-color 
   }
   async function loadReadiness(force = false) {
     if (readinessLoading || (!force && Date.now() - readinessCheckedAt < 60000)) return;
+    if (deferQuotaLoadWhileHidden()) return;
     readinessLoading = true;
     const button = document.getElementById('readiness-refresh');
     if (button) button.disabled = true;
@@ -5651,6 +5694,7 @@ button:not([disabled]) { transform:none !important; transition:background-color 
   }
   async function loadModelTestCatalog(force = false) {
     if (modelTestLoading || (!force && Date.now() - modelTestCatalogLoadedAt < 300000 && modelTestCatalog.length)) return;
+    if (deferQuotaLoadWhileHidden()) return;
     modelTestLoading = true;
     const count = document.getElementById('model-test-count');
     try {
@@ -5743,25 +5787,45 @@ button:not([disabled]) { transform:none !important; transition:background-color 
     } catch (error) { pending.label = `${label} · lỗi`; pending.text = error.message; pending.error = true; }
     finally { modelTestSending = false; if (button) { button.disabled = false; button.textContent = 'Gửi thử'; } if (select) select.disabled = !modelTestCatalog.length; renderModelTestConversation(); }
   }
-  async function loadAll() {
-    historyLoadEpoch += 1;
-    const [raw, overview, protect, control] = await Promise.all([api(API.accounts),api(API.overview),api(API.protect),api(API.ompControl)]);
-    ACCOUNTS=Array.isArray(raw)?raw.map((account, i)=>normalize({...account, models:[]}, i)):[]; activeAccountId=ACCOUNTS.find(a=>a.isActive)?.id || ''; activeStartTime=Date.now() - Math.max(0, Number(ACCOUNTS.find(a=>a.id===activeAccountId)?.sessionDurationMs||0)); renderStatusFilterCounts(); renderAccountCards(); renderQuickModalAccounts(); updateOverview(overview); updateProtect(protect); updateOmpControl(control);
-    void loadQuotaModels().catch(e => showToast(`Không tải được catalog model: ${e.message}`));
-    void loadReadiness();
-    void loadModelTestCatalog();
-    renderHistoryScopeCards();
-    void loadHistoryScopes();
+  function updateQuotaLoadStatus(state) {
+    const label = document.getElementById('quotaUpdatedAt'); if (!label) return;
+    const time = lastQuotaLoadAt ? new Date(lastQuotaLoadAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '--:--:--';
+    label.textContent = `${({ loading: 'Đang tải', paused: 'Tạm dừng', error: 'Lỗi tải', ready: 'Cập nhật' })[state] || 'Cập nhật'} · ${time}`;
+    label.title = state === 'paused' ? `Tạm dừng refresh khi tab ẩn · dữ liệu gần nhất ${time}` : state === 'error' ? `Không tải được dữ liệu mới · dữ liệu gần nhất ${time}` : `Thời điểm tải dữ liệu quota gần nhất: ${time}`;
+  }
+  function loadAll({ afterCurrent = false } = {}) {
+    if (deferQuotaLoadWhileHidden()) { updateQuotaLoadStatus('paused'); return Promise.resolve(); }
+    quotaRefreshPending = false;
+    if (loadAllPromise) return afterCurrent ? loadAllPromise.then(() => loadAll(), () => loadAll()) : loadAllPromise;
+    const currentLoad = (async () => {
+      historyLoadEpoch += 1;
+      updateQuotaLoadStatus('loading');
+      try {
+        const [raw, overview, protect, control] = await Promise.all([api(API.accounts),api(API.overview),api(API.protect),api(API.ompControl)]);
+        ACCOUNTS=Array.isArray(raw)?raw.map((account, i)=>normalize({...account, models:[]}, i)):[]; activeAccountId=ACCOUNTS.find(a=>a.isActive)?.id || ''; activeStartTime=Date.now() - Math.max(0, Number(ACCOUNTS.find(a=>a.id===activeAccountId)?.sessionDurationMs||0)); renderStatusFilterCounts(); renderAccountCards(); renderQuickModalAccounts(); updateOverview(overview); updateProtect(protect); updateOmpControl(control);
+        lastQuotaLoadAt = Date.now();
+        if (deferQuotaLoadWhileHidden()) { updateQuotaLoadStatus('paused'); return; }
+        updateQuotaLoadStatus('ready');
+        void loadQuotaModels().catch(e => showToast(`Không tải được catalog model: ${e.message}`));
+        void loadReadiness();
+        void loadModelTestCatalog();
+        renderHistoryScopeCards();
+        void loadHistoryScopes();
+      } catch (error) {
+        if (document.hidden) { quotaRefreshPending = true; updateQuotaLoadStatus('paused'); }
+        else updateQuotaLoadStatus('error');
+        throw error;
+      }
+    })();
+    loadAllPromise = currentLoad;
+    return currentLoad.finally(() => { if (loadAllPromise === currentLoad) loadAllPromise = null; });
   }
   function applyFilter(cat, btn){currentFilter=cat;document.querySelectorAll('.filter-btn').forEach(b=>b.classList.toggle('active',b===btn));renderAccountCards()}
   function handleSearch(v){currentSearch=String(v||'').trim().toLowerCase();renderAccountCards()}
   function handleSort(v){currentSort=v;renderAccountCards()}
   async function selectTimePeriod(scope, btn) {
     syncPeriodActiveState(scope);
-    if (historyScopeStats[scope]) {
-      renderHistory(historyScopeStats[scope], scope);
-      return;
-    }
+    if (historyScopeStats[scope]) renderHistory(historyScopeStats[scope], scope);
     try {
       await loadHistory(scope);
     } catch (e) {
@@ -5770,8 +5834,8 @@ button:not([disabled]) { transform:none !important; transition:background-color 
     }
   }
   async function refreshHistory(){const b=document.getElementById('history-refresh');if(b)b.disabled=true;try{await loadHistoryScopes(true);showToast('✓ Đã tải lại nhật ký Token OMP')}finally{if(b)b.disabled=false}}
-  async function triggerSync(){const b=document.getElementById('syncBtn'), icon=b?.querySelector('.sync-icon');if(b)b.disabled=true;if(icon)icon.classList.add('spinning');try{const out=await api(API.sync,{method:'POST',body:'{}'});quotaModelsLoadedAt=0;await loadAll();countdownSec=30;showToast(`✓ ${out.message||'Đã đồng bộ dữ liệu'}`)}catch(e){showToast(`✕ Đồng bộ thất bại: ${e.message}`)}finally{if(icon)icon.classList.remove('spinning');if(b)b.disabled=false}}
-  async function switchActiveAccount(id){const a=ACCOUNTS.find(x=>x.id===id);if(!a)return;try{await api(API.switchAccount,{method:'POST',body:JSON.stringify({accountId:id})});quotaModelsLoadedAt=0;await loadAll();showToast(`✓ Đã kích hoạt tài khoản ${a.email}`)}catch(e){showToast(`✕ Chuyển tài khoản thất bại: ${e.message}`)}}
+  async function triggerSync(){const b=document.getElementById('syncBtn'), icon=b?.querySelector('.sync-icon');if(b)b.disabled=true;if(icon)icon.classList.add('spinning');try{const out=await api(API.sync,{method:'POST',body:'{}'});quotaModelsLoadedAt=0;await loadAll({ afterCurrent: true });countdownSec=30;showToast(`✓ ${out.message||'Đã đồng bộ dữ liệu'}`)}catch(e){showToast(`✕ Đồng bộ thất bại: ${e.message}`)}finally{if(icon)icon.classList.remove('spinning');if(b)b.disabled=false}}
+  async function switchActiveAccount(id){const a=ACCOUNTS.find(x=>x.id===id);if(!a)return;try{await api(API.switchAccount,{method:'POST',body:JSON.stringify({accountId:id})});quotaModelsLoadedAt=0;await loadAll({ afterCurrent: true });showToast(`✓ Đã kích hoạt tài khoản ${a.email}`)}catch(e){showToast(`✕ Chuyển tài khoản thất bại: ${e.message}`)}}
   function openQuickCheckModal(){renderQuickModalAccounts();updateActiveUI();document.getElementById('quickCheckModal')?.classList.add('open')}
   function closeQuickCheckModal(){document.getElementById('quickCheckModal')?.classList.remove('open')}
   function detailAuthLabel(value) {
@@ -5850,8 +5914,55 @@ button:not([disabled]) { transform:none !important; transition:background-color 
     document.querySelectorAll('#quickCheckModal .modal-kpi-card .mono').forEach(x=>x.textContent='--');document.querySelectorAll('#quickCheckModal .quota-win-card').forEach(card=>{const v=card.querySelector('.quota-win-val'),f=card.querySelector('.progress-bar-fill'),m=card.querySelectorAll('.quota-win-meta span');if(v)v.textContent='--';if(f)updateQuotaBar(f,null,null,card.querySelector('.quota-win-name')?.textContent?.trim()||'Quota');m.forEach(x=>x.textContent='--')});
   }
   function setOAuthButton(label, disabled) { const b=document.getElementById('oauthLoginBtn'); if(!b)return; b.disabled=Boolean(disabled); const text=b.querySelector('span:last-child'); if(text)text.textContent=label; }
-  async function pollLoginStatus(){try{const st=await api(API.loginStatus);const labels={idle:'Chưa có phiên đăng nhập đang chạy.',starting:'Đang tạo phiên Google OAuth…',waiting:'Đang chờ Google OAuth callback…',success:'Đăng nhập Google OAuth thành công.',complete:'Đăng nhập Google OAuth thành công.',error:`Đăng nhập thất bại: ${st.message||'lỗi OMP auth-broker'}`};const message=labels[st.state]||st.message||'Đang kiểm tra OAuth';if(st.state==='complete'||st.state==='success'){showToast(`✓ ${message}`);setOAuthButton('Google OAuth',false);loadAll().catch(e=>showToast(`✕ Không tải lại quota: ${e.message}`));}else if(st.state==='error'){showToast(`✕ ${message}`);setOAuthButton('Google OAuth',false);}else if(['starting','waiting'].includes(st.state)){setOAuthButton('Đang chờ Google…',true);loginPoll=setTimeout(pollLoginStatus,1000);} }catch(e){showToast(`✕ Không đọc được trạng thái OAuth: ${e.message}`);setOAuthButton('Google OAuth',false);}}
-  async function startOAuthLogin(){if(loginPoll){clearTimeout(loginPoll);loginPoll=null}setOAuthButton('Đang mở Google…',true);try{const st=await api(API.login,{method:'POST',body:'{}'});showToast(st.url?'Đã mở Google OAuth trong trình duyệt.':'Đang khởi tạo Google OAuth…');pollLoginStatus()}catch(e){showToast(`✕ Không thể bắt đầu Google OAuth: ${e.message}`);setOAuthButton('Google OAuth',false)}}
+  async function pollLoginStatus() {
+    if (document.hidden) { loginPollPaused = true; return; }
+    if (loginStatusRequestInFlight) return;
+    loginPollPaused = false;
+    loginStatusRequestInFlight = true;
+    let shouldContinue = false;
+    try {
+      const st = await api(API.loginStatus);
+      const labels = { idle: 'Chưa có phiên đăng nhập đang chạy.', starting: 'Đang tạo phiên Google OAuth…', waiting: 'Đang chờ Google OAuth callback…', success: 'Đăng nhập Google OAuth thành công.', complete: 'Đăng nhập Google OAuth thành công.', error: `Đăng nhập thất bại: ${st.message || 'lỗi OMP auth-broker'}` };
+      const message = labels[st.state] || st.message || 'Đang kiểm tra OAuth';
+      if (st.state === 'complete' || st.state === 'success') {
+        loginPollPaused = false;
+        showToast(`✓ ${message}`);
+        setOAuthButton('Google OAuth', false);
+        loadAll({ afterCurrent: true }).catch(e => showToast(`✕ Không tải lại quota: ${e.message}`));
+      } else if (st.state === 'error') {
+        loginPollPaused = false;
+        showToast(`✕ ${message}`);
+        setOAuthButton('Google OAuth', false);
+      } else if (['starting', 'waiting'].includes(st.state)) {
+        setOAuthButton('Đang chờ Google…', true);
+        shouldContinue = true;
+      } else loginPollPaused = false;
+    } catch (e) {
+      loginPollPaused = false;
+      showToast(`✕ Không đọc được trạng thái OAuth: ${e.message}`);
+      setOAuthButton('Google OAuth', false);
+    } finally {
+      loginStatusRequestInFlight = false;
+      if (shouldContinue) {
+        if (document.hidden) loginPollPaused = true;
+        else { loginPollPaused = false; loginPoll = setTimeout(() => { loginPoll = null; void pollLoginStatus(); }, 1000); }
+      }
+    }
+  }
+  async function startOAuthLogin() {
+    if (loginPoll) { clearTimeout(loginPoll); loginPoll = null; }
+    loginPollPaused = false;
+    setOAuthButton('Đang mở Google…', true);
+    try {
+      const st = await api(API.login, { method: 'POST', body: '{}' });
+      showToast(st.url ? 'Đã mở Google OAuth trong trình duyệt.' : 'Đang khởi tạo Google OAuth…');
+      void pollLoginStatus();
+    } catch (e) {
+      loginPollPaused = false;
+      showToast(`✕ Không thể bắt đầu Google OAuth: ${e.message}`);
+      setOAuthButton('Google OAuth', false);
+    }
+  }
   // Delegate actions so the page remains compatible with the strict script-src policy.
   function syncVisualSelect(select) {
     const root = select?.closest('.visual-select');
@@ -6054,7 +6165,8 @@ button:not([disabled]) { transform:none !important; transition:background-color 
   document.getElementById('model-test-reload')?.addEventListener('click', () => void loadModelTestCatalog(true));
   document.getElementById('model-test-prompt')?.addEventListener('keydown', (event) => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); document.getElementById('model-test-form')?.requestSubmit(); } });
   window.addEventListener('keydown',e=>{if(e.key==='Escape'){closeQuickCheckModal();closeAccountDetails()}if(e.altKey&&(e.key==='t'||e.key==='T')){e.preventDefault();setTheme((document.documentElement.getAttribute('data-theme')||'dark')==='light'?'dark':'light')}});
-  setInterval(()=>{countdownSec=countdownSec<=1?30:countdownSec-1;tickAccountResetCountdowns();tickHistoryAges();const a=active();const t=document.getElementById('topbarCountdown'),q=document.getElementById('quickModalCountdown');if(t)t.textContent=`${countdownSec}s`;if(q)q.textContent=`${countdownSec}s`;if(countdownSec===30)loadAll().catch(e=>showToast(`✕ Tự đồng bộ thất bại: ${e.message}`))},1000);
+  document.addEventListener('visibilitychange',()=>{if(document.hidden){if(loginPoll){clearTimeout(loginPoll);loginPoll=null;loginPollPaused=true}if(loginStatusRequestInFlight)loginPollPaused=true;updateQuotaLoadStatus('paused');return}countdownSec=30;const t=document.getElementById('topbarCountdown'),q=document.getElementById('quickModalCountdown');if(t)t.textContent='30s';if(q)q.textContent='30s';if(quotaRefreshPending||!lastQuotaLoadAt||Date.now()-lastQuotaLoadAt>=QUOTA_REFRESH_INTERVAL_MS){quotaRefreshPending=false;loadAll().catch(e=>showToast(`✕ Tự đồng bộ thất bại: ${e.message}`))}else updateQuotaLoadStatus('ready');if(loginPollPaused&&!loginStatusRequestInFlight){loginPollPaused=false;if(loginPoll){clearTimeout(loginPoll);loginPoll=null}void pollLoginStatus()}});
+  setInterval(()=>{if(document.hidden)return;countdownSec=countdownSec<=1?30:countdownSec-1;tickAccountResetCountdowns();tickHistoryAges();const a=active();const t=document.getElementById('topbarCountdown'),q=document.getElementById('quickModalCountdown');if(t)t.textContent=`${countdownSec}s`;if(q)q.textContent=`${countdownSec}s`;if(countdownSec===30)loadAll().catch(e=>showToast(`✕ Tự đồng bộ thất bại: ${e.message}`))},1000);
   (async()=>{try{clearStaticDemo();setTheme(localStorage.getItem('omp-quota-theme')||'light');await loadAll()}catch(e){showToast(`✕ Không tải được quota OMP: ${e.message}`);const g=document.getElementById('accounts-grid');if(g)g.innerHTML=`<div class="text-muted" style="padding:16px">Không thể tải dữ liệu live: ${esc(e.message)}</div>`}})();
   </script>
 </body>

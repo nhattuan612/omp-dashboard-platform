@@ -5918,6 +5918,8 @@ async function quotaProtectConfig(req) {
 
 async function quotaHistoryPayload(scope, { requestId = null, forceRefresh = false } = {}) {
   const startedAt = Date.now();
+  let sqliteSelectCount = 0;
+  const onSqliteSelect = () => { sqliteSelectCount += 1; };
   void logEvent("debug", "quota_history_payload_start", { requestId, scope: scope || "24h", forceRefresh });
   await ensureQuotaLatest(requestId);
   const selectedScope = scope || "24h";
@@ -5968,7 +5970,7 @@ async function quotaHistoryPayload(scope, { requestId = null, forceRefresh = fal
   let ompUsage;
   let ompStats = null;
   try {
-    ompStats = readOmpStatsHistory(join(homedir(), ".omp", "agent", "agent.db"), since, now, OMP_STATS_HISTORY_ITEMS_LIMIT);
+    ompStats = readOmpStatsHistory(join(homedir(), ".omp", "agent", "agent.db"), since, now, OMP_STATS_HISTORY_ITEMS_LIMIT, onSqliteSelect);
     ompUsage = {
       ...ompUsageMeta,
       available: ompStats.available,
@@ -6019,7 +6021,7 @@ async function quotaHistoryPayload(scope, { requestId = null, forceRefresh = fal
   }
   if (ompStats?.available) {
     try {
-      const ompTrend = readOmpStatsTrend(join(homedir(), ".omp", "agent", "agent.db"), since, now, trendStart, bucketMs, bucketCount);
+      const ompTrend = readOmpStatsTrend(join(homedir(), ".omp", "agent", "agent.db"), since, now, trendStart, bucketMs, bucketCount, onSqliteSelect);
       for (const bucket of ompTrend) {
         trendBuckets[bucket.bucket].input += bucket.input;
         trendBuckets[bucket.bucket].cache += bucket.cache;
@@ -6088,6 +6090,7 @@ async function quotaHistoryPayload(scope, { requestId = null, forceRefresh = fal
   void logEvent("info", "quota_history_payload_complete", {
     requestId,
     scope: selectedScope,
+    sqliteSelectCount,
     totalRecords: items.length,
     returnedRecords: mappedItems.length,
     durationMs: Date.now() - startedAt,
