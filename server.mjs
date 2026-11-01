@@ -230,7 +230,7 @@ function authorizeApiRequest(req, pathname) {
 function enforceRateLimit(req, pathname) {
   if (!requiresApiAuth(pathname) || !["POST", "PUT", "DELETE"].includes(req.method)) return null;
   const isLogin = pathname === "/api/login";
-  const isChat = pathname === "/api/v1/chat/send" || pathname === "/api/v1/chat/stream";
+  const isChat = pathname === "/api/v1/chat/send" || pathname === "/api/v1/chat/stream" || pathname === "/api/omp/v1/openai/chat/completions";
   const isTerminalOpen = pathname === "/api/v1/terminal/open";
   const limit = isLogin ? 5 : isChat ? CHAT_RATE_LIMIT : isTerminalOpen ? 10 : 120;
   if (limit <= 0) return null;
@@ -3825,6 +3825,7 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
   const persistUserMessage = () => {
     if (userMessagePersisted) return;
     userMessagePersisted = true;
+    if (options.persistMessages === false) return;
     appendChatMessage(sessionId, { id: `msg-${startedAt}`, role: "user", content: prompt, attachments, createdAt: new Date(startedAt).toISOString() });
   };
   let reply = "";
@@ -3876,7 +3877,10 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
       if (failure) return finish(reject, Object.assign(new Error(failure.message), { code: failure.code }));
       const text = frameAssistantText(frame);
       assistantAttachments = mergeChatAttachments(assistantAttachments, frameAssistantAttachments(frame));
-      if (frame.type === "message_update" && frame.assistantMessageEvent?.type === "text_delta") reply += text;
+      if (frame.type === "message_update" && frame.assistantMessageEvent?.type === "text_delta") {
+        reply += text;
+        options.onTextDelta?.(text);
+      }
       if (frame.type === "message_end" && frame.message?.role === "assistant") { assistantMessage = frame.message; reply = chatMessageText(frame.message) || reply; }
       if (frame.type === "agent_end" && frame.isTerminal !== false) {
         if (active.abortRequested) {
@@ -3889,7 +3893,7 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
         for (const block of chatBodyBlocksFromMessage(assistantMessage, requestId)) mergeChatBodyBlock(bodyBlocks, block);
         const fileChanges = await finalizeFileChangeTracker(fileChangeTracker);
         const message = { id: `msg-${Date.now()}`, role: "assistant", content: reply || chatMessageText(assistantMessage), model: assistantMessage?.model || model || "neural-flash-3.8", createdAt: new Date().toISOString(), ...(bodyBlocks.length ? { body: bodyBlocks } : {}), ...(assistantAttachments.length ? { attachments: assistantAttachments } : {}), ...(fileChanges ? { fileChanges: fileChangeView(fileChanges) } : {}), ...(assistantMessage?.usage?.total ? { totalTokens: assistantMessage.usage.total } : {}) };
-        appendChatMessage(sessionId, message);
+        if (options.persistMessages !== false) appendChatMessage(sessionId, message);
         finish(resolve, message);
       }
     });
@@ -3924,7 +3928,7 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
             const images = attachments.filter((item) => item.data && /^image\//.test(item.type)).map((item) => item.data);
             const attachmentContext = attachments.filter((item) => item.text).map((item) => `\n\n[Attached file: ${item.name}]\n${item.text}`).join("");
             const outboundMessage = `${browserPrompt(prompt, selectedBrowserMode, images.length > 0)}${attachmentContext}${imageOutputInstruction(outputMode)}`;
-            consoleBridge.send(record.contextId, { id: `model-${startedAt}`, type: "set_model", ...(modelProvider ? { provider: modelProvider } : {}), modelId: model });
+            if (options.skipModelSelection !== true) consoleBridge.send(record.contextId, { id: `model-${startedAt}`, type: "set_model", ...(modelProvider ? { provider: modelProvider } : {}), modelId: model });
             if (thinking) consoleBridge.send(record.contextId, { id: `thinking-${startedAt}`, type: "set_thinking_level", level: thinking });
             consoleBridge.send(record.contextId, { id: `prompt-${startedAt}`, type: "prompt", message: outboundMessage, ...(images.length ? { images } : {}) });
             promptDispatched = true;
@@ -4929,6 +4933,168 @@ function gatewayPrompt(body) {
     ? `/skill:ego-browser ${message}`
     : message;
   return { type: behavior, message: outboundMessage, ...(Array.isArray(body.images) ? { images: body.images } : {}) };
+}
+
+const OPENAI_OMP_MODEL = "omp-default";
+
+function openAiModelAlias(model) {
+  return `${model.provider}/${model.id}`;
+}
+
+function openAiModelDisplayName(model, models) {
+  return models.some((item) => item.id === model.id && item.provider !== model.provider)
+    ? `${model.name} (${model.provider})`
+    : model.name;
+}
+
+function resolveOpenAiModel(modelId, models) {
+  const alias = String(modelId || "").replace(/^omp\//, "");
+  if (alias === OPENAI_OMP_MODEL) {
+    return models.find((item) => item.isDefault)
+      || models.find((item) => item.provider === LOGIN_PROVIDER && item.id === "gemini-3.8-flash")
+      || models[0];
+  }
+  const separator = alias.indexOf("/");
+  const matches = separator > 0
+    ? models.filter((item) => item.provider === alias.slice(0, separator) && item.id === alias.slice(separator + 1))
+    : models.filter((item) => item.id === alias);
+  if (matches.length !== 1) {
+    const detail = matches.length ? `Model cần kèm provider: ${modelId}` : `Model không tồn tại: ${modelId}`;
+    throw Object.assign(new Error(detail), { code: "MODEL_NOT_FOUND", field: "model" });
+  }
+  return matches[0];
+}
+
+function openAiThinking(body) {
+  const value = body.thinking ?? body.reasoning_effort;
+  if (value == null) return "";
+  if (typeof value !== "string") throw Object.assign(new Error("reasoning_effort phải là chuỗi."), { code: "BAD_REQUEST", field: "reasoning_effort" });
+  return chatThinking(value === "minimal" ? "low" : value === "xhigh" ? "max" : value);
+}
+
+function openAiChatInput(body) {
+  if (!body || Array.isArray(body) || typeof body !== "object") throw Object.assign(new Error("Payload phải là object JSON."), { code: "BAD_REQUEST" });
+  if (!Array.isArray(body.messages) || !body.messages.length || body.messages.length > 128) throw Object.assign(new Error("messages phải có 1-128 phần tử."), { code: "BAD_REQUEST", field: "messages" });
+  const lines = [];
+  const attachments = [];
+  for (const message of body.messages) {
+    const role = String(message?.role || "");
+    if (!message || !["system", "developer", "user", "assistant", "tool"].includes(role)) throw Object.assign(new Error("messages chứa role không hỗ trợ."), { code: "BAD_REQUEST", field: "messages.role" });
+    const parts = Array.isArray(message.content) ? message.content : [message.content];
+    const content = [];
+    for (const part of parts) {
+      if (typeof part === "string") { content.push(part); continue; }
+      if (!part || typeof part !== "object") continue;
+      if (part.type === "text" && typeof part.text === "string") { content.push(part.text); continue; }
+      if (part.type === "image_url" || part.type === "input_image") {
+        const image = part.image_url?.url || part.image_url || part.url || part.data;
+        const dataUrl = typeof image === "string" ? image : "";
+        if (!/^data:image\/[a-z0-9.+-]+;base64,/i.test(dataUrl)) throw Object.assign(new Error("OMP Gateway chỉ nhận ảnh nhúng data URL."), { code: "BAD_REQUEST", field: "messages.content" });
+        if (attachments.length >= MAX_CHAT_ATTACHMENTS) throw Object.assign(new Error(`Chỉ hỗ trợ tối đa ${MAX_CHAT_ATTACHMENTS} ảnh mỗi lượt.`), { code: "BAD_REQUEST", field: "messages.content" });
+        const type = dataUrl.slice(5, dataUrl.indexOf(";"));
+        const attachment = normalizeChatAttachment({ name: `openwork-image-${attachments.length + 1}`, type, data: dataUrl });
+        if (!attachment) throw Object.assign(new Error("Ảnh nhúng không hợp lệ hoặc vượt giới hạn."), { code: "BAD_REQUEST", field: "messages.content" });
+        attachments.push(attachment);
+        content.push(`[ảnh đính kèm ${attachments.length}]`);
+      }
+    }
+    if (Array.isArray(message.tool_calls)) for (const call of message.tool_calls.slice(0, 16)) {
+      const name = String(call?.function?.name || "tool").slice(0, 100);
+      const args = typeof call?.function?.arguments === "string" ? call.function.arguments.slice(0, 4000) : "";
+      content.push(`[yêu cầu gọi tool ${name}: ${args}]`);
+    }
+    const text = content.join("\n").trim();
+    if (text) lines.push(`[${role}${message.name ? ` ${String(message.name).slice(0, 100)}` : ""}]\n${text}`);
+  }
+  return { prompt: chatPrompt(lines.join("\n\n")), attachments };
+}
+
+function openAiError(res, error) {
+  const code = String(error?.code || "INTERNAL_SERVER_ERROR");
+  const message = publicErrorMessage(code, error?.message, "Yêu cầu OpenWork không thành công.");
+  return json(res, errorStatus(code), { error: { message, type: errorStatus(code) === 400 ? "invalid_request_error" : "server_error", code } });
+}
+
+function openAiChunk(res, id, model, delta, finishReason = null) {
+  if (!res.writableEnded) res.write(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model, choices: [{ index: 0, delta, finish_reason: finishReason }] })}\n\n`);
+}
+
+async function openAiCompletion(req, res) {
+  let sessionId = "";
+  let record = null;
+  let disconnected = false;
+  let finished = false;
+  let stream = false;
+  const requestId = `openwork-${randomUUID()}`;
+  const abort = () => {
+    if (finished || disconnected) return;
+    disconnected = true;
+    void abortChatRequest(null, { requestId, sessionId }).catch(() => {});
+  };
+  req.once("aborted", abort);
+  res.once("close", () => { if (!res.writableEnded) abort(); });
+  try {
+    const body = await jsonBody(req);
+    if (body.model != null && typeof body.model !== "string") throw Object.assign(new Error("model phải là chuỗi."), { code: "BAD_REQUEST", field: "model" });
+    const requestedModel = typeof body.model === "string" && body.model.trim() ? body.model.trim() : OPENAI_OMP_MODEL;
+    const selectedModel = resolveOpenAiModel(requestedModel, await availableModels());
+    const thinking = openAiThinking(body);
+    if (body.stream != null && typeof body.stream !== "boolean") throw Object.assign(new Error("stream phải là boolean."), { code: "BAD_REQUEST", field: "stream" });
+    stream = body.stream === true;
+    const { prompt, attachments } = openAiChatInput(body);
+    const cwdHeader = req.headers["x-omp-cwd"];
+    if (Array.isArray(cwdHeader) || (cwdHeader != null && typeof cwdHeader !== "string") || String(cwdHeader || "").length > 4096) throw Object.assign(new Error("X-OMP-CWD không hợp lệ."), { code: "BAD_REQUEST", field: "cwd" });
+    const requestedCwd = typeof cwdHeader === "string" && cwdHeader.trim() ? cwdHeader.trim() : GENERAL_CHAT_CWD;
+    if (requestedCwd === GENERAL_CHAT_CWD) await mkdir(GENERAL_CHAT_CWD, { recursive: true, mode: 0o700 });
+    const cwd = await consoleBridge.validateWorkspaceDirectory(requestedCwd);
+    const approvalHeader = req.headers["x-omp-approval-mode"];
+    if (Array.isArray(approvalHeader) || (approvalHeader != null && typeof approvalHeader !== "string")) throw Object.assign(new Error("X-OMP-APPROVAL-MODE không hợp lệ."), { code: "BAD_REQUEST" });
+    const selectedApproval = approvalMode(approvalHeader);
+    sessionId = `openwork-${randomUUID()}`;
+    await createGatewaySession({ sessionId, cwd, approvalMode: selectedApproval });
+    record = gatewayRecord(sessionId);
+    if (disconnected) return;
+    const completionId = `chatcmpl-${randomUUID()}`;
+    let streamedText = false;
+    if (stream) {
+      res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-store", connection: "keep-alive" });
+      res.write(`data: ${JSON.stringify({ id: completionId, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model: requestedModel, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] })}\n\n`);
+    }
+    const turn = collectChatTurn(record, sessionId, prompt, selectedModel.id, requestId, {
+      attachments,
+      modelProvider: selectedModel.provider,
+      thinking,
+      persistMessages: false,
+      onTextDelta(text) {
+        if (stream && !disconnected && text) { streamedText = true; openAiChunk(res, completionId, requestedModel, { content: text }); }
+      },
+    });
+    if (disconnected) await abortChatRequest(null, { requestId, sessionId }).catch(() => {});
+    const result = await turn;
+    finished = true;
+    if (disconnected) return;
+    if (stream) {
+      if (!streamedText && result.reply) openAiChunk(res, completionId, requestedModel, { content: result.reply });
+      openAiChunk(res, completionId, requestedModel, {}, "stop");
+      res.end("data: [DONE]\n\n");
+    } else {
+      json(res, 200, { id: completionId, object: "chat.completion", created: Math.floor(Date.now() / 1000), model: requestedModel, choices: [{ index: 0, message: { role: "assistant", content: result.reply }, finish_reason: "stop" }] });
+    }
+  } catch (error) {
+    finished = true;
+    if (disconnected || res.destroyed) return;
+    if (stream && res.headersSent) {
+      res.write(`data: ${JSON.stringify({ error: { message: publicErrorMessage(error.code || "INTERNAL_SERVER_ERROR", error.message), type: "server_error", code: error.code || "INTERNAL_SERVER_ERROR" } })}\n\n`);
+      res.end("data: [DONE]\n\n");
+    } else openAiError(res, error);
+  } finally {
+    finished = true;
+    req.removeListener("aborted", abort);
+    if (record) {
+      await consoleBridge.stop(record.contextId).catch(() => {});
+      gatewaySessions.delete(record.sessionId);
+    }
+  }
 }
 
 async function readDashboardAsset(name, nonce = "") {
@@ -6534,6 +6700,21 @@ const server = http.createServer(async (req, res) => {
         note: "Catalog lấy từ OMP runtime; capability unavailable không được báo thành công.",
       });
     } catch (error) { return chatError(res, error); }
+  }
+  if (requestUrl.pathname === "/api/omp/v1/openai/models" && req.method === "GET") {
+    try {
+      const models = await availableModels();
+      return json(res, 200, {
+        object: "list",
+        data: [
+          { id: OPENAI_OMP_MODEL, object: "model", created: 0, owned_by: "omp" },
+          ...models.map((model) => ({ id: openAiModelAlias(model), object: "model", created: 0, owned_by: model.provider, name: openAiModelDisplayName(model, models) })),
+        ],
+      });
+    } catch (error) { return openAiError(res, error); }
+  }
+  if (requestUrl.pathname === "/api/omp/v1/openai/chat/completions" && req.method === "POST") {
+    return openAiCompletion(req, res);
   }
   if (requestUrl.pathname === "/api/v1/omp/capabilities/audit" && req.method === "POST") {
     try { return json(res, 200, { ok: true, catalog: await ompToolCatalog.read({ force: true }) }); }
