@@ -115,7 +115,9 @@ async function startTestServer() {
     probe.on('error', () => {
       // Khởi động server trong child process
       console.log(`\x1b[90mĐang khởi động máy chủ mock server trên cổng ${TEST_PORT}...\x1b[0m`);
-      serverProcess = spawn(process.execPath, [path.join(__dirname, 'mock-server.js'), `--port=${TEST_PORT}`], {
+      const mockServer = path.join(__dirname, 'mock-server.js');
+      const bootstrap = 'const { Module } = require("node:module"); const fs = require("node:fs"); const file = process.argv[1]; const server = new Module(file); server.filename = file; server.paths = Module._nodeModulePaths(process.cwd()); server._compile(fs.readFileSync(file, "utf8"), file);';
+      serverProcess = spawn(process.execPath, ['-e', bootstrap, mockServer, `--port=${TEST_PORT}`], {
         stdio: 'pipe'
       });
 
@@ -158,8 +160,8 @@ async function runTestSuite() {
     assert(resQuotaHtml.statusCode === 200, 'Tệp honpi-quota-dashboard.html phục vụ HTTP 200');
     assert(resQuotaHtml.body.includes('HONPI_QUOTA_CONFIG'), 'HTML chứa đối tượng cấu hình HONPI_QUOTA_CONFIG');
 
-    const resChatHtml = await request({ path: '/honpi-chat-dashboard.html' });
-    assert(resChatHtml.statusCode === 200, 'Tệp honpi-chat-dashboard.html phục vụ HTTP 200');
+    const resChatHtml = await request({ path: '/honpi-chat-dashboard-SKE.html' });
+    assert(resChatHtml.statusCode === 200, 'Tệp honpi-chat-dashboard-SKE.html phục vụ HTTP 200');
     assert(resChatHtml.body.includes('HONPI_CHAT_CONFIG'), 'HTML chứa đối tượng cấu hình HONPI_CHAT_CONFIG');
 
     const resQuotaRoute = await request({ path: '/quota' });
@@ -266,6 +268,8 @@ async function runTestSuite() {
       assert(scoped.statusCode === 200, `Scope ${scope} trả về HTTP 200`);
       assert(scoped.json.scope === scope, `Response giữ đúng scope ${scope}`);
       assertFields(scoped.json, ['scope', 'totalRequests', 'totalTokensFormatted', 'inputTokensFormatted', 'outputTokensFormatted', 'items'], `History ${scope}`);
+      assert(Array.isArray(scoped.json.hourlyTrend), `Scope ${scope} retains the legacy hourlyTrend field`);
+      assert(scoped.json.hourlyTrend.every(bucket => typeof bucket.hour === 'string'), `Scope ${scope} retains the legacy hour label`);
     }
     const invalidScope = await request({ path: '/api/v1/quota/history?scope=invalid' });
     assert(invalidScope.statusCode === 400, 'Scope không hợp lệ trả về HTTP 400');

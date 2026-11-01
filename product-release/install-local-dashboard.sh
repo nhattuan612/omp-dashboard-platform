@@ -14,7 +14,7 @@ LAUNCH_DOMAIN="gui/$USER_ID"
 PLIST="$LAUNCH_DIR/$LABEL.plist"
 PLIST_BACKUP=LaunchAgent.plist
 BACKUP_ROOT="$TARGET_DIR/backups/deploy"
-APP_FILES='server.mjs omp-tool-catalog.mjs omp-tool-map.json console-bridge.mjs acp-worker.mjs acp-session-context.mjs gemini-account-pin-extension.mjs honpi-dashboard-mark-8138753b.png honpi-chat-dashboard-SKE.html honpi-quota-dashboard-SKE.html honpi-chat-dashboard-live.js honpi-chat-dashboard-legacy.js package.json package-lock.json scripts/fix-node-pty-helper.mjs'
+APP_FILES='server.mjs omp-stats-history.mjs chat-output-mode.mjs omp-tool-catalog.mjs omp-tool-map.json console-bridge.mjs acp-worker.mjs acp-session-context.mjs gemini-account-pin-extension.mjs honpi-dashboard-mark-8138753b.png honpi-chat-dashboard-SKE.html honpi-quota-dashboard-SKE.html honpi-chat-dashboard-live.js honpi-chat-dashboard-legacy.js package.json package-lock.json scripts/fix-node-pty-helper.mjs'
 OMP_EXTENSION_SOURCE="$SOURCE_DIR/omp-account-preference.js"
 OMP_EXTENSION_TARGET="${HOME}/.omp/agent/extensions/omp-account-preference.js"
 OMP_EXTENSION_BACKUP=OMPAccountPreference.js
@@ -114,9 +114,22 @@ wait_for_health() {
   /bin/launchctl print "$LAUNCH_DOMAIN/$LABEL" >/dev/null 2>&1
 }
 
+wait_for_port_free() {
+  attempt=0
+  while [ "$attempt" -lt 50 ]; do
+    if ! /usr/sbin/lsof -nP -iTCP:4177 -sTCP:LISTEN >/dev/null 2>&1; then
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    /bin/sleep 0.2
+  done
+  return 1
+}
+
 rollback_failed_install() {
   printf 'Install failed; restoring code-only backup %s\n' "$BACKUP_DIR" >&2
   /bin/launchctl bootout "$LAUNCH_DOMAIN/$LABEL" >/dev/null 2>&1 || true
+  wait_for_port_free || return 1
   restore_backup "$BACKUP_DIR" || return 1
   if [ -f "$PLIST" ]; then
     /bin/launchctl bootstrap "$LAUNCH_DOMAIN" "$PLIST" || return 1
@@ -198,6 +211,7 @@ if ! cat > "$PLIST_TMP" <<EOF
   </array>
   <key>EnvironmentVariables</key><dict>
     <key>OMP_DASHBOARD_PORT</key><string>4177</string>
+    <key>OMP_DASHBOARD_QUOTA_ONLY</key><string>1</string>
     <key>OMP_DASHBOARD_WORKSPACE</key><string>$WORKSPACE_XML</string>
   </dict>
   <key>RunAtLoad</key><true/>
@@ -218,7 +232,8 @@ if ! /usr/bin/plutil -lint "$PLIST_TMP" >/dev/null 2>&1 || ! /bin/chmod 600 "$PL
 fi
 
 /bin/launchctl bootout "$LAUNCH_DOMAIN/$LABEL" >/dev/null 2>&1 || true
-if ! /bin/launchctl bootstrap "$LAUNCH_DOMAIN" "$PLIST" \
+if ! wait_for_port_free \
+  || ! /bin/launchctl bootstrap "$LAUNCH_DOMAIN" "$PLIST" \
   || ! /bin/launchctl kickstart -k "$LAUNCH_DOMAIN/$LABEL" \
   || ! wait_for_health; then
   rollback_failed_install || printf 'Rollback health check failed\n' >&2

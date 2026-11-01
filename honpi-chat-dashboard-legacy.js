@@ -4515,24 +4515,24 @@
 
       function syncOmpSettingsUI() {
         const browserMode = localStorage.getItem('omp.browserMode') === 'ego-browser' ? 'on' : 'off';
-        if (settingsOmpBrowserModeSelect) settingsOmpBrowserModeSelect.value = browserMode;
-        if (settingsOmpShareModeSelect) settingsOmpShareModeSelect.value = localStorage.getItem('omp.shareMode') || 'encrypted';
+        if (!isProductionChatRoute && settingsOmpBrowserModeSelect) settingsOmpBrowserModeSelect.value = browserMode;
+        if (!isProductionChatRoute && settingsOmpShareModeSelect) settingsOmpShareModeSelect.value = localStorage.getItem('omp.shareMode') || 'encrypted';
         if (settingsAgentRoleSelect) settingsAgentRoleSelect.value = localStorage.getItem('honpi-agent-role') || 'general';
         if (settingsCustomPromptArea) settingsCustomPromptArea.value = localStorage.getItem('honpi-agent-prompt') || '';
       }
 
-      settingsOmpBrowserModeSelect?.addEventListener('change', () => {
+      if (!isProductionChatRoute) settingsOmpBrowserModeSelect?.addEventListener('change', () => {
         const next = settingsOmpBrowserModeSelect.value === 'on';
         localStorage.setItem('omp.browserMode', next ? 'ego-browser' : 'none');
         const ego = document.getElementById('egoBrowserToggle');
         if (ego && ego.classList.contains('active') !== next) ego.click();
         showToast(next ? 'Đã bật Browser mode OMP' : 'Đã tắt Browser mode OMP');
       });
-      settingsOmpShareModeSelect?.addEventListener('change', () => {
+      if (!isProductionChatRoute) settingsOmpShareModeSelect?.addEventListener('change', () => {
         localStorage.setItem('omp.shareMode', settingsOmpShareModeSelect.value);
         showToast(`Đã chọn share mode OMP: ${settingsOmpShareModeSelect.options[settingsOmpShareModeSelect.selectedIndex]?.textContent || settingsOmpShareModeSelect.value}`);
       });
-      btnRefreshOmpMemory?.addEventListener('click', () => {
+      if (!isProductionChatRoute) btnRefreshOmpMemory?.addEventListener('click', () => {
         if (ompMemoryState) ompMemoryState.textContent = 'Đang kiểm tra trạng thái Memory qua OMP…';
         btnRefreshOmpMemory.disabled = true;
         setTimeout(() => {
@@ -4590,7 +4590,7 @@
         welcomeBlockSelector.replaceChildren(...welcomeConfig.map((config, index) => {
           const button = document.createElement('button');
           button.type = 'button'; button.className = index === welcomeEditIndex ? 'active' : ''; button.dataset.index = String(index);
-          button.setAttribute('aria-selected', index === welcomeEditIndex ? 'true' : 'false'); button.textContent = `${index + 1}. ${config.colorName || 'Thẻ'}`;
+          button.setAttribute('role', 'tab'); button.setAttribute('aria-controls', 'welcomeBlockEditCard'); button.setAttribute('aria-selected', index === welcomeEditIndex ? 'true' : 'false'); button.textContent = `${index + 1}. ${config.colorName || 'Thẻ'}`;
           button.addEventListener('click', () => { saveWelcomeEditorBlock(); welcomeEditIndex = index; renderWelcomeEditor(); populateWelcomeEditor(); });
           return button;
         }));
@@ -4623,17 +4623,19 @@
         if (welcomeDescInput) welcomeDescInput.value = 'Trợ lý AI thông minh điều phối luồng công việc, phân tích mã nguồn và tự động hóa.';
         welcomeEditIndex = 0; renderWelcomeEditor(); populateWelcomeEditor(); applyWelcomeConfig(); showToast('Đã khôi phục màn hình chào mặc định');
       });
-      const agentInstructionDefaults = '# Hòn π OMP Agent Instructions\n- Trả lời ngắn gọn bằng tiếng Việt.\n- Kiểm tra runtime thật trước khi kết luận.\n- Hoàn tất flow và báo rõ bước tiếp theo.';
-      const agentInstructionArea = document.getElementById('ompAgentInstructionsTextarea');
-      const agentPromptStats = document.getElementById('agentPromptStats');
-      function syncAgentInstructionStats() { if (agentPromptStats && agentInstructionArea) agentPromptStats.textContent = `${agentInstructionArea.value.length.toLocaleString()} ký tự · ${agentInstructionArea.value ? agentInstructionArea.value.split('\n').length : 0} dòng`; }
-      if (agentInstructionArea) {
-        agentInstructionArea.value = localStorage.getItem('honpi_omp_agent_instructions') ?? agentInstructionDefaults;
-        agentInstructionArea.addEventListener('input', syncAgentInstructionStats); syncAgentInstructionStats();
+      if (!isProductionChatRoute) {
+        const agentInstructionDefaults = '# Hòn π OMP Agent Instructions\n- Trả lời ngắn gọn bằng tiếng Việt.\n- Kiểm tra runtime thật trước khi kết luận.\n- Hoàn tất flow và báo rõ bước tiếp theo.';
+        const agentInstructionArea = document.getElementById('ompAgentInstructionsTextarea');
+        const agentPromptStats = document.getElementById('agentPromptStats');
+        function syncAgentInstructionStats() { if (agentPromptStats && agentInstructionArea) agentPromptStats.textContent = `${agentInstructionArea.value.length.toLocaleString()} ký tự · ${agentInstructionArea.value ? agentInstructionArea.value.split('\n').length : 0} dòng`; }
+        if (agentInstructionArea) {
+          agentInstructionArea.value = localStorage.getItem('honpi_omp_agent_instructions') ?? agentInstructionDefaults;
+          agentInstructionArea.addEventListener('input', syncAgentInstructionStats); syncAgentInstructionStats();
+        }
+        document.getElementById('btnSaveAgentInstructions')?.addEventListener('click', () => { localStorage.setItem('honpi_omp_agent_instructions', agentInstructionArea?.value || ''); syncAgentInstructionStats(); showToast('Đã lưu chỉ dẫn Agent OMP'); });
+        document.getElementById('btnClearAgentInstructions')?.addEventListener('click', () => { if (agentInstructionArea) agentInstructionArea.value = ''; localStorage.setItem('honpi_omp_agent_instructions', ''); syncAgentInstructionStats(); showToast('Đã xóa chỉ dẫn Agent OMP'); });
+        document.getElementById('btnResetAgentInstructions')?.addEventListener('click', () => { if (agentInstructionArea) agentInstructionArea.value = agentInstructionDefaults; localStorage.setItem('honpi_omp_agent_instructions', agentInstructionDefaults); syncAgentInstructionStats(); showToast('Đã khôi phục mẫu chỉ dẫn Agent OMP'); });
       }
-      document.getElementById('btnSaveAgentInstructions')?.addEventListener('click', () => { localStorage.setItem('honpi_omp_agent_instructions', agentInstructionArea?.value || ''); syncAgentInstructionStats(); showToast('Đã lưu chỉ dẫn Agent OMP'); });
-      document.getElementById('btnClearAgentInstructions')?.addEventListener('click', () => { if (agentInstructionArea) agentInstructionArea.value = ''; localStorage.setItem('honpi_omp_agent_instructions', ''); syncAgentInstructionStats(); showToast('Đã xóa chỉ dẫn Agent OMP'); });
-      document.getElementById('btnResetAgentInstructions')?.addEventListener('click', () => { if (agentInstructionArea) agentInstructionArea.value = agentInstructionDefaults; localStorage.setItem('honpi_omp_agent_instructions', agentInstructionDefaults); syncAgentInstructionStats(); showToast('Đã khôi phục mẫu chỉ dẫn Agent OMP'); });
       if (welcomeTitleInput) welcomeTitleInput.value = localStorage.getItem('honpi_welcome_title') || 'Chào mừng bạn đến với Hòn π';
       if (welcomeDescInput) welcomeDescInput.value = localStorage.getItem('honpi_welcome_desc') || 'Trợ lý AI thông minh điều phối luồng công việc, phân tích mã nguồn và tự động hóa.';
       renderWelcomeEditor(); populateWelcomeEditor(); applyWelcomeConfig();
@@ -4687,14 +4689,14 @@
       }
 
       // Language Select
-      if (settingsLanguageSelect) {
+      if (!isProductionChatRoute && settingsLanguageSelect) {
         settingsLanguageSelect.addEventListener('change', (e) => {
           showToast(e.target.value === 'vi' ? 'Ngôn ngữ giao diện: Tiếng Việt' : 'Language set to English');
         });
       }
 
       // Conversation Display
-      if (settingsConvDisplaySelect) {
+      if (!isProductionChatRoute && settingsConvDisplaySelect) {
         settingsConvDisplaySelect.addEventListener('change', (e) => {
           const isCompact = e.target.value === 'compact';
           document.querySelectorAll('.turn-activity-box').forEach(box => {

@@ -53,6 +53,7 @@ for await (const line of lines) {
     }
     send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: frame.params.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: frame.params.sessionId + ":" + text } } } });
     reply(frame.id, { stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } });
+    send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: frame.params.sessionId, update: { sessionUpdate: "usage_update", used: 2048, size: 131072, cost: { amount: 0.01, currency: "USD" } } } });
   } else if (frame.method === "session/cancel") {
     continue;
   } else {
@@ -84,6 +85,10 @@ try {
   bridge.subscribe(first.id, clientA, liveA, { replay: false });
   await bridge.send(first.id, { id: "prompt-a", type: "prompt", message: "A_ONLY" });
   await wait(1050);
+  const contextUsage = bridge.get(first.id).summary();
+  assert.deepEqual(contextUsage.contextUsage, { used: 2048, size: 131072, cost: { amount: 0.01, currency: "USD" } }, "ACP usage_update must preserve used/size/cumulative cost separately from per-turn usage");
+  assert.equal(contextUsage.usage.total, 2, "per-turn token usage must remain available alongside context window usage");
+  passes.push("ACP context usage_update preserves current used/size and cumulative cost");
   await bridge.send(second.id, { id: "prompt-b", type: "prompt", message: "B_ONLY" });
   const firstFrames = bridge.get(first.id).frames;
   const secondFrames = bridge.get(second.id).frames;

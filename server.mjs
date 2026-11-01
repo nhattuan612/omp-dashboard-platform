@@ -2,14 +2,16 @@ import http from "node:http";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import * as pty from "node-pty";
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync, statSync, watch as watchFs } from "node:fs";
+import { appendFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { WebSocketServer, WebSocket } from "ws";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ConsoleBridge } from "./console-bridge.mjs";
+import { ConsoleBridge, loopbackBrowserEndpoint } from "./console-bridge.mjs";
 import { createOmpToolCatalog } from "./omp-tool-catalog.mjs";
+import { readOmpStatsHistory, readOmpStatsTrend } from "./omp-stats-history.mjs";
+import { resolveChatOutputMode } from "./chat-output-mode.mjs";
 
 const ROOT = join(homedir(), ".omp/usage-dashboard");
 const CA_BUNDLE = join(ROOT, "ca-bundle.pem");
@@ -30,18 +32,27 @@ const PROTECT_CONFIG_FILE = `${ROOT}/protect-config.json`;
 const OMP_ACCOUNT_CONTROL_FILE = `${ROOT}/omp-account-control.json`;
 const ACCOUNT_COLORS_FILE = `${ROOT}/account-colors.json`;
 const CHAT_METADATA_FILE = `${ROOT}/chat-metadata.json`;
+const OMP_AGENT_DIR = process.env.PI_CODING_AGENT_DIR ? resolve(process.env.PI_CODING_AGENT_DIR) : join(homedir(), ".omp", "agent");
+const AGENT_INSTRUCTIONS_FILE = join(OMP_AGENT_DIR, "AGENTS.md");
 const CHAT_MEDIA_ROOT = join(ROOT, "chat-media");
 const OMP_BIN = join(homedir(), ".bun/bin/omp");
 const AGENT_DB_FILE = join(homedir(), ".omp/agent/agent.db");
 const OMP_SESSION_ROOT = join(homedir(), ".omp/agent/sessions");
+const OPEN_DESIGN_APP_CWD_ROOT = join(homedir(), "Library", "Application Support", "Open Design", "namespaces");
 const OMP_LOG_ROOT = join(homedir(), ".omp/logs");
+const OBSERVABILITY_LOG_FILE = resolve(process.env.OMP_DASHBOARD_LOG_FILE || join(ROOT, "logs", "dashboard-events.jsonl"));
+const OBSERVABILITY_LOG_BACKUP = `${OBSERVABILITY_LOG_FILE}.1`;
+const OBSERVABILITY_LOG_MAX_BYTES = 20 * 1024 * 1024;
 const OMP_ARCHIVE_ROOT = join(homedir(), ".omp/agent/archive/console-sessions");
 const OMP_TRASH_ROOT = join(homedir(), ".omp/agent/trash/console-sessions");
 const OMP_AGENT_BLOB_ROOT = join(homedir(), ".omp/agent/blobs");
+const HISTORY_INDEX_FILE = join(ROOT, "history-index.json");
 const GENERAL_CHAT_CWD = process.env.OMP_DASHBOARD_GENERAL_WORKSPACE || join(homedir(), "Documents", "OMP General Chat");
 const DEFAULT_CHAT_CWD = process.env.OMP_DASHBOARD_WORKSPACE || process.cwd();
 const PORT = Number(process.env.OMP_DASHBOARD_PORT || 4177);
+const QUOTA_ONLY_MODE = process.env.OMP_DASHBOARD_QUOTA_ONLY === "1";
 const MAX_JSON_BODY_BYTES = 1_048_576;
+const OBSERVABILITY_SLOW_REQUEST_MS = 1_000;
 const MAX_CHAT_PROMPT_CHARS = 900_000;
 const MAX_CHAT_ATTACHMENTS = 4;
 const MAX_CHAT_ATTACHMENT_TEXT_CHARS = 200_000;
@@ -50,12 +61,13 @@ const MAX_CHAT_MEDIA_MESSAGES = 200;
 const MAX_CHAT_BODY_BLOCKS = 256;
 const MAX_CHAT_BODY_TEXT_CHARS = 80_000;
 const MAX_CHAT_BODY_VALUE_DEPTH = 4;
+const MAX_AGENT_INSTRUCTIONS_CHARS = 100_000;
 const testChatTurnTimeout = process.env.NODE_ENV === "test" ? Number(process.env.OMP_DASHBOARD_TEST_CHAT_TURN_TIMEOUT_MS) : NaN;
 const CHAT_TURN_TIMEOUT_MS = Number.isSafeInteger(testChatTurnTimeout) && testChatTurnTimeout > 0 ? testChatTurnTimeout : 120_000;
 const testLongChatTurnTimeout = process.env.NODE_ENV === "test" ? Number(process.env.OMP_DASHBOARD_TEST_LONG_CHAT_TURN_TIMEOUT_MS) : NaN;
 const LONG_CHAT_TURN_TIMEOUT_MS = Number.isSafeInteger(testLongChatTurnTimeout) && testLongChatTurnTimeout > 0 ? testLongChatTurnTimeout : 300_000;
 const LOCAL_PROMPT_RESULT_GRACE_MS = 1_000;
-const chatTurnTimeoutMs = (prompt, browserMode) => longRunningChatTurn(prompt, browserMode) ? LONG_CHAT_TURN_TIMEOUT_MS : CHAT_TURN_TIMEOUT_MS;
+const chatTurnTimeoutMs = (prompt, browserMode, outputMode) => longRunningChatTurn(prompt, browserMode, outputMode) ? LONG_CHAT_TURN_TIMEOUT_MS : CHAT_TURN_TIMEOUT_MS;
 const DASHBOARD_SESSION_COOKIE = "omp_dashboard_session";
 const DASHBOARD_SESSION_TOKEN = randomBytes(32).toString("base64url");
 const DASHBOARD_ORIGINS = new Set([`http://127.0.0.1:${PORT}`, `http://localhost:${PORT}`]);
@@ -82,6 +94,10 @@ const QUOTA_WARNING_THRESHOLD = 0.8;
 const QUOTA_SUSPEND_THRESHOLD = 0.9;
 const GENERATION_HEALTH_WINDOW_MS = 24 * 60 * 60 * 1000;
 const BROKER_USAGE_CACHE_MS = 60_000;
+const QUOTA_HISTORY_CACHE_MS = 30_000;
+const QUOTA_HISTORY_RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
+const QUOTA_HISTORY_WINDOW_MS = [60 * 60 * 1000, QUOTA_HISTORY_RECENT_WINDOW_MS, 7 * 24 * 60 * 60 * 1000, 30 * 24 * 60 * 60 * 1000];
+const MAX_USAGE_OUTPUT_CHARS = 2_000_000;
 const ACCOUNT_COLOR_PALETTE = ["#1a73e8", "#188038", "#b06000", "#d93025", "#7b1fa2", "#00838f", "#c2185b", "#5f6368"];
 const LOGIN_PROVIDER = "google-antigravity";
 const GEMINI_PROVIDER_KEYS = new Set(["google-gemini-cli", "google-antigravity"]);
@@ -91,10 +107,61 @@ let refreshing = null;
 let brokerUsageCache = null;
 let loginProcess = null;
 let login = { state: "idle", provider: null, url: null, message: null };
-let historyCache = { loadedAt: 0, items: [] };
+let historyCache = { loadedAt: 0, items: [], coverageCutoff: 0, complete: false };
+const historyFileCache = new Map();
+const historyLoading = new Map();
+let historyIndexReady = null;
+let historyEpoch = 0;
+let observabilityLogQueue = Promise.resolve();
+let observabilityLogFailureAt = 0;
 const statusClients = new Map();
+const sessionEventClients = new Map();
+let ompSessionWatcher = null;
+let ompSessionWatcherRetry = null;
+let sessionCatalogRefreshTimer = null;
+let sessionCatalogRevision = 0;
+let sessionCatalogCache = null;
+let sessionCatalogCacheRevision = -1;
+let sessionCatalogRefresh = null;
 let refreshTimer = null;
 const requestRateBuckets = new Map();
+
+function logErrorFields(error) {
+  if (!error) return {};
+  const errorCode = String(error.code || "INTERNAL_SERVER_ERROR");
+  const errorName = String(error.name || "Error");
+  return {
+    errorCode: /^[A-Z0-9_]{1,100}$/.test(errorCode) ? errorCode : "INTERNAL_SERVER_ERROR",
+    errorName: /^[A-Za-z0-9_]{1,100}$/.test(errorName) ? errorName : "Error",
+  };
+}
+
+function logEvent(level, event, fields = {}) {
+  const entry = {
+    timestamp: new Date().toISOString(),
+    level,
+    event,
+    pid: process.pid,
+    ...fields,
+  };
+  const line = `${JSON.stringify(entry)}\n`;
+  observabilityLogQueue = observabilityLogQueue.then(async () => {
+    await mkdir(dirname(OBSERVABILITY_LOG_FILE), { recursive: true, mode: 0o700 });
+    let currentSize = 0;
+    try { currentSize = (await stat(OBSERVABILITY_LOG_FILE)).size; } catch {}
+    if (currentSize + Buffer.byteLength(line) > OBSERVABILITY_LOG_MAX_BYTES) {
+      await rm(OBSERVABILITY_LOG_BACKUP, { force: true }).catch(() => {});
+      await rename(OBSERVABILITY_LOG_FILE, OBSERVABILITY_LOG_BACKUP).catch(() => {});
+    }
+    await appendFile(OBSERVABILITY_LOG_FILE, line, { mode: 0o600 });
+  }).catch((error) => {
+    if (Date.now() - observabilityLogFailureAt > 60_000) {
+      observabilityLogFailureAt = Date.now();
+      process.stderr.write(`[observability-log-failed] ${logErrorFields(error).errorCode}\n`);
+    }
+  });
+  return observabilityLogQueue;
+}
 const terminalSessions = new Map();
 const TERMINAL_MAX_SESSIONS = 4;
 const TERMINAL_IDLE_TIMEOUT_MS = 30 * 60_000;
@@ -161,9 +228,9 @@ function authorizeApiRequest(req, pathname) {
 }
 
 function enforceRateLimit(req, pathname) {
-  if (!requiresApiAuth(pathname) || !["POST", "DELETE"].includes(req.method)) return null;
+  if (!requiresApiAuth(pathname) || !["POST", "PUT", "DELETE"].includes(req.method)) return null;
   const isLogin = pathname === "/api/login";
-  const isChat = pathname === "/api/v1/chat/send" || pathname === "/api/v1/chat/stream";
+  const isChat = pathname === "/api/v1/chat/send" || pathname === "/api/v1/chat/stream" || pathname === "/api/omp/v1/openai/chat/completions";
   const isTerminalOpen = pathname === "/api/v1/terminal/open";
   const limit = isLogin ? 5 : isChat ? CHAT_RATE_LIMIT : isTerminalOpen ? 10 : 120;
   if (limit <= 0) return null;
@@ -224,6 +291,7 @@ function errorStatus(code) {
 
 function errorResponse(res, error, fallback = "Yêu cầu không thành công.") {
   const code = error?.code || "INTERNAL_SERVER_ERROR";
+  res.observability = { ...(res.observability || {}), errorCode: code };
   const message = publicErrorMessage(code, error?.message, fallback);
   return json(res, errorStatus(code), {
     ok: false,
@@ -241,8 +309,9 @@ function runOmpUsage() {
     let out = "";
     let err = "";
     const timer = setTimeout(() => child.kill("SIGTERM"), 30000);
-    child.stdout.on("data", (chunk) => { out += chunk; });
-    child.stderr.on("data", (chunk) => { err += chunk; });
+    const append = (target, chunk) => target.length < MAX_USAGE_OUTPUT_CHARS ? `${target}${chunk.toString().slice(0, MAX_USAGE_OUTPUT_CHARS - target.length)}` : target;
+    child.stdout.on("data", (chunk) => { out = append(out, chunk); });
+    child.stderr.on("data", (chunk) => { err = append(err, chunk); });
     child.on("error", reject);
     child.on("close", (code) => {
       clearTimeout(timer);
@@ -281,8 +350,9 @@ function runBrokerUsage() {
     let out = "";
     let err = "";
     const timer = setTimeout(() => child.kill("SIGTERM"), 30000);
-    child.stdout.on("data", (chunk) => { out += chunk; });
-    child.stderr.on("data", (chunk) => { err += chunk; });
+    const append = (target, chunk) => target.length < MAX_USAGE_OUTPUT_CHARS ? `${target}${chunk.toString().slice(0, MAX_USAGE_OUTPUT_CHARS - target.length)}` : target;
+    child.stdout.on("data", (chunk) => { out = append(out, chunk); });
+    child.stderr.on("data", (chunk) => { err = append(err, chunk); });
     child.on("error", reject);
     child.on("close", (code) => {
       clearTimeout(timer);
@@ -697,6 +767,7 @@ function generationOutcome(message) {
   if (message?.role !== "assistant") return null;
   const error = String(message.errorMessage || "");
   const stopReason = String(message.stopReason || "").toLowerCase();
+  if (message.retryRecovery?.status === "recovered") return { status: "live", reason: "OMP đã tự retry và phục hồi thành công" };
   const wasUserAbort = stopReason === "aborted" || /\b(?:aborted|cancel(?:led|ed)|interrupted by user|request was aborted)\b/i.test(error);
   if (wasUserAbort) return null;
   if (Number(message.errorStatus) === 401 || /401\b|unauthenticated|invalid[_ -]?grant|token[^\n]*(expired|revoked)|access[_ -]?token/i.test(error)) return { status: "auth_error", reason: "Google trả lỗi xác thực OAuth (401/UNAUTHENTICATED); cần đăng nhập lại" };
@@ -704,7 +775,9 @@ function generationOutcome(message) {
   if (Number(message.errorStatus) === 429 || /429|resource[_ ]exhausted|quota|rate limit/i.test(error)) return { status: "quota_blocked", reason: "Google trả HTTP 429/RESOURCE_EXHAUSTED: hết quota hoặc rate limit" };
   if (Number(message.errorStatus) >= 500 || /service unavailable|internal server|timeout|temporar(?:y|ily)|network|certificate|unable to verify|tls|self[- ]signed|malformed[_ ]function[_ ]call|invalid[_ ]function[_ ]call/i.test(error)) return { status: "transient_error", reason: "Google/service hoặc mạng lỗi tạm thời; cần thử lại" };
   if (message.stopReason === "error" || error) return { status: "error", reason: "Lần chat gần nhất lỗi khi sinh nội dung" };
-  if (messageText(message)) return { status: "live", reason: "Đã nhận phản hồi model gần nhất" };
+  if (messageText(message) || (message.usage && typeof message.usage === "object")) {
+    return { status: "live", reason: messageText(message) ? "Đã nhận phản hồi model gần nhất" : "OMP đã hoàn tất lượt model và ghi nhận usage" };
+  }
   return null;
 }
 
@@ -772,60 +845,195 @@ async function sessionFiles(directory = OMP_SESSION_ROOT) {
   return files.flat();
 }
 
-async function readTokenHistory() {
-  if (Date.now() - historyCache.loadedAt < 30000) return historyCache.items;
-  const accountByPin = new Map((latest.accounts || []).map((account) => [
-    credentialPinHash(account),
-    { id: quotaAccountId(account), email: account.email, provider: account.provider },
-  ]));
-  const items = [];
-  for (const file of await sessionFiles()) {
-    let fileStat;
-    try { fileStat = await stat(file); } catch { continue; }
-    let lines;
-    try { lines = (await readFile(file, "utf8")).split("\n"); } catch { continue; }
-    const records = [];
-    for (const [order, line] of lines.entries()) {
-      if (!line) continue;
-      try {
-        const record = JSON.parse(line);
-        const timestamp = Date.parse(record.timestamp || record.message?.completedAt || record.message?.timestamp || "");
-        records.push({ record, timestamp: Number.isFinite(timestamp) ? timestamp : fileStat.mtimeMs, order });
-      } catch { continue; }
+async function loadHistoryIndex() {
+  if (historyIndexReady) return historyIndexReady;
+  historyIndexReady = (async () => {
+    const startedAt = Date.now();
+    try {
+      const payload = JSON.parse(await readFile(HISTORY_INDEX_FILE, "utf8"));
+      if (payload?.version !== 1 || !payload.files || typeof payload.files !== "object") throw new Error("history index không đúng phiên bản");
+      let itemCount = 0;
+      for (const [file, entry] of Object.entries(payload.files)) {
+        if (!file.startsWith(`${OMP_SESSION_ROOT}/`) || !entry || !Number.isFinite(entry.size) || !Number.isFinite(entry.mtimeMs) || !Array.isArray(entry.items)) continue;
+        historyFileCache.set(file, { size: entry.size, mtimeMs: entry.mtimeMs, items: entry.items });
+        itemCount += entry.items.length;
+      }
+      void logEvent("info", "quota_history_index_load_complete", { fileCount: historyFileCache.size, itemCount, durationMs: Date.now() - startedAt });
+    } catch (error) {
+      if (error.code !== "ENOENT") void logEvent("warn", "quota_history_index_load_failed", { ...logErrorFields(error), durationMs: Date.now() - startedAt });
     }
-    const sessionId = records.find(({ record }) => record.type === "session")?.record.id || null;
-    const pins = records.filter(({ record }) => record.type === "credential_pin" && typeof record.hash === "string");
-    for (const { record, timestamp, order } of records) {
-      const message = record.message;
-      const usage = message?.role === "assistant" ? message.usage : null;
-      if (!usage || !message.provider || !message.model) continue;
-      const nearestPin = priorCredentialPin(pins, timestamp, order);
-      const pinnedAccount = accountByPin.get(nearestPin?.record.hash);
-      items.push({
-        id: `${file}:${record.id || record.timestamp}`,
-        timestamp: record.timestamp || message.completedAt || message.timestamp,
-        sessionId,
-        accountId: pinnedAccount?.id || null,
-        email: pinnedAccount?.email || null,
-        provider: message.provider,
-        model: message.model,
-        input: number(usage.input),
-        output: number(usage.output),
-        cacheRead: number(usage.cacheRead),
-        cacheWrite: number(usage.cacheWrite),
-        reasoning: number(usage.reasoningTokens),
-        total: number(usage.totalTokens) || number(usage.input) + number(usage.output) + number(usage.cacheRead) + number(usage.cacheWrite),
-        latencyMs: Number.isFinite(Number(message.duration)) && Number(message.duration) > 0
-          ? Number(message.duration)
-          : Number.isFinite(Date.parse(message.completedAt)) && Number.isFinite(timestamp)
-            ? Math.max(0, Date.parse(message.completedAt) - timestamp)
-            : null,
-        ttftMs: Number.isFinite(Number(message.ttft)) && Number(message.ttft) > 0 ? Number(message.ttft) : null,
-      });
+  })();
+  return historyIndexReady;
+}
+
+async function saveHistoryIndex() {
+  const files = Object.fromEntries(historyFileCache);
+  const body = `${JSON.stringify({ version: 1, generatedAt: Date.now(), files })}\n`;
+  const temporary = `${HISTORY_INDEX_FILE}.${process.pid}.${randomUUID()}.tmp`;
+  const startedAt = Date.now();
+  try {
+    await writeFile(temporary, body, { mode: 0o600 });
+    await rename(temporary, HISTORY_INDEX_FILE);
+    void logEvent("info", "quota_history_index_save_complete", { fileCount: Object.keys(files).length, itemCount: Object.values(files).reduce((count, entry) => count + entry.items.length, 0), bytes: Buffer.byteLength(body), durationMs: Date.now() - startedAt });
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => {});
+    void logEvent("warn", "quota_history_index_save_failed", { ...logErrorFields(error), durationMs: Date.now() - startedAt });
+  }
+}
+
+async function resetHistoryCache() {
+  historyEpoch += 1;
+  historyCache = { loadedAt: 0, items: [], coverageCutoff: 0, complete: false };
+  historyFileCache.clear();
+  historyIndexReady = null;
+  await rm(HISTORY_INDEX_FILE, { force: true }).catch(() => {});
+}
+
+async function readTokenHistory(minTimestamp = 0, { forceRefresh = false, requestId = null, staleRetry = 0 } = {}) {
+  const readEpoch = historyEpoch;
+  await loadHistoryIndex();
+  if (readEpoch !== historyEpoch) {
+    if (staleRetry < 1) return readTokenHistory(minTimestamp, { forceRefresh, requestId, staleRetry: staleRetry + 1 });
+    throw Object.assign(new Error("Quota history changed during load"), { code: "HISTORY_STALE" });
+  }
+  const cutoff = Math.max(0, Number(minTimestamp) || 0);
+  const filterItems = (items) => cutoff
+    ? items.filter((item) => Date.parse(item.timestamp) >= cutoff)
+    : items;
+  const cacheAgeMs = historyCache.loadedAt ? Math.max(0, Date.now() - historyCache.loadedAt) : null;
+  const cacheCoversCutoff = historyCache.complete || cutoff >= historyCache.coverageCutoff;
+  if (!forceRefresh && cacheCoversCutoff && cacheAgeMs != null && cacheAgeMs < QUOTA_HISTORY_CACHE_MS) {
+    void logEvent("debug", "quota_history_cache_hit", { requestId, cutoff, cacheAgeMs, itemCount: historyCache.items.length });
+    return filterItems(historyCache.items);
+  }
+  const requestedWindowMs = cutoff === 0
+    ? 0
+    : QUOTA_HISTORY_WINDOW_MS.find((windowMs) => Date.now() - cutoff <= windowMs + 60_000) || 0;
+  const loadKey = forceRefresh ? "all:refresh" : `window:${requestedWindowMs}`;
+  const activeLoad = historyLoading.get(loadKey);
+  if (activeLoad) {
+    void logEvent("debug", "quota_history_cache_wait", { requestId, cutoff, forceRefresh, loadKey });
+    try { return filterItems(await activeLoad); }
+    catch (error) {
+      if (error?.code === "HISTORY_STALE" && staleRetry < 1) return readTokenHistory(minTimestamp, { forceRefresh, requestId, staleRetry: staleRetry + 1 });
+      throw error;
     }
   }
-  historyCache = { loadedAt: Date.now(), items: items.sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp))) };
-  return historyCache.items;
+  if (!forceRefresh && historyLoading.size) {
+    const pendingLoad = historyLoading.values().next().value;
+    void logEvent("debug", "quota_history_scope_wait", { requestId, cutoff, loadKey });
+    try { await pendingLoad; }
+    catch (error) {
+      if (error?.code === "HISTORY_STALE" && staleRetry < 1) return readTokenHistory(minTimestamp, { forceRefresh, requestId, staleRetry: staleRetry + 1 });
+      throw error;
+    }
+    return readTokenHistory(minTimestamp, { forceRefresh, requestId, staleRetry });
+  }
+  const scanCutoff = requestedWindowMs ? Date.now() - requestedWindowMs : 0;
+  const load = (async () => {
+    const startedAt = Date.now();
+    const accountByPin = new Map([...(latest.accounts || []), ...(latest.authAccounts || [])].filter(isGeminiQuotaAccount).map((account) => [
+      credentialPinHash(account),
+      { id: quotaAccountId(account), email: account.email, provider: account.provider },
+    ]));
+    const items = [];
+    const files = await sessionFiles();
+    const currentFiles = new Set(files);
+    void logEvent("info", "quota_history_load_start", { requestId, cutoff, forceRefresh, loadKey, scanCutoff, fileCount: files.length });
+    let nextFileIndex = 0;
+    let cacheChanged = false;
+    const readFileWorker = async () => {
+      while (nextFileIndex < files.length) {
+        const file = files[nextFileIndex++];
+      let fileStat;
+      try { fileStat = await stat(file); } catch { continue; }
+      // shortcut: recent scope trusts file mtime as the latest record boundary; use full scan for longer scopes.
+      if (scanCutoff && fileStat.mtimeMs < scanCutoff) continue;
+      const cachedFile = historyFileCache.get(file);
+      if (cachedFile?.size === fileStat.size && cachedFile.mtimeMs === fileStat.mtimeMs) {
+        items.push(...cachedFile.items);
+        continue;
+      }
+      let lines;
+      try { lines = (await readFile(file, "utf8")).split("\n"); } catch { continue; }
+      const records = [];
+      const parsedItems = [];
+      for (const [order, line] of lines.entries()) {
+        if (!line) continue;
+        try {
+          const record = JSON.parse(line);
+          const timestamp = Date.parse(record.timestamp || record.message?.completedAt || record.message?.timestamp || "");
+          records.push({ record, timestamp: Number.isFinite(timestamp) ? timestamp : fileStat.mtimeMs, order });
+        } catch { continue; }
+      }
+      const sessionId = records.find(({ record }) => record.type === "session")?.record.id || null;
+      const pins = records.filter(({ record }) => record.type === "credential_pin" && typeof record.hash === "string");
+      for (const { record, timestamp, order } of records) {
+        const message = record.message;
+        const usage = message?.role === "assistant" ? message.usage : null;
+        if (!usage || !message.provider || !message.model) continue;
+        const nearestPin = priorCredentialPin(pins, timestamp, order);
+        const pinnedAccount = accountByPin.get(nearestPin?.record.hash);
+        parsedItems.push({
+          id: `${file}:${record.id || record.timestamp}`,
+          timestamp: new Date(timestamp).toISOString(),
+          sessionId,
+          accountId: pinnedAccount?.id || null,
+          email: pinnedAccount?.email || null,
+          provider: message.provider,
+          model: message.model,
+          input: number(usage.input),
+          output: number(usage.output),
+          cacheRead: number(usage.cacheRead),
+          cacheWrite: number(usage.cacheWrite),
+          reasoning: number(usage.reasoningTokens),
+          total: number(usage.totalTokens) || number(usage.input) + number(usage.output) + number(usage.cacheRead) + number(usage.cacheWrite),
+          status: generationOutcome(message)?.status || "unknown",
+          latencyMs: Number.isFinite(Number(message.duration)) && Number(message.duration) > 0
+            ? Number(message.duration)
+            : Number.isFinite(Date.parse(message.completedAt)) && Number.isFinite(timestamp)
+              ? Math.max(0, Date.parse(message.completedAt) - timestamp)
+              : null,
+          ttftMs: Number.isFinite(Number(message.ttft)) && Number(message.ttft) > 0 ? Number(message.ttft) : null,
+        });
+        }
+      if (readEpoch !== historyEpoch) return;
+      historyFileCache.set(file, { size: fileStat.size, mtimeMs: fileStat.mtimeMs, items: parsedItems });
+      cacheChanged = true;
+      items.push(...parsedItems);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(QUOTA_HISTORY_READ_CONCURRENCY, files.length) }, readFileWorker));
+    if (readEpoch !== historyEpoch) {
+      void logEvent("warn", "quota_history_load_stale_discarded", { requestId, cutoff, forceRefresh, loadKey, scanCutoff, itemCount: items.length });
+      throw Object.assign(new Error("Quota history changed during load"), { code: "HISTORY_STALE" });
+    }
+    for (const file of historyFileCache.keys()) if (!currentFiles.has(file)) { historyFileCache.delete(file); cacheChanged = true; }
+    const sortedItems = items.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+    if (readEpoch !== historyEpoch) {
+      void logEvent("warn", "quota_history_load_stale_discarded", { requestId, cutoff, forceRefresh, loadKey, scanCutoff, itemCount: sortedItems.length });
+      throw Object.assign(new Error("Quota history changed during load"), { code: "HISTORY_STALE" });
+    }
+    historyCache = { loadedAt: Date.now(), items: sortedItems, coverageCutoff: scanCutoff, complete: scanCutoff === 0 };
+    if (cacheChanged) await saveHistoryIndex();
+    if (readEpoch !== historyEpoch) {
+      void logEvent("warn", "quota_history_load_stale_discarded", { requestId, cutoff, forceRefresh, loadKey, scanCutoff, itemCount: sortedItems.length });
+      throw Object.assign(new Error("Quota history changed during load"), { code: "HISTORY_STALE" });
+    }
+    void logEvent("info", "quota_history_load_complete", { requestId, cutoff, forceRefresh, loadKey, scanCutoff, fileCount: files.length, itemCount: sortedItems.length, durationMs: Date.now() - startedAt });
+    return sortedItems;
+  })();
+  historyLoading.set(loadKey, load);
+  try {
+    return filterItems(await load);
+  } catch (error) {
+    if (error?.code === "HISTORY_STALE" && staleRetry < 1) {
+      void logEvent("info", "quota_history_load_retry", { requestId, cutoff, forceRefresh, loadKey });
+      return readTokenHistory(minTimestamp, { forceRefresh, requestId, staleRetry: staleRetry + 1 });
+    }
+    void logEvent("error", "quota_history_load_failed", { requestId, cutoff, forceRefresh, ...logErrorFields(error) });
+    throw error;
+  } finally { if (historyLoading.get(loadKey) === load) historyLoading.delete(loadKey); }
 }
 
 function tokenSummary(items) {
@@ -895,9 +1103,104 @@ async function readProtectConfig() {
 }
 
 async function saveProtectConfig(value) {
-  protectConfigCache = normalizeProtectConfig(value);
+  const next = normalizeProtectConfig(value);
+  await syncQuotaGatewayPool(next);
+  protectConfigCache = next;
   await writeFile(PROTECT_CONFIG_FILE, `${JSON.stringify(protectConfigCache, null, 2)}\n`, { mode: 0o600 });
   return protectConfigCache;
+}
+
+async function syncQuotaGatewayPool(config) {
+  const poolFile = join(homedir(), ".omp", "antigravity-quota-pool.json");
+  const writePool = async (accounts) => {
+    const contents = `${JSON.stringify({ "*": [], [LOGIN_PROVIDER]: accounts }, null, 2)}\n`;
+    if (await readFile(poolFile, "utf8").catch(() => null) === contents) return false;
+    const temporary = `${poolFile}.${process.pid}.${randomUUID()}.tmp`;
+    await writeFile(temporary, contents, { mode: 0o600 });
+    await rename(temporary, poolFile);
+    return true;
+  };
+  const restartGateway = () => new Promise((resolve, reject) => {
+    const child = spawn("/bin/launchctl", ["kickstart", "-k", `gui/${process.getuid()}/com.trannhattuan.omp-auth-gateway`], { stdio: "ignore" });
+    child.once("error", reject);
+    child.once("close", (code) => code === 0 ? resolve() : reject(new Error(`Không khởi động lại được OMP Auth Gateway (exit ${code})`)));
+  });
+  const stopGateway = () => new Promise((resolve) => {
+    const child = spawn("/bin/launchctl", ["bootout", `gui/${process.getuid()}/com.trannhattuan.omp-auth-gateway`], { stdio: "ignore" });
+    child.once("error", resolve);
+    child.once("close", resolve);
+  });
+  try {
+    const brokerToken = (await readFile(join(homedir(), ".omp", "auth-broker.token"), "utf8")).trim();
+    const response = await fetch("http://127.0.0.1:8765/v1/snapshot", { headers: { Authorization: `Bearer ${brokerToken}` } });
+    if (!response.ok) throw new Error(`Broker trả HTTP ${response.status}`);
+    const snapshot = await response.json();
+    const byId = new Map(snapshot.credentials.filter((item) => item.provider === LOGIN_PROVIDER).map((item) => {
+      const account = { provider: item.provider, email: item.credential?.email, projectId: item.credential?.projectId };
+      return [quotaAccountId(account), item.identityKey];
+    }));
+    const accountIds = config.enabled ? config.accountIds : [];
+    if (accountIds.some((id) => typeof byId.get(id) !== "string" || !byId.get(id))) throw new Error("Pool /quota có account không còn khớp credential OMP");
+    if (await writePool(accountIds.map((id) => byId.get(id)))) await restartGateway();
+  } catch (error) {
+    try {
+      await writePool([]);
+      await restartGateway();
+    } catch {
+      await stopGateway();
+    }
+    throw new Error(`Đã khóa Gemini fail-closed vì không đồng bộ được pool /quota: ${error.message}`);
+  }
+}
+
+function agentInstructionsVersion(text) {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+async function readAgentInstructionsConfig() {
+  try {
+    const instructions = await readFile(AGENT_INSTRUCTIONS_FILE, "utf8");
+    return { configured: true, version: agentInstructionsVersion(instructions), instructions, path: AGENT_INSTRUCTIONS_FILE };
+  }
+  catch (error) {
+    if (error.code === "ENOENT") return { configured: false, version: agentInstructionsVersion(""), instructions: "", path: AGENT_INSTRUCTIONS_FILE };
+    throw Object.assign(new Error("Không đọc được file chỉ dẫn Agent OMP."), { code: "INTERNAL_SERVER_ERROR" });
+  }
+}
+
+async function saveAgentInstructionsConfig(instructions, expectedVersion) {
+  const operation = agentInstructionsWrite.then(async () => {
+    const current = await readAgentInstructionsConfig();
+    if (current.version !== expectedVersion) throw Object.assign(new Error("File AGENTS.md đã thay đổi bên ngoài dashboard. Nạp lại nội dung mới rồi lưu lại."), { code: "CONFLICT" });
+    let mode = 0o600;
+    try {
+      const file = await lstat(AGENT_INSTRUCTIONS_FILE);
+      if (!file.isFile()) throw Object.assign(new Error("Đường dẫn AGENTS.md của OMP không phải file thường."), { code: "CONFLICT" });
+      mode = file.mode & 0o777;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    if ((await readAgentInstructionsConfig()).version !== expectedVersion) throw Object.assign(new Error("File AGENTS.md vừa thay đổi. Nạp lại nội dung mới rồi lưu lại."), { code: "CONFLICT" });
+    const temporaryFile = `${AGENT_INSTRUCTIONS_FILE}.${randomUUID()}.tmp`;
+    try {
+      await mkdir(dirname(AGENT_INSTRUCTIONS_FILE), { recursive: true, mode: 0o700 });
+      if (current.configured) {
+        const backupRoot = join(ROOT, "backups", "agent-instructions");
+        await mkdir(backupRoot, { recursive: true, mode: 0o700 });
+        await writeFile(join(backupRoot, `${Date.now()}-${randomUUID()}.md`), current.instructions, { mode: 0o600, flag: "wx" });
+      }
+      await writeFile(temporaryFile, instructions, { mode, flag: "wx" });
+      if ((await readAgentInstructionsConfig()).version !== expectedVersion) throw Object.assign(new Error("File AGENTS.md vừa thay đổi. Nạp lại nội dung mới rồi lưu lại."), { code: "CONFLICT" });
+      await rename(temporaryFile, AGENT_INSTRUCTIONS_FILE);
+    } catch (error) {
+      await rm(temporaryFile, { force: true }).catch(() => {});
+      if (error.code === "CONFLICT") throw error;
+      throw Object.assign(new Error("Không thể lưu file AGENTS.md của OMP."), { code: "INTERNAL_SERVER_ERROR" });
+    }
+    return readAgentInstructionsConfig();
+  });
+  agentInstructionsWrite = operation.catch(() => {});
+  return operation;
 }
 
 async function findSessionPath(sessionId) {
@@ -996,11 +1299,26 @@ async function checkThresholds(snapshot) {
   await saveState(state);
 }
 
-async function refresh() {
-  if (refreshing) return refreshing;
-  refreshing = runUsage().then(async ({ raw, pid }) => {
-    const snapshot = normalize(raw, await readUsageAuthIssues(pid));
+async function refresh(requestId = null) {
+  if (refreshing) {
+    void logEvent("debug", "quota_refresh_wait", { requestId });
+    return refreshing;
+  }
+  const startedAt = Date.now();
+  const refreshId = randomUUID();
+  const phases = {};
+  void logEvent("info", "quota_refresh_start", { requestId, refreshId });
+  refreshing = (async () => {
+    let phaseStartedAt = Date.now();
+    const { raw, pid } = await runUsage();
+    phases.usageMs = Date.now() - phaseStartedAt;
+    phaseStartedAt = Date.now();
+    const authIssues = await readUsageAuthIssues(pid);
+    phases.authIssuesMs = Date.now() - phaseStartedAt;
+    const snapshot = normalize(raw, authIssues);
+    phaseStartedAt = Date.now();
     const generationHealth = await readGenerationHealth(snapshot.accounts);
+    phases.generationHealthMs = Date.now() - phaseStartedAt;
     snapshot.accounts = snapshot.accounts.map((account) => ({
       ...account,
       generationStatus: generationHealth.get(quotaAccountId(account))?.status || "unknown",
@@ -1016,16 +1334,27 @@ async function refresh() {
       generationCheckedAt: generationByEmail.get(account.email.toLowerCase())?.generationCheckedAt || null,
       generationModel: generationByEmail.get(account.email.toLowerCase())?.generationModel || null,
     }));
+    phaseStartedAt = Date.now();
     const selected = await selectedAccount();
     snapshot.preferredAccountEmail = selected?.email || null;
     await checkThresholds(snapshot);
+    phases.selectionAndThresholdsMs = Date.now() - phaseStartedAt;
     latest = { ok: true, error: null, updatedAt: Date.now(), ...snapshot };
     await evaluateQuotaRotation().catch(() => {});
     broadcastStatus();
+    void logEvent("info", "quota_refresh_complete", {
+      accountCount: latest.accounts.length,
+      authAccountCount: latest.authAccounts.length,
+      requestId,
+      refreshId,
+      phases,
+      durationMs: Date.now() - startedAt,
+    });
     return latest;
-  }).catch((error) => {
+  })().catch((error) => {
     latest = { ...latest, ok: false, error: error.message, updatedAt: Date.now() };
     broadcastStatus();
+    void logEvent("error", "quota_refresh_failed", { requestId, refreshId, phases, durationMs: Date.now() - startedAt, ...logErrorFields(error) });
     return latest;
   }).finally(() => { refreshing = null; });
   return refreshing;
@@ -1087,6 +1416,15 @@ async function readJsonBody(req) {
   return JSON.parse(body || "{}");
 }
 
+async function recordQuotaClientLog(req, requestId) {
+  const body = await readJsonBody(req);
+  const level = ["warn", "error"].includes(body?.level) ? body.level : "info";
+  const event = typeof body?.event === "string" && /^[a-z0-9_:-]{1,80}$/i.test(body.event) ? body.event : "client_event";
+  const fields = { requestId, clientRequestId: typeof body?.requestId === "string" ? body.requestId.slice(0, 80) : undefined, scope: typeof body?.scope === "string" ? body.scope.slice(0, 20) : undefined, durationMs: Number.isFinite(Number(body?.durationMs)) ? Math.max(0, Math.min(600000, Number(body.durationMs))) : undefined, errorName: typeof body?.errorName === "string" ? body.errorName.slice(0, 80) : undefined };
+  await logEvent(level, `quota_ui_${event}`, Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)));
+  return { ok: true, requestId };
+}
+
 async function selectAccount(req) {
   const body = await readJsonBody(req);
   const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
@@ -1111,7 +1449,7 @@ async function selectAccount(req) {
   const selected = selectedQuotaAccount(latest.accounts, await selectedAccount(), latest.preferredAccountEmail);
   const wasPreferred = Boolean(selected && quotaAccountId(selected) === quotaAccountId(account));
   await writeFile(SELECTED_ACCOUNT_FILE, `${JSON.stringify({ accountId: quotaAccountId(account), email: account.email, provider: account.provider, selectedAt: Date.now() }, null, 2)}\n`, { mode: 0o600 });
-  historyCache = { loadedAt: 0, items: [] };
+  await resetHistoryCache();
   latest.preferredAccountEmail = account.email;
   broadcastStatus();
   return {
@@ -1218,7 +1556,7 @@ function startLogin(targetEmail = null) {
   });
 }
 
-const consoleBridge = new ConsoleBridge({ env: OMP_ENV, onGenerationFinished: () => scheduleRefresh(), onSafetyChanged: () => broadcastStatus() });
+const consoleBridge = new ConsoleBridge({ env: OMP_ENV, onGenerationFinished: () => scheduleRefresh(30_000), onSafetyChanged: () => broadcastStatus() });
 const ompToolCatalog = createOmpToolCatalog({ ompBin: OMP_BIN, env: OMP_ENV });
 
 async function syncSafetyPolicy() {
@@ -1232,6 +1570,9 @@ async function syncSafetyPolicy() {
 }
 
 void syncSafetyPolicy().catch(() => {});
+void readProtectConfig().then(syncQuotaGatewayPool).catch((error) => {
+  void logEvent("error", "quota_gateway_pool_sync_failed", { message: String(error?.message || error) });
+});
 const SOURCE_ROOT = fileURLToPath(new URL("./", import.meta.url));
 const OMP_GATEWAY_VERSION = "1";
 const gatewaySessions = new Map();
@@ -1415,7 +1756,9 @@ function withChatDispatchGate(task) {
 }
 let chatMetadataWrite = Promise.resolve();
 let chatMediaWrite = Promise.resolve();
+let agentInstructionsWrite = Promise.resolve();
 let availableModelsCache = { loadedAt: 0, items: [] };
+let availableModelsLoading = null;
 let protectConfigCache = null;
 let quotaRotationWrite = Promise.resolve();
 let quotaRotationState = { lastCheckedAt: null, lastRotation: null, reason: "Chưa đánh giá xoay account" };
@@ -1525,10 +1868,64 @@ async function selectedOmpTools(value) {
 }
 const OMP_BROWSER_MODES = [
   { id: "ego-browser", label: "Ego Browser · Skill", status: "supported", default: false, note: "Chỉ bật khi Síp chọn; OMP nạp /skill:ego-browser cho các order cần web." },
-  { id: "omp-browser-relay", label: "OMP Browser Relay", status: "unavailable", default: false, note: "Browser relay chưa được hỗ trợ." },
-  { id: "chrome-electron", label: "Chrome/Electron hiện có", status: "unavailable", default: false, note: "Chrome/Electron automation chưa được hỗ trợ." },
+  { id: "omp-browser-relay", label: "OMP Browser Relay", default: false },
+  { id: "chrome-electron", label: "Chrome/Electron hiện có", default: false },
 ];
 const OMP_BROWSER_MODE_IDS = new Set(["none", ...OMP_BROWSER_MODES.map((item) => item.id)]);
+const nativeBrowserMode = (mode) => mode === "omp-browser-relay" || mode === "chrome-electron";
+
+function probeBrowserEndpoint(endpoint) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result) => { if (!settled) { settled = true; resolve(result); } };
+    const request = http.get(`${endpoint}/json/version`, { timeout: 1200 }, (response) => {
+      if (response.statusCode !== 200) { response.resume(); finish(response.statusCode === 503 ? "extension_disconnected" : "endpoint_unavailable"); return; }
+      let data = "";
+      response.on("data", (chunk) => { data += chunk; if (Buffer.byteLength(data) > 16_384) { request.destroy(); finish("invalid_cdp"); } });
+      response.on("end", () => {
+        try {
+          const version = JSON.parse(data); const websocket = new URL(version.webSocketDebuggerUrl); const target = new URL(endpoint);
+          finish(websocket.protocol === "ws:" && ["localhost", "127.0.0.1", "[::1]"].includes(websocket.hostname) && websocket.port === target.port && !websocket.username && !websocket.password && !websocket.search && !websocket.hash ? "ready" : "invalid_cdp");
+        } catch { finish("invalid_cdp"); }
+      });
+      response.on("error", () => finish("endpoint_unavailable"));
+    });
+    request.on("timeout", () => { request.destroy(); finish("endpoint_unavailable"); });
+    request.on("error", () => finish("endpoint_unavailable"));
+  });
+}
+
+async function readOmpBrowserModes(toolCatalog = null) {
+  let settings;
+  try { settings = JSON.parse(await runOmpConfig(["list", "--json"])); }
+  catch { return OMP_BROWSER_MODES.map((mode) => mode.id === "ego-browser" ? mode : { ...mode, status: "unavailable", reasonCode: "config_probe_error", note: "Không đọc được cấu hình browser từ OMP. Thử làm mới." }); }
+  const catalog = toolCatalog || await ompToolCatalog.read();
+  const runtimeReady = settings?.["browser.enabled"]?.value === true && settings?.["eval.js"]?.value === true && catalog.tools.some((tool) => tool.id === "eval" && tool.canToggle);
+  return Promise.all(OMP_BROWSER_MODES.map(async (mode) => {
+    if (mode.id === "ego-browser") return mode;
+    if (!runtimeReady) return { ...mode, status: "unavailable", reasonCode: "eval_browser_unavailable", note: "OMP cần browser.enabled, eval.js và công cụ eval khả dụng để dùng browser native." };
+    const relay = mode.id === "omp-browser-relay";
+    const configured = settings?.[relay ? "browser.relayUrl" : "browser.cdpUrl"]?.value;
+    if (!relay && !configured) return { ...mode, status: "unavailable", reasonCode: "cdp_not_configured", note: "Chưa cấu hình browser.cdpUrl trong OMP. Chrome/Electron cần bật CDP và cung cấp endpoint loopback." };
+    const endpoint = loopbackBrowserEndpoint(configured || "http://127.0.0.1:9224");
+    if (!endpoint) return { ...mode, status: "unavailable", reasonCode: "invalid_endpoint", note: "Endpoint browser phải là HTTP loopback, không có thông tin đăng nhập, query hoặc fragment." };
+    const probe = await probeBrowserEndpoint(endpoint);
+    const relayCanStart = relay && ["endpoint_unavailable", "extension_disconnected"].includes(probe);
+    const note = probe === "ready" ? "Kết nối CDP sẵn sàng; thao tác trình duyệt dùng chế độ phê duyệt đang chọn."
+      : probe === "extension_disconnected" && relay ? "Relay đã chạy; hãy load/bật extension OMP Browser Relay trong Chrome để kết nối."
+      : relay && probe === "endpoint_unavailable" ? "Chọn Relay cho chat mới để OMP tự khởi chạy server; extension OMP Browser Relay cần được load/bật trong Chrome."
+      : relay ? "Không kết nối được relay CDP. Kiểm tra endpoint local và extension OMP Browser Relay."
+      : "Không kết nối được CDP của Chrome/Electron. Kiểm tra ứng dụng và endpoint browser.cdpUrl.";
+    return { ...mode, status: probe === "ready" ? "supported" : "unavailable", reasonCode: probe, note, ...(probe === "ready" || relayCanStart ? { runtime: { mode: mode.id, url: endpoint } } : {}), ...(relayCanStart ? { connectOnStart: true } : {}) };
+  }));
+}
+
+async function browserRuntimeConfig(mode) {
+  if (!nativeBrowserMode(mode)) return null;
+  const definition = (await readOmpBrowserModes()).find((item) => item.id === mode);
+  if (definition?.status !== "supported" && !definition?.connectOnStart) throw Object.assign(new Error(definition?.note || "Browser chưa khả dụng."), { code: "CONFLICT", field: "browserMode" });
+  return definition.runtime;
+}
 const OMP_APPROVAL_MODES = [
   { id: "always-ask", label: "Luôn hỏi", status: "partial", default: true, note: "Chat thường chỉ bật tool đọc; Ego Browser skill có thể yêu cầu phê duyệt khi chạy thao tác browser." },
   { id: "write", label: "Chỉ hỏi thao tác nguy hiểm", status: "partial", default: false, note: "Chat thường giới hạn tool theo mức write; Ego Browser skill vẫn đi qua approval boundary." },
@@ -1562,16 +1959,23 @@ function planYoloModel(value) {
   return model;
 }
 
-async function headlessTools(approval, tools) {
+async function headlessTools(approval, tools, nativeBrowser = false) {
   if (approval === "yolo") return tools;
   const limit = HEADLESS_APPROVAL_RANK[HEADLESS_APPROVAL_LIMIT[approval]];
   const policies = new Map((await ompToolCatalog.policies(tools)).map((tool) => [tool.id, tool]));
   const allowed = tools.filter((id) => {
     const tool = policies.get(id);
-    return tool && HEADLESS_APPROVAL_RANK[tool.approval] <= limit && (approval !== "always-ask" || tool.alwaysAsk);
+    return tool && ((nativeBrowser && id === "eval") || (HEADLESS_APPROVAL_RANK[tool.approval] <= limit && (approval !== "always-ask" || tool.alwaysAsk)));
   });
   if (!allowed.length) throw Object.assign(new Error("Chế độ phê duyệt hiện tại chỉ hỗ trợ công cụ đọc trong dashboard headless."), { code: "CONFLICT" });
   return allowed;
+}
+
+async function gatewayTools(approval, mode, value) {
+  if (mode === "ego-browser") return null;
+  const tools = await selectedOmpTools(value);
+  if (nativeBrowserMode(mode) && !tools.includes("eval")) tools.push("eval");
+  return headlessTools(approval, tools, nativeBrowserMode(mode));
 }
 
 function gatewaySessionId(value, options = {}) {
@@ -1678,11 +2082,12 @@ async function gatewayLaunchConfig(body = {}) {
   const selectedPlanYolo = planYolo(body.planYolo);
   const selectedPlanYoloModel = selectedPlanYolo ? planYoloModel(body.planYoloModel || body.model) : null;
   const selectedAdvisor = advisor(body.advisor);
-  const useSkillBrowser = selectedBrowserMode === "ego-browser";
-  const selectedTools = useSkillBrowser ? null : await headlessTools(selectedApprovalMode, await selectedOmpTools(body.tools));
+  const browserConfig = await browserRuntimeConfig(selectedBrowserMode);
+  const selectedTools = await gatewayTools(selectedApprovalMode, selectedBrowserMode, body.tools);
   return {
     approvalMode: selectedApprovalMode,
     browserMode: selectedBrowserMode,
+    browserConfig,
     planYolo: selectedPlanYolo,
     planYoloModel: selectedPlanYoloModel,
     advisor: selectedAdvisor,
@@ -1710,6 +2115,7 @@ async function createGatewaySession(body) {
       planYoloModel: launch.planYoloModel,
       advisor: launch.advisor,
       tools: launch.workerTools,
+      browserConfig: launch.browserConfig,
       ompSessionId: body.ompSessionId,
     });
     const record = {
@@ -1721,6 +2127,7 @@ async function createGatewaySession(body) {
       approvalMode: launch.approvalMode,
       tools: launch.tools,
       browserMode: launch.browserMode,
+      browserConfig: launch.browserConfig,
       planYolo: launch.planYolo,
       planYoloModel: launch.planYoloModel,
       advisor: launch.advisor,
@@ -1742,7 +2149,7 @@ async function prewarmGateway(body = {}) {
   const launch = await gatewayLaunchConfig(body);
   const cwd = typeof body.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : GENERAL_CHAT_CWD;
   if (cwd === GENERAL_CHAT_CWD) await mkdir(cwd, { recursive: true, mode: 0o700 });
-  return consoleBridge.prewarm({ cwd, approvalMode: launch.approvalMode, planYolo: launch.planYolo, planYoloModel: launch.planYoloModel, advisor: launch.advisor, tools: launch.workerTools });
+  return consoleBridge.prewarm({ cwd, approvalMode: launch.approvalMode, planYolo: launch.planYolo, planYoloModel: launch.planYoloModel, advisor: launch.advisor, tools: launch.workerTools, browserConfig: launch.browserConfig });
 }
 
 function normalizedChatMetadata(value) {
@@ -1784,13 +2191,15 @@ async function writeChatMetadata(data) {
 
 async function updateChatMetadata(sessionId, patch, options = {}) {
   const touchUpdatedAt = options.touchUpdatedAt !== false;
+  const preserveUpdatedAt = options.preserveUpdatedAt === true;
   const operation = chatMetadataWrite.then(async () => {
     const data = await readChatMetadata();
     const current = data.sessions[sessionId] && typeof data.sessions[sessionId] === "object" ? data.sessions[sessionId] : {};
     const next = { ...current, ...patch };
-    if (touchUpdatedAt || !current.updatedAt) next.updatedAt = new Date().toISOString();
+    if (touchUpdatedAt || (!preserveUpdatedAt && !current.updatedAt)) next.updatedAt = new Date().toISOString();
     data.sessions[sessionId] = next;
     await writeChatMetadata(data);
+    invalidateSessionCatalog();
     return next;
   });
   chatMetadataWrite = operation.catch(() => {});
@@ -2055,21 +2464,14 @@ function chatPrompt(value) {
   if (prompt.length > MAX_CHAT_PROMPT_CHARS) throw Object.assign(new Error("prompt vượt quá giới hạn 900000 ký tự"), { code: "BAD_REQUEST", field: "prompt" });
   return prompt;
 }
-function looksLikeImageGenerationPrompt(value) {
-  const prompt = String(value || "").trim();
-  if (!prompt) return false;
-  const action = /(?:tạo|vẽ|sinh|generate|create|draw|make|redesign|transform|biến đổi)/i;
-  const image = /(?:ảnh|hình|image|picture|photo|png|jpe?g|svg|illustration|logo|poster)/i;
-  return action.test(prompt) && image.test(prompt);
-}
 function isFullCodeAuditPrompt(value) {
   const prompt = String(value || "").trim();
   return /(?:đọc|read|audit|review|kiểm tra|phân tích|analy[sz]e|inspect)/i.test(prompt)
     && /(?:toàn bộ|tất cả|entire|all)(?:\s|$|[.,:;!?])/i.test(prompt)
     && /(?:file|tệp|code|mã nguồn|dự án|project|repo(?:sitory)?)/i.test(prompt);
 }
-function longRunningChatTurn(prompt, browserMode) {
-  return browserMode === "ego-browser" || looksLikeImageGenerationPrompt(prompt) || isFullCodeAuditPrompt(prompt);
+function longRunningChatTurn(prompt, browserMode, outputMode = "text") {
+  return browserMode === "ego-browser" || outputMode === "image" || isFullCodeAuditPrompt(prompt);
 }
 
 function isImageGenerationModel(value) {
@@ -2082,15 +2484,15 @@ function imageGenerationCapability(models) {
   return { status: "unavailable", models: [], reason: "OMP chưa có model tạo ảnh native có thể trả ảnh về chat." };
 }
 
-function imageGenerationModelForPrompt(prompt, model, models) {
-  if (!looksLikeImageGenerationPrompt(prompt) || model.imageGeneration) return model;
+function imageGenerationModelForPrompt(outputMode, model, models) {
+  if (outputMode !== "image" || model.imageGeneration) return model;
   const candidate = models.find((item) => item.imageGeneration && item.provider === model.provider);
   if (candidate) return candidate;
   throw Object.assign(new Error(`Model "${model.id}" không tạo ảnh đầu ra và provider hiện tại chưa có model tạo ảnh native.`), { code: "IMAGE_GENERATION_MODEL_REQUIRED", field: "model" });
 }
 
-function imageOutputInstruction(prompt) {
-  if (!looksLikeImageGenerationPrompt(prompt)) return "";
+function imageOutputInstruction(outputMode) {
+	if (outputMode !== "image") return "";
   return "\n\n[Dashboard media contract: use the selected native image model. Return the generated image as an attachment. Do not say the image is complete unless an image attachment is returned.]";
 }
 
@@ -2100,12 +2502,17 @@ function normalizeModels(data) {
     const id = item.id || item.modelId;
     const name = item.name || item.displayName || id;
     const provider = item.provider || "OMP";
+    const explicitAvailable = item.available ?? item.canUse ?? item.availability?.available;
+    const availabilityStatus = item.availabilityStatus ?? item.availability?.status ?? (explicitAvailable === false ? "unavailable" : "available");
     const explicitImageGeneration = item.imageGeneration ?? item.capabilities?.imageGeneration ?? item.capabilities?.image_generation;
     const output = item.output ?? item.outputs ?? item.capabilities?.output ?? item.capabilities?.outputs;
     return {
       id,
       name,
       provider,
+      available: explicitAvailable !== false,
+      canUse: explicitAvailable !== false,
+      availabilityStatus,
       contextWindow: Number(item.contextWindow || item.contextLength || 0),
       isDefault: provider === LOGIN_PROVIDER && (Boolean(item.isDefault || item.default) || id === "gemini-3.8-flash"),
       imageGeneration: explicitImageGeneration === true || (Array.isArray(output) && output.includes("image")) || (explicitImageGeneration == null && isImageGenerationModel(`${id} ${name}`)),
@@ -2143,8 +2550,6 @@ function chatThinking(value) {
 function browserMode(value) {
   const mode = typeof value === "string" && value.trim() ? value.trim() : "none";
   if (!OMP_BROWSER_MODE_IDS.has(mode)) throw Object.assign(new Error("browserMode không hợp lệ"), { code: "BAD_REQUEST", field: "browserMode" });
-  const definition = OMP_BROWSER_MODES.find((item) => item.id === mode);
-  if (definition?.status === "unavailable") throw Object.assign(new Error(`Browser mode chưa khả dụng: ${mode}`), { code: "CONFLICT", field: "browserMode" });
   return mode;
 }
 
@@ -2169,13 +2574,21 @@ function normalizeChatModel(model, models, modelSource) {
     || model;
 }
 
-async function resolveChatModel(modelId, modelSource, modelProvider, sessionId, prompt = "") {
+async function resolveChatModel(modelId, modelSource, modelProvider, sessionId, prompt = "", requestedOutputMode = null) {
+  const { mode: outputMode, source: modeSource } = resolveChatOutputMode(requestedOutputMode, prompt);
   const { model: catalogModel, models } = await validateChatModel(modelId, modelProvider);
   const model = normalizeChatModel(catalogModel, models, modelSource);
+  const quotaCheckStartedAt = Date.now();
   const requestedModel = modelSource === "quota"
     ? await assertQuotaModelAllowed(modelId, models, modelProvider, sessionId)
     : await assertGoogleQuotaModelAllowed(model, models, modelProvider, sessionId);
-  return { requestedModel, model: imageGenerationModelForPrompt(prompt, requestedModel, models) };
+  return {
+    requestedModel,
+    model: imageGenerationModelForPrompt(outputMode, requestedModel, models),
+    outputMode,
+    modeSource,
+    quotaCheckMs: Date.now() - quotaCheckStartedAt,
+  };
 }
 
 async function assertQuotaModelAllowed(modelId, models = null, requestedProvider = null, sessionId = null) {
@@ -2212,7 +2625,7 @@ function observeChatRequest(requestId, sessionId, startedAt, status, error, timi
   const record = { requestId, sessionId, status, durationMs: Math.max(0, Date.now() - startedAt) };
   if (error) record.errorCode = error.code || "INTERNAL_SERVER_ERROR";
   if (timings) Object.assign(record, timings);
-  console.info(`[chat-request] ${JSON.stringify(record)}`);
+  void logEvent(status === "error" ? "error" : "info", "chat_request", record);
 }
 
 function shortAge(timestamp, now = Date.now()) {
@@ -2509,6 +2922,34 @@ async function persistedChatSessionPath(sessionId) {
   catch { throw new Error("Không tìm thấy session OMP"); }
 }
 
+async function readPersistedContextUsage(sessionId) {
+  const file = await persistedChatSessionPath(sessionId);
+  const lines = (await readFile(file, "utf8")).split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    let record;
+    try { record = JSON.parse(lines[index]); } catch { continue; }
+    const message = record.type === "message" && record.message?.role === "assistant" ? record.message : null;
+    const usage = message?.usage;
+    if (!usage || !message.model) continue;
+    const token = (value) => Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : 0;
+    const values = [usage.input, usage.output, usage.cacheRead, usage.cacheWrite, usage.totalTokens];
+    if (!values.some((value) => value != null && Number.isFinite(Number(value)))) continue;
+    const input = token(usage.input);
+    const output = token(usage.output);
+    const cacheRead = token(usage.cacheRead);
+    const cacheWrite = token(usage.cacheWrite);
+    const createdAt = record.timestamp || message.completedAt || message.timestamp;
+    return {
+      provider: message.provider || null,
+      model: message.model,
+      used: input + cacheRead + cacheWrite,
+      usage: { input, output, total: token(usage.totalTokens) || input + output + cacheRead + cacheWrite },
+      updatedAt: Number.isFinite(Date.parse(createdAt || "")) ? new Date(createdAt).toISOString() : null,
+    };
+  }
+  return null;
+}
+
 function chatMediaFile(sessionId) {
   const key = createHash("sha256").update(String(sessionId || "")).digest("hex").slice(0, 32);
   return join(CHAT_MEDIA_ROOT, `${key}.json`);
@@ -2701,9 +3142,29 @@ function chatSessionView(session) {
   const updatedAt = session.updatedAt || session.createdAt || new Date().toISOString();
   const folderId = typeof session.folderId === "string" && session.folderId ? session.folderId : "";
   const folderName = typeof session.folderName === "string" && session.folderName ? session.folderName : "";
+  const isOpenDesignCwd = withinRoot(OPEN_DESIGN_APP_CWD_ROOT, session.cwd);
+  const originAppName = typeof session.originApp === "string" ? session.originApp.trim() : "";
+  const declaredOriginType = ["chat", "app", "omp", "unknown"].includes(session.originType) ? session.originType : "";
+  let originType = declaredOriginType || "unknown";
+  let originConfidence = ["explicit", "declared", "engine", "inferred", "manual"].includes(session.originConfidence)
+    ? session.originConfidence
+    : "unknown";
+  if (originType === "app" && !originAppName) {
+    originType = "unknown";
+    originConfidence = "unknown";
+  } else if (!declaredOriginType && isOpenDesignCwd) {
+    originType = "app";
+    originConfidence = "inferred";
+  }
+  const originApp = originType === "app"
+    ? (originAppName || "Open Design")
+    : "";
   return {
     id: session.id,
     ...(typeof session.cwd === "string" && session.cwd ? { cwd: session.cwd } : {}),
+    originType,
+    ...(originApp ? { originApp } : {}),
+    originConfidence,
     title: session.title || "Phiên làm việc mới",
     ...(Number.isFinite(Number(session.messageCount)) ? { messageCount: Number(session.messageCount), hasMessages: Number(session.messageCount) > 0 } : {}),
     isPinned: Boolean(session.isPinned),
@@ -2725,11 +3186,14 @@ function chatSessionFolderFields(metadata, stored, cached) {
   return {};
 }
 
-async function listChatSessions() {
+async function refreshChatSessionCatalog() {
   const result = await Promise.race([
-    consoleBridge.listSessions(),
+    consoleBridge.listSessions(process.env.OMP_DASHBOARD_WORKSPACE || GENERAL_CHAT_CWD),
     new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error("OMP session catalog không phản hồi trong 8 giây"), { code: "UPSTREAM_TIMEOUT" })), 8000)),
-  ]);
+  ]).catch((error) => {
+    void logEvent("warn", "omp_session_catalog_unavailable", { code: error.code || "UPSTREAM_ERROR" });
+    return { sessions: [] };
+  });
   const metadata = await readChatMetadata();
   const aliasesByPath = new Map(Object.entries(metadata.sessions)
     .filter(([, value]) => value?.path && withinRoot(OMP_SESSION_ROOT, value.path))
@@ -2742,7 +3206,7 @@ async function listChatSessions() {
     const persisted = await readPersistedChatSession(item.sessionId).catch(() => null);
     if (!persisted) return null;
     const current = chatSessionMeta.get(item.sessionId) || {};
-    chatSessionMeta.set(item.sessionId, { ...current, path: persisted.path, title: current.title || persisted.title, messageCount: persisted.messages.length, createdAt: current.createdAt || persisted.createdAt, updatedAt: current.updatedAt || persisted.updatedAt });
+    chatSessionMeta.set(item.sessionId, { ...current, path: persisted.path, cwd: persisted.cwd || current.cwd, title: current.title || persisted.title, messageCount: persisted.messages.length, createdAt: current.createdAt || persisted.createdAt, updatedAt: current.updatedAt || persisted.updatedAt });
     return [item.sessionId, persisted];
   }))).filter(Boolean));
   const sessions = [];
@@ -2758,10 +3222,14 @@ async function listChatSessions() {
       .map(Number).filter(Number.isFinite);
     const messageCount = counts.length ? Math.max(...counts) : undefined;
     if (stored.deleted || stored.archived) continue;
+    const catalogOrigin = sessionOriginFromCatalogItem(item);
+    const storedOriginIsAuthoritative = ["explicit", "declared", "manual"].includes(stored.originConfidence);
     sessions.push(chatSessionView({
       id: displayId,
       ...stored,
+      ...(!storedOriginIsAuthoritative ? catalogOrigin : {}),
       ...chatSessionFolderFields(metadata, stored, cached),
+      cwd: item.cwd || persisted?.cwd || stored.cwd || cached?.cwd,
       title: stored.title || cached?.title || persisted?.title || item.title || "Phiên làm việc mới",
       messageCount,
       createdAt: cached?.createdAt || stored.createdAt || persisted?.createdAt || updatedAt,
@@ -2805,7 +3273,156 @@ async function listChatSessions() {
     }));
     represented.add(id);
   }
+  await autoAssignAppSessionFolders(sessions);
   return sessions.sort((a, b) => Number(b.isPinned) - Number(a.isPinned) || String(b.updatedAt).localeCompare(String(a.updatedAt)));
+}
+
+function invalidateSessionCatalog() {
+  sessionCatalogRevision += 1;
+}
+
+async function listChatSessions() {
+  while (!sessionCatalogCache || sessionCatalogCacheRevision !== sessionCatalogRevision) {
+    if (!sessionCatalogRefresh) {
+      const revision = sessionCatalogRevision;
+      const refresh = refreshChatSessionCatalog().then((sessions) => {
+        sessionCatalogCache = sessions;
+        sessionCatalogCacheRevision = revision;
+        return sessions;
+      });
+      sessionCatalogRefresh = refresh;
+      void refresh.finally(() => {
+        if (sessionCatalogRefresh === refresh) sessionCatalogRefresh = null;
+      }).catch(() => {});
+    }
+    await sessionCatalogRefresh;
+  }
+  return sessionCatalogCache;
+}
+
+function sessionOriginFromCatalogItem(item) {
+  const source = item?._meta || {};
+  const type = ["app", "omp", "unknown"].includes(source.originType) ? source.originType : "";
+  if (!type) return {};
+  const app = typeof source.originApp === "string" ? source.originApp.trim().slice(0, 80) : "";
+  return {
+    originType: type,
+    ...(type === "app" && app ? { originApp: app } : {}),
+    originConfidence: type === "app" ? "declared" : type === "unknown" ? "unknown" : "engine",
+  };
+}
+
+function automaticFolderName(value) {
+  return String(value || "").normalize("NFC").replace(/[^\p{L}\p{N} _().-]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 120).trim();
+}
+
+async function autoAssignAppSessionFolders(sessions) {
+  const candidates = sessions.filter((session) => session.originType === "app" && !session.folderId && !session.folderName);
+  if (!candidates.length) return;
+  const operation = chatMetadataWrite.then(async () => {
+    const metadata = await readChatMetadata();
+    const assignments = new Map();
+    let changed = false;
+    for (const session of candidates) {
+      const stored = metadata.sessions[session.id] && typeof metadata.sessions[session.id] === "object" ? metadata.sessions[session.id] : {};
+      if ((stored.originType && stored.originType !== "app") || stored.deleted || stored.archived || hasSessionFolderMetadata(stored)) continue;
+      const appName = String(session.originApp || "Ứng dụng ngoài").trim();
+      const cwd = typeof session.cwd === "string" ? session.cwd : "";
+      const folders = Object.values(metadata.folders).filter((folder) => folder && typeof folder.id === "string" && typeof folder.name === "string");
+      let folder = cwd
+        ? folders.filter((item) => item.cwd && withinRoot(item.cwd, cwd)).sort((a, b) => b.cwd.length - a.cwd.length)[0]
+        : null;
+      folder ||= folders.find((item) => chatFolderKey(item.name) === chatFolderKey(appName));
+      let workspaceCwd = "";
+      if (!folder && cwd) workspaceCwd = await consoleBridge.validateWorkspaceDirectory(cwd).catch(() => "");
+      if (!folder) {
+        const baseName = automaticFolderName(workspaceCwd ? basename(workspaceCwd) : appName);
+        if (!baseName) continue;
+        let name = baseName;
+        for (let suffix = 2; folders.some((item) => chatFolderKey(item.name) === chatFolderKey(name)); suffix++) {
+          name = automaticFolderName(`${baseName} (${suffix})`);
+        }
+        const now = new Date().toISOString();
+        folder = {
+          id: `folder-${randomUUID()}`,
+          name,
+          ...(workspaceCwd ? { cwd: workspaceCwd } : {}),
+          createdAt: now,
+          updatedAt: now,
+        };
+        metadata.folders[folder.id] = folder;
+      }
+      const fields = { folderId: folder.id, folderName: folder.name };
+      metadata.sessions[session.id] = {
+        ...stored,
+        originType: "app",
+        originApp: appName,
+        originConfidence: stored.originConfidence || session.originConfidence || "inferred",
+        ...(cwd ? { cwd } : {}),
+        ...(session.path ? { path: session.path } : {}),
+        ...fields,
+      };
+      assignments.set(session.id, fields);
+      changed = true;
+    }
+    if (changed) await writeChatMetadata(metadata);
+    return assignments;
+  });
+  chatMetadataWrite = operation.catch(() => {});
+  const assignments = await operation;
+  for (const session of candidates) Object.assign(session, assignments.get(session.id) || {});
+}
+
+function broadcastSessionCatalogChanged() {
+  for (const [res, heartbeat] of sessionEventClients) {
+    try { res.write("event: sessions_changed\ndata: {}\n\n"); }
+    catch { clearInterval(heartbeat); sessionEventClients.delete(res); }
+  }
+}
+
+function scheduleSessionCatalogRefresh() {
+  invalidateSessionCatalog();
+  if (sessionCatalogRefreshTimer) clearTimeout(sessionCatalogRefreshTimer);
+  sessionCatalogRefreshTimer = setTimeout(async () => {
+    sessionCatalogRefreshTimer = null;
+    await listChatSessions().catch(() => {});
+    broadcastSessionCatalogChanged();
+  }, 350);
+  sessionCatalogRefreshTimer.unref?.();
+}
+
+function retryOmpSessionWatcher(watcher) {
+  if (ompSessionWatcher !== watcher) return;
+  ompSessionWatcher = null;
+  watcher.close();
+  if (ompSessionWatcherRetry) return;
+  ompSessionWatcherRetry = setTimeout(() => {
+    ompSessionWatcherRetry = null;
+    startOmpSessionWatcher();
+  }, 5000);
+  ompSessionWatcherRetry.unref?.();
+}
+
+function startOmpSessionWatcher() {
+  if (ompSessionWatcher) return;
+  try {
+    const watcher = watchFs(OMP_SESSION_ROOT, { recursive: true }, (eventType, filename) => {
+      if (eventType !== "rename") return;
+      const changedFile = filename == null ? "" : String(filename);
+      if (changedFile && !changedFile.endsWith(".jsonl")) return;
+      scheduleSessionCatalogRefresh();
+    });
+    ompSessionWatcher = watcher;
+    watcher.on("error", () => retryOmpSessionWatcher(watcher));
+    watcher.on("close", () => retryOmpSessionWatcher(watcher));
+  } catch {
+    if (ompSessionWatcherRetry) return;
+    ompSessionWatcherRetry = setTimeout(() => {
+      ompSessionWatcherRetry = null;
+      startOmpSessionWatcher();
+    }, 5000);
+    ompSessionWatcherRetry.unref?.();
+  }
 }
 
 async function waitGatewayReady(record, timeoutMs = 15000) {
@@ -2850,6 +3467,7 @@ async function ensureChatSessionUnlocked(sessionId, body = {}, { requireExisting
   const hasBrowserMode = typeof body.browserMode === "string";
   const selectedBrowserMode = hasBrowserMode ? browserMode(body.browserMode) : null;
   const useSkillBrowser = selectedBrowserMode === "ego-browser";
+  const browserConfig = hasBrowserMode ? await browserRuntimeConfig(selectedBrowserMode) : record?.browserConfig || null;
   const requestedApprovalMode = body.approvalMode ? approvalMode(body.approvalMode) : null;
   const selectedApprovalMode = requestedApprovalMode || record?.approvalMode || approvalMode(stored.approvalMode);
   const hasPlanYolo = Object.hasOwn(body, "planYolo");
@@ -2860,9 +3478,10 @@ async function ensureChatSessionUnlocked(sessionId, body = {}, { requireExisting
   const requestedTools = hasBrowserMode && useSkillBrowser
     ? null
     : body.tools == null
-      ? (hasBrowserMode && record?.tools == null ? await headlessTools(selectedApprovalMode, await selectedOmpTools(stored.tools)) : null)
-      : await headlessTools(selectedApprovalMode, await selectedOmpTools(body.tools));
-  const browserContextChanged = Boolean(record && hasBrowserMode && ((useSkillBrowser && record.tools !== null) || (!useSkillBrowser && record.tools === null)));
+      ? (hasBrowserMode && record?.tools == null ? await gatewayTools(selectedApprovalMode, selectedBrowserMode, stored.tools) : null)
+      : await gatewayTools(selectedApprovalMode, selectedBrowserMode || record?.browserMode, body.tools);
+  const browserContextChanged = Boolean(record && hasBrowserMode && ((record.browserMode || "none") !== (selectedBrowserMode || "none") || JSON.stringify(record.browserConfig || null) !== JSON.stringify(browserConfig) || (useSkillBrowser && record.tools !== null) || (!useSkillBrowser && record.tools === null)));
+  if (browserContextChanged && (nativeBrowserMode(selectedBrowserMode) || nativeBrowserMode(record.browserMode)) && contextHasChatWork(record.contextId)) throw Object.assign(new Error("Dừng lượt đang chạy/chờ trước khi đổi browser native hoặc endpoint CDP."), { code: "CONFLICT", field: "browserMode" });
   if (record && ((requestedApprovalMode && record.approvalMode !== requestedApprovalMode) || (hasPlanYolo && (record.planYolo !== selectedPlanYolo || record.planYoloModel !== selectedPlanYoloModel)) || (hasAdvisor && record.advisor !== selectedAdvisor) || (requestedTools && JSON.stringify(record.tools || []) !== JSON.stringify(requestedTools)) || browserContextChanged) && !contextHasChatWork(record.contextId)) {
     await consoleBridge.stop(record.contextId);
     gatewaySessions.delete(id);
@@ -3195,7 +3814,8 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
   const thinking = options.thinking;
   const selectedBrowserMode = options.browserMode;
   const modelProvider = typeof options.modelProvider === "string" ? options.modelProvider : null;
-  const expectsGeneratedImage = looksLikeImageGenerationPrompt(prompt);
+  const outputMode = options.outputMode || resolveChatOutputMode(null, prompt).mode;
+  const expectsGeneratedImage = outputMode === "image";
   const startedAt = Date.now();
   if (activeMemoryOperations.has(record.contextId)) throw Object.assign(new Error("Đang xử lý lệnh Memory trong session này."), { code: "CONFLICT" });
   record.updatedAt = startedAt;
@@ -3205,6 +3825,7 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
   const persistUserMessage = () => {
     if (userMessagePersisted) return;
     userMessagePersisted = true;
+    if (options.persistMessages === false) return;
     appendChatMessage(sessionId, { id: `msg-${startedAt}`, role: "user", content: prompt, attachments, createdAt: new Date(startedAt).toISOString() });
   };
   let reply = "";
@@ -3237,7 +3858,7 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
     failTurn = (error) => finish(reject, error);
     resetTurnTimeout = () => {
       if (timeout) clearTimeout(timeout);
-      timeout = setTimeout(() => finish(reject, Object.assign(new Error("OMP không trả lời trong thời gian cho phép"), { code: "UPSTREAM_TIMEOUT" })), chatTurnTimeoutMs(prompt, selectedBrowserMode));
+      timeout = setTimeout(() => finish(reject, Object.assign(new Error("OMP không trả lời trong thời gian cho phép"), { code: "UPSTREAM_TIMEOUT" })), chatTurnTimeoutMs(prompt, selectedBrowserMode, outputMode));
     };
     active.abort = () => {
       if (active.promptDispatched) return;
@@ -3256,7 +3877,10 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
       if (failure) return finish(reject, Object.assign(new Error(failure.message), { code: failure.code }));
       const text = frameAssistantText(frame);
       assistantAttachments = mergeChatAttachments(assistantAttachments, frameAssistantAttachments(frame));
-      if (frame.type === "message_update" && frame.assistantMessageEvent?.type === "text_delta") reply += text;
+      if (frame.type === "message_update" && frame.assistantMessageEvent?.type === "text_delta") {
+        reply += text;
+        options.onTextDelta?.(text);
+      }
       if (frame.type === "message_end" && frame.message?.role === "assistant") { assistantMessage = frame.message; reply = chatMessageText(frame.message) || reply; }
       if (frame.type === "agent_end" && frame.isTerminal !== false) {
         if (active.abortRequested) {
@@ -3269,7 +3893,7 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
         for (const block of chatBodyBlocksFromMessage(assistantMessage, requestId)) mergeChatBodyBlock(bodyBlocks, block);
         const fileChanges = await finalizeFileChangeTracker(fileChangeTracker);
         const message = { id: `msg-${Date.now()}`, role: "assistant", content: reply || chatMessageText(assistantMessage), model: assistantMessage?.model || model || "neural-flash-3.8", createdAt: new Date().toISOString(), ...(bodyBlocks.length ? { body: bodyBlocks } : {}), ...(assistantAttachments.length ? { attachments: assistantAttachments } : {}), ...(fileChanges ? { fileChanges: fileChangeView(fileChanges) } : {}), ...(assistantMessage?.usage?.total ? { totalTokens: assistantMessage.usage.total } : {}) };
-        appendChatMessage(sessionId, message);
+        if (options.persistMessages !== false) appendChatMessage(sessionId, message);
         finish(resolve, message);
       }
     });
@@ -3303,8 +3927,8 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
             if (finished || currentSafety.blocked || currentWaitMs > 0) return;
             const images = attachments.filter((item) => item.data && /^image\//.test(item.type)).map((item) => item.data);
             const attachmentContext = attachments.filter((item) => item.text).map((item) => `\n\n[Attached file: ${item.name}]\n${item.text}`).join("");
-            const outboundMessage = `${browserPrompt(prompt, selectedBrowserMode, images.length > 0)}${attachmentContext}${imageOutputInstruction(prompt)}`;
-            consoleBridge.send(record.contextId, { id: `model-${startedAt}`, type: "set_model", ...(modelProvider ? { provider: modelProvider } : {}), modelId: model });
+            const outboundMessage = `${browserPrompt(prompt, selectedBrowserMode, images.length > 0)}${attachmentContext}${imageOutputInstruction(outputMode)}`;
+            if (options.skipModelSelection !== true) consoleBridge.send(record.contextId, { id: `model-${startedAt}`, type: "set_model", ...(modelProvider ? { provider: modelProvider } : {}), modelId: model });
             if (thinking) consoleBridge.send(record.contextId, { id: `thinking-${startedAt}`, type: "set_thinking_level", level: thinking });
             consoleBridge.send(record.contextId, { id: `prompt-${startedAt}`, type: "prompt", message: outboundMessage, ...(images.length ? { images } : {}) });
             promptDispatched = true;
@@ -3421,7 +4045,6 @@ async function pinGeminiSession(record, sessionId, account) {
   const id = gatewaySessionId(sessionId);
   if (record.sessionId !== id) throw Object.assign(new Error("OMP session ID không khớp chat đang ghim"), { code: "CONFLICT" });
   const accountId = quotaAccountId(account);
-  if (record.geminiAccountId === accountId) return account;
   if (contextHasChatWork(record.contextId)) throw Object.assign(new Error("Không thể ghim account Gemini khi session đang có lượt chạy"), { code: "CONFLICT" });
   let available;
   try { available = await queryGatewayResponse(record, { type: "get_available_commands" }); }
@@ -3674,22 +4297,40 @@ function agentHubSnapshot(data) {
 
 async function availableModels() {
   if (Date.now() - availableModelsCache.loadedAt < 300000 && availableModelsCache.items.length) return availableModelsCache.items;
-  let record = [...gatewaySessions.keys()].map(liveGatewayRecord).find(Boolean);
-  let temporary = false;
-  if (!record) {
-    const id = `models-${randomUUID()}`;
-    await createGatewaySession({ sessionId: id });
-    record = liveGatewayRecord(id);
-    temporary = true;
+  if (availableModelsLoading) {
+    void logEvent("debug", "available_models_cache_wait", {});
+    return availableModelsLoading;
   }
-  try {
-    const models = normalizeModels(await queryGatewayResponse(record, { type: "get_available_models" }));
-    if (!models.length) throw Object.assign(new Error("OMP không công bố model khả dụng"), { code: "UPSTREAM_UNAVAILABLE" });
-    availableModelsCache = { loadedAt: Date.now(), items: models };
-    return models;
-  } finally {
-    if (temporary) { await consoleBridge.stop(record.contextId).catch(() => {}); gatewaySessions.delete(record.sessionId); }
-  }
+  availableModelsLoading = (async () => {
+    let record = [...gatewaySessions.keys()].map(liveGatewayRecord).find(Boolean);
+    let temporary = false;
+    if (!record) {
+      const id = `models-${randomUUID()}`;
+      const context = await consoleBridge.start({ protocol: "rpc", approvalMode: "always-ask", tools: ["read"] });
+      record = {
+        sessionId: id,
+        protocol: "rpc",
+        contextId: context.id,
+        cwd: context.cwd,
+        approvalMode: "always-ask",
+        tools: ["read"],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      gatewaySessions.set(id, record);
+      temporary = true;
+    }
+    try {
+      const models = normalizeModels(await queryGatewayResponse(record, { type: "get_available_models" }));
+      if (!models.length) throw Object.assign(new Error("OMP không công bố model khả dụng"), { code: "UPSTREAM_UNAVAILABLE" });
+      availableModelsCache = { loadedAt: Date.now(), items: models };
+      return models;
+    } finally {
+      if (temporary) { await consoleBridge.stop(record.contextId).catch(() => {}); gatewaySessions.delete(record.sessionId); }
+    }
+  })();
+  try { return await availableModelsLoading; }
+  finally { availableModelsLoading = null; }
 }
 
 function chatError(res, error) {
@@ -3731,13 +4372,16 @@ async function sessionAction(sessionId, req, providedBody = null) {
   const body = providedBody || await jsonBody(req);
   if (!body || Array.isArray(body) || typeof body !== "object") throw Object.assign(new Error("Payload phải là object JSON."), { code: "BAD_REQUEST" });
   const action = String(body.action || "").trim().toLowerCase();
-  if (!["rename", "pin", "unpin", "unread", "read", "mark_unread", "mark_read", "archive", "delete", "fork", "duplicate", "reconnect", "resume_queue", "steer", "follow_up", "share", "tools", "assign_folder", "unassign_folder"].includes(action)) throw Object.assign(new Error("action không được hỗ trợ"), { code: "BAD_REQUEST", field: "action" });
+  if (!["rename", "pin", "unpin", "unread", "read", "mark_unread", "mark_read", "archive", "delete", "fork", "duplicate", "reconnect", "resume_queue", "steer", "follow_up", "share", "tools", "assign_folder", "unassign_folder", "set_origin", "compact"].includes(action)) throw Object.assign(new Error("action không được hỗ trợ"), { code: "BAD_REQUEST", field: "action" });
   const id = gatewaySessionId(sessionId);
   const metadata = await readChatMetadata();
   const current = metadata.sessions[id] || {};
   let record = liveGatewayRecord(id);
   const persisted = await readPersistedChatSession(id).catch(() => null);
-  if (!record && !persisted) throw Object.assign(new Error("Không tìm thấy session OMP"), { code: "NOT_FOUND" });
+  const metadataOnlyAction = ["rename", "pin", "unpin", "unread", "read", "mark_unread", "mark_read", "assign_folder", "unassign_folder", "set_origin"].includes(action);
+  if (!record && !persisted && !(metadataOnlyAction && Object.hasOwn(metadata.sessions, id) && !current.deleted && !current.archived)) {
+    throw Object.assign(new Error("Không tìm thấy session OMP"), { code: "NOT_FOUND" });
+  }
   let patch = {};
   if (action === "assign_folder") {
     const folderId = chatFolderId(body.folderId);
@@ -3746,11 +4390,18 @@ async function sessionAction(sessionId, req, providedBody = null) {
     patch = { folderId: folder.id, folderName: folder.name };
   } else if (action === "unassign_folder") {
     patch = { folderId: null, folderName: null };
+  } else if (action === "set_origin") {
+    const originType = String(body.originType || "").trim().toLowerCase();
+    if (!["chat", "app", "omp", "unknown"].includes(originType)) throw Object.assign(new Error("originType không được hỗ trợ"), { code: "BAD_REQUEST", field: "originType" });
+    const originApp = body.originApp == null ? "" : typeof body.originApp === "string" ? body.originApp.trim() : "";
+    if (originType === "app" && (!originApp || originApp.length > 80)) throw Object.assign(new Error("originApp phải có từ 1 đến 80 ký tự"), { code: "BAD_REQUEST", field: "originApp" });
+    patch = { originType, originConfidence: "manual", originApp: originType === "app" ? originApp : null };
   } else if (action === "tools") {
     const selectedChatModel = record?.selectedChatModel || null;
-    const tools = await headlessTools(record?.approvalMode || approvalMode(current.approvalMode), await selectedOmpTools(body.tools));
+    const savedBrowserMode = record?.browserMode || current.browserMode || "none";
+    const tools = await gatewayTools(record?.approvalMode || approvalMode(current.approvalMode), savedBrowserMode, body.tools);
     if (!record) {
-      await ensureChatSession(id, { tools, approvalMode: current.approvalMode, planYolo: current.planYolo === true, planYoloModel: current.planYoloModel, advisor: current.advisor === true });
+      await ensureChatSession(id, { tools, browserMode: savedBrowserMode, approvalMode: current.approvalMode, planYolo: current.planYolo === true, planYoloModel: current.planYoloModel, advisor: current.advisor === true });
       record = liveGatewayRecord(id);
       if (record) record.selectedChatModel = selectedChatModel;
     } else {
@@ -3759,7 +4410,7 @@ async function sessionAction(sessionId, req, providedBody = null) {
       const sourcePath = current.path || (await readPersistedChatSession(id).catch(() => null))?.path;
       await consoleBridge.stop(record.contextId);
       gatewaySessions.delete(id);
-      await createGatewaySession({ sessionId: id, cwd: summary.cwd, approvalMode: record.approvalMode, planYolo: record.planYolo === true, planYoloModel: record.planYoloModel, advisor: record.advisor === true, tools });
+      await createGatewaySession({ sessionId: id, cwd: summary.cwd, approvalMode: record.approvalMode, browserMode: savedBrowserMode, planYolo: record.planYolo === true, planYoloModel: record.planYoloModel, advisor: record.advisor === true, tools });
       const nextRecord = liveGatewayRecord(id);
       if (nextRecord) nextRecord.selectedChatModel = selectedChatModel;
       if (sourcePath) await queryGatewayResponse(nextRecord, { type: "switch_session", sessionPath: sourcePath });
@@ -3781,10 +4432,11 @@ async function sessionAction(sessionId, req, providedBody = null) {
     const savedPlanYolo = record?.planYolo === true || current.planYolo === true;
     const savedPlanYoloModel = record?.planYoloModel || current.planYoloModel;
     const savedAdvisor = record?.advisor === true || current.advisor === true;
+    const savedBrowserMode = record?.browserMode || current.browserMode || "none";
     const savedTools = Array.isArray(record?.tools) ? record.tools : current.tools;
     const cwd = summary?.cwd || persisted?.cwd;
     if (record) { await consoleBridge.stop(record.contextId); gatewaySessions.delete(id); }
-    const nextRecord = await ensureChatSession(id, { cwd, approvalMode: savedApprovalMode, planYolo: savedPlanYolo, advisor: savedAdvisor, ...(savedPlanYolo ? { planYoloModel: savedPlanYoloModel } : {}), ...(Array.isArray(savedTools) ? { tools: savedTools } : {}) });
+    const nextRecord = await ensureChatSession(id, { cwd, browserMode: savedBrowserMode, approvalMode: savedApprovalMode, planYolo: savedPlanYolo, advisor: savedAdvisor, ...(savedPlanYolo ? { planYoloModel: savedPlanYoloModel } : {}), ...(Array.isArray(savedTools) ? { tools: savedTools } : {}) });
     const stored = await updateChatMetadata(id, { reconnectedAt: new Date().toISOString() }, { touchUpdatedAt: false });
     return { success: true, action, sessionId: id, status: "ready", metadata: stored, context: consoleBridge.publicSummary(nextRecord.contextId) };
   } else if (action === "resume_queue") {
@@ -3821,6 +4473,13 @@ async function sessionAction(sessionId, req, providedBody = null) {
     appendChatMessage(id, { id: `msg-${Date.now()}`, role: "user", content: message, attachments, createdAt: new Date().toISOString() });
     record.updatedAt = Date.now();
     return { success: true, action, sessionId: id, requestId: activeRequest.requestId, status: "follow_up_sent", queuedTurns: activeRequest.pendingTurns };
+  } else if (action === "compact") {
+    record = record || await ensureChatSession(id, {}, { requireExisting: true });
+    if (contextHasChatWork(record.contextId)) throw Object.assign(new Error("Không thể compact khi session đang chạy hoặc có hàng chờ."), { code: "CONFLICT" });
+    const context = consoleBridge.get(record.contextId).summary();
+    if (context.protocol === "acp" && !context.compactSupported) throw Object.assign(new Error("OMP chưa công bố lệnh /compact cho session này."), { code: "UNSUPPORTED_ACTION" });
+    await consoleBridge.send(record.contextId, { id: `compact-${Date.now()}`, type: "compact" });
+    return { success: true, action, sessionId: id, status: "completed" };
   } else if (action === "rename") {
     const title = String(body.title ?? body.name ?? "").trim();
     if (!title || title.length > 200) throw Object.assign(new Error("title phải có 1-200 ký tự"), { code: "BAD_REQUEST", field: "title" });
@@ -3861,6 +4520,9 @@ async function sessionAction(sessionId, req, providedBody = null) {
           parentSessionId: id,
           path: childPath,
           cwd,
+          originType: "chat",
+          originApp: "Hòn π /chat",
+          originConfidence: "explicit",
           ompSessionId: childId,
           approvalMode: target.approvalMode,
           planYolo: target.planYolo === true,
@@ -3881,6 +4543,7 @@ async function sessionAction(sessionId, req, providedBody = null) {
           planYoloModel: target.planYoloModel || null,
           tools: target.tools,
           browserMode: target.browserMode,
+          browserConfig: target.browserConfig,
           createdAt: timestamp,
           updatedAt: timestamp,
         };
@@ -3905,7 +4568,7 @@ async function sessionAction(sessionId, req, providedBody = null) {
     const childId = gatewaySessionId(child.sessionId);
     const title = `${current.title || "Phiên làm việc mới"} · ${action === "duplicate" ? "Bản sao" : "Fork"}`;
     const childPath = await findSessionPath(childId).catch(() => null);
-    const stored = await updateChatMetadata(childId, { title, parentSessionId: id, path: childPath, cwd: child.cwd || targetSummary.cwd, createdAt: new Date().toISOString() });
+    const stored = await updateChatMetadata(childId, { title, parentSessionId: id, path: childPath, cwd: child.cwd || targetSummary.cwd, originType: "chat", originApp: "Hòn π /chat", originConfidence: "explicit", createdAt: new Date().toISOString() });
     if (sourcePath) consoleBridge.send(target.contextId, { id: `switch-back-${Date.now()}`, type: "switch_session", sessionPath: sourcePath });
     return { success: true, action, sessionId: id, forkSession: chatSessionView({ id: childId, title, createdAt: stored.createdAt, updatedAt: stored.updatedAt }), status: "ready" };
   } else if (action === "share") {
@@ -3921,7 +4584,7 @@ async function sessionAction(sessionId, req, providedBody = null) {
     const stored = await updateChatMetadata(id, { path: sourcePath, sharedAt: new Date().toISOString(), shareStatus: "ready", shareMode, shareUrl }, { touchUpdatedAt: false });
     return { success: true, action, sessionId: id, metadata: stored, status: "ready", shareMode, shareUrl };
   }
-  const stored = await updateChatMetadata(id, patch, { touchUpdatedAt: false });
+  const stored = await updateChatMetadata(id, patch, { touchUpdatedAt: false, preserveUpdatedAt: action === "set_origin" });
   const session = chatSessionView({ id, ...persisted, ...stored, createdAt: persisted?.createdAt || stored.createdAt || Date.now(), updatedAt: stored.updatedAt || persisted?.updatedAt || Date.now() });
   return { success: true, action, sessionId: id, session, metadata: stored };
 }
@@ -3939,11 +4602,10 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
   const thinking = chatThinking(value("thinking"));
   const selectedBrowserMode = browserMode(value("browserMode"));
   const selectedApprovalMode = approvalMode(value("approvalMode"));
+  const requestedOutputMode = value("outputMode");
   const modelValidationStartedAt = Date.now();
-  const { requestedModel: model, model: selectedModel } = await resolveChatModel(requestedModel, modelSource, modelProvider, sessionId, prompt);
+  const { requestedModel: model, model: selectedModel, outputMode, modeSource, quotaCheckMs } = await resolveChatModel(requestedModel, modelSource, modelProvider, sessionId, prompt, requestedOutputMode);
   const modelValidationMs = Date.now() - modelValidationStartedAt;
-  const quotaCheckStartedAt = Date.now();
-  const quotaCheckMs = Date.now() - quotaCheckStartedAt;
   const attachments = normalizeChatAttachments(input?.attachments, { rejectInvalid: true });
   if (activeChatRequests.has(requestId)) throw Object.assign(new Error("requestId đang được xử lý"), { code: "CONFLICT" });
   const sessionReadyStartedAt = Date.now();
@@ -3956,6 +4618,16 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
   }
   const sessionReadyMs = Date.now() - sessionReadyStartedAt;
   const timings = { preflightMs: Date.now() - requestedAt, modelValidationMs, quotaCheckMs, sessionReadyMs, modelSelectionMs: 0 };
+  void logEvent("debug", "chat_preflight_complete", {
+    requestId,
+    sessionId,
+    model: selectedModel.id,
+    provider: selectedModel.provider,
+    modelSource,
+    outputMode,
+    modeSource,
+    timings,
+  });
   res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-store", connection: "keep-alive" });
   const sendEvent = (event, payload) => { if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`); };
   const startedAt = Date.now();
@@ -3968,10 +4640,10 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
     userMessagePersisted = true;
     appendChatMessage(sessionId, { id: `msg-${startedAt}`, role: "user", content: prompt, attachments, createdAt: new Date(startedAt).toISOString() });
   };
-  const activityTimeoutMs = chatTurnTimeoutMs(prompt, selectedBrowserMode);
+  const activityTimeoutMs = chatTurnTimeoutMs(prompt, selectedBrowserMode, outputMode);
   const longRunning = activityTimeoutMs > CHAT_TURN_TIMEOUT_MS;
-  sendEvent("start", { requestId, sessionId, model: selectedModel.id, imageModelAutoSelected: selectedModel.id !== model.id || selectedModel.provider !== model.provider, activityTimeoutSeconds: Math.ceil(activityTimeoutMs / 1000), longRunning });
-  const expectsGeneratedImage = looksLikeImageGenerationPrompt(prompt);
+  sendEvent("start", { requestId, sessionId, model: selectedModel.id, outputMode, modeSource, imageModelAutoSelected: selectedModel.id !== model.id || selectedModel.provider !== model.provider, activityTimeoutSeconds: Math.ceil(activityTimeoutMs / 1000), longRunning });
+  const expectsGeneratedImage = outputMode === "image";
   let reply = "";
   let assistantMessage = null;
   let assistantAttachments = [];
@@ -4175,7 +4847,7 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
             if (thinking) consoleBridge.send(record.contextId, { id: `thinking-${startedAt}`, type: "set_thinking_level", level: thinking });
             const images = attachments.filter((item) => item.data && /^image\//.test(item.type)).map((item) => item.data);
             const attachmentContext = attachments.filter((item) => item.text).map((item) => `\n\n[Attached file: ${item.name}]\n${item.text}`).join("");
-            const outboundMessage = `${browserPrompt(prompt, selectedBrowserMode, images.length > 0)}${attachmentContext}${imageOutputInstruction(prompt)}`;
+            const outboundMessage = `${browserPrompt(prompt, selectedBrowserMode, images.length > 0)}${attachmentContext}${imageOutputInstruction(outputMode)}`;
             consoleBridge.send(record.contextId, { id: `prompt-${startedAt}`, type: "prompt", message: outboundMessage, ...(images.length ? { images } : {}) });
             streamRequest.dispatched = true;
             streamRequest.promptDispatched = true;
@@ -4263,6 +4935,168 @@ function gatewayPrompt(body) {
   return { type: behavior, message: outboundMessage, ...(Array.isArray(body.images) ? { images: body.images } : {}) };
 }
 
+const OPENAI_OMP_MODEL = "omp-default";
+
+function openAiModelAlias(model) {
+  return `${model.provider}/${model.id}`;
+}
+
+function openAiModelDisplayName(model, models) {
+  return models.some((item) => item.id === model.id && item.provider !== model.provider)
+    ? `${model.name} (${model.provider})`
+    : model.name;
+}
+
+function resolveOpenAiModel(modelId, models) {
+  const alias = String(modelId || "").replace(/^omp\//, "");
+  if (alias === OPENAI_OMP_MODEL) {
+    return models.find((item) => item.isDefault)
+      || models.find((item) => item.provider === LOGIN_PROVIDER && item.id === "gemini-3.8-flash")
+      || models[0];
+  }
+  const separator = alias.indexOf("/");
+  const matches = separator > 0
+    ? models.filter((item) => item.provider === alias.slice(0, separator) && item.id === alias.slice(separator + 1))
+    : models.filter((item) => item.id === alias);
+  if (matches.length !== 1) {
+    const detail = matches.length ? `Model cần kèm provider: ${modelId}` : `Model không tồn tại: ${modelId}`;
+    throw Object.assign(new Error(detail), { code: "MODEL_NOT_FOUND", field: "model" });
+  }
+  return matches[0];
+}
+
+function openAiThinking(body) {
+  const value = body.thinking ?? body.reasoning_effort;
+  if (value == null) return "";
+  if (typeof value !== "string") throw Object.assign(new Error("reasoning_effort phải là chuỗi."), { code: "BAD_REQUEST", field: "reasoning_effort" });
+  return chatThinking(value === "minimal" ? "low" : value === "xhigh" ? "max" : value);
+}
+
+function openAiChatInput(body) {
+  if (!body || Array.isArray(body) || typeof body !== "object") throw Object.assign(new Error("Payload phải là object JSON."), { code: "BAD_REQUEST" });
+  if (!Array.isArray(body.messages) || !body.messages.length || body.messages.length > 128) throw Object.assign(new Error("messages phải có 1-128 phần tử."), { code: "BAD_REQUEST", field: "messages" });
+  const lines = [];
+  const attachments = [];
+  for (const message of body.messages) {
+    const role = String(message?.role || "");
+    if (!message || !["system", "developer", "user", "assistant", "tool"].includes(role)) throw Object.assign(new Error("messages chứa role không hỗ trợ."), { code: "BAD_REQUEST", field: "messages.role" });
+    const parts = Array.isArray(message.content) ? message.content : [message.content];
+    const content = [];
+    for (const part of parts) {
+      if (typeof part === "string") { content.push(part); continue; }
+      if (!part || typeof part !== "object") continue;
+      if (part.type === "text" && typeof part.text === "string") { content.push(part.text); continue; }
+      if (part.type === "image_url" || part.type === "input_image") {
+        const image = part.image_url?.url || part.image_url || part.url || part.data;
+        const dataUrl = typeof image === "string" ? image : "";
+        if (!/^data:image\/[a-z0-9.+-]+;base64,/i.test(dataUrl)) throw Object.assign(new Error("OMP Gateway chỉ nhận ảnh nhúng data URL."), { code: "BAD_REQUEST", field: "messages.content" });
+        if (attachments.length >= MAX_CHAT_ATTACHMENTS) throw Object.assign(new Error(`Chỉ hỗ trợ tối đa ${MAX_CHAT_ATTACHMENTS} ảnh mỗi lượt.`), { code: "BAD_REQUEST", field: "messages.content" });
+        const type = dataUrl.slice(5, dataUrl.indexOf(";"));
+        const attachment = normalizeChatAttachment({ name: `openwork-image-${attachments.length + 1}`, type, data: dataUrl });
+        if (!attachment) throw Object.assign(new Error("Ảnh nhúng không hợp lệ hoặc vượt giới hạn."), { code: "BAD_REQUEST", field: "messages.content" });
+        attachments.push(attachment);
+        content.push(`[ảnh đính kèm ${attachments.length}]`);
+      }
+    }
+    if (Array.isArray(message.tool_calls)) for (const call of message.tool_calls.slice(0, 16)) {
+      const name = String(call?.function?.name || "tool").slice(0, 100);
+      const args = typeof call?.function?.arguments === "string" ? call.function.arguments.slice(0, 4000) : "";
+      content.push(`[yêu cầu gọi tool ${name}: ${args}]`);
+    }
+    const text = content.join("\n").trim();
+    if (text) lines.push(`[${role}${message.name ? ` ${String(message.name).slice(0, 100)}` : ""}]\n${text}`);
+  }
+  return { prompt: chatPrompt(lines.join("\n\n")), attachments };
+}
+
+function openAiError(res, error) {
+  const code = String(error?.code || "INTERNAL_SERVER_ERROR");
+  const message = publicErrorMessage(code, error?.message, "Yêu cầu OpenWork không thành công.");
+  return json(res, errorStatus(code), { error: { message, type: errorStatus(code) === 400 ? "invalid_request_error" : "server_error", code } });
+}
+
+function openAiChunk(res, id, model, delta, finishReason = null) {
+  if (!res.writableEnded) res.write(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model, choices: [{ index: 0, delta, finish_reason: finishReason }] })}\n\n`);
+}
+
+async function openAiCompletion(req, res) {
+  let sessionId = "";
+  let record = null;
+  let disconnected = false;
+  let finished = false;
+  let stream = false;
+  const requestId = `openwork-${randomUUID()}`;
+  const abort = () => {
+    if (finished || disconnected) return;
+    disconnected = true;
+    void abortChatRequest(null, { requestId, sessionId }).catch(() => {});
+  };
+  req.once("aborted", abort);
+  res.once("close", () => { if (!res.writableEnded) abort(); });
+  try {
+    const body = await jsonBody(req);
+    if (body.model != null && typeof body.model !== "string") throw Object.assign(new Error("model phải là chuỗi."), { code: "BAD_REQUEST", field: "model" });
+    const requestedModel = typeof body.model === "string" && body.model.trim() ? body.model.trim() : OPENAI_OMP_MODEL;
+    const selectedModel = resolveOpenAiModel(requestedModel, await availableModels());
+    const thinking = openAiThinking(body);
+    if (body.stream != null && typeof body.stream !== "boolean") throw Object.assign(new Error("stream phải là boolean."), { code: "BAD_REQUEST", field: "stream" });
+    stream = body.stream === true;
+    const { prompt, attachments } = openAiChatInput(body);
+    const cwdHeader = req.headers["x-omp-cwd"];
+    if (Array.isArray(cwdHeader) || (cwdHeader != null && typeof cwdHeader !== "string") || String(cwdHeader || "").length > 4096) throw Object.assign(new Error("X-OMP-CWD không hợp lệ."), { code: "BAD_REQUEST", field: "cwd" });
+    const requestedCwd = typeof cwdHeader === "string" && cwdHeader.trim() ? cwdHeader.trim() : GENERAL_CHAT_CWD;
+    if (requestedCwd === GENERAL_CHAT_CWD) await mkdir(GENERAL_CHAT_CWD, { recursive: true, mode: 0o700 });
+    const cwd = await consoleBridge.validateWorkspaceDirectory(requestedCwd);
+    const approvalHeader = req.headers["x-omp-approval-mode"];
+    if (Array.isArray(approvalHeader) || (approvalHeader != null && typeof approvalHeader !== "string")) throw Object.assign(new Error("X-OMP-APPROVAL-MODE không hợp lệ."), { code: "BAD_REQUEST" });
+    const selectedApproval = approvalMode(approvalHeader);
+    sessionId = `openwork-${randomUUID()}`;
+    await createGatewaySession({ sessionId, cwd, approvalMode: selectedApproval });
+    record = gatewayRecord(sessionId);
+    if (disconnected) return;
+    const completionId = `chatcmpl-${randomUUID()}`;
+    let streamedText = false;
+    if (stream) {
+      res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-store", connection: "keep-alive" });
+      res.write(`data: ${JSON.stringify({ id: completionId, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model: requestedModel, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] })}\n\n`);
+    }
+    const turn = collectChatTurn(record, sessionId, prompt, selectedModel.id, requestId, {
+      attachments,
+      modelProvider: selectedModel.provider,
+      thinking,
+      persistMessages: false,
+      onTextDelta(text) {
+        if (stream && !disconnected && text) { streamedText = true; openAiChunk(res, completionId, requestedModel, { content: text }); }
+      },
+    });
+    if (disconnected) await abortChatRequest(null, { requestId, sessionId }).catch(() => {});
+    const result = await turn;
+    finished = true;
+    if (disconnected) return;
+    if (stream) {
+      if (!streamedText && result.reply) openAiChunk(res, completionId, requestedModel, { content: result.reply });
+      openAiChunk(res, completionId, requestedModel, {}, "stop");
+      res.end("data: [DONE]\n\n");
+    } else {
+      json(res, 200, { id: completionId, object: "chat.completion", created: Math.floor(Date.now() / 1000), model: requestedModel, choices: [{ index: 0, message: { role: "assistant", content: result.reply }, finish_reason: "stop" }] });
+    }
+  } catch (error) {
+    finished = true;
+    if (disconnected || res.destroyed) return;
+    if (stream && res.headersSent) {
+      res.write(`data: ${JSON.stringify({ error: { message: publicErrorMessage(error.code || "INTERNAL_SERVER_ERROR", error.message), type: "server_error", code: error.code || "INTERNAL_SERVER_ERROR" } })}\n\n`);
+      res.end("data: [DONE]\n\n");
+    } else openAiError(res, error);
+  } finally {
+    finished = true;
+    req.removeListener("aborted", abort);
+    if (record) {
+      await consoleBridge.stop(record.contextId).catch(() => {});
+      gatewaySessions.delete(record.sessionId);
+    }
+  }
+}
+
 async function readDashboardAsset(name, nonce = "") {
   const injectNonce = (asset) => nonce && name.endsWith(".html")
     ? asset.replace(/<script(?![^>]*\bnonce=)(?=\s|>)/gi, `<script nonce="${nonce}"`)
@@ -4296,8 +5130,10 @@ async function jsonBody(req) {
 }
 
 function json(res, status, payload) {
+  const body = JSON.stringify(safeErrorPayload(res, payload));
+  res.observability = { ...(res.observability || {}), responseBytes: Buffer.byteLength(body) };
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
-  res.end(JSON.stringify(safeErrorPayload(res, payload)));
+  res.end(body);
 }
 
 const QUOTA_HISTORY_SCOPES = new Map([
@@ -4306,6 +5142,9 @@ const QUOTA_HISTORY_SCOPES = new Map([
   ["7d", 7 * 24 * 60 * 60 * 1000],
   ["30d", 30 * 24 * 60 * 60 * 1000],
 ]);
+const OMP_STATS_HISTORY_ITEMS_LIMIT = 200;
+const QUOTA_HISTORY_READ_CONCURRENCY = 16;
+const QUOTA_TIME_ZONE = "Asia/Ho_Chi_Minh";
 
 function quotaAccountId(account) {
   return `acc-${credentialPinHash(account).slice(0, 12)}`;
@@ -4612,9 +5451,18 @@ function quotaProviderModels(provider, models) {
   return models.filter((model) => String(model?.provider || "").toLowerCase() === key);
 }
 
-async function quotaModelsPayload(sessionId = null) {
+async function quotaModelsPayload(sessionId = null, requestId = null) {
+  const startedAt = Date.now();
+  void logEvent("debug", "quota_models_load_start", { requestId });
   const { account, availability } = await selectedGeminiAccountState(sessionId);
-  return {
+  const detectedModels = quotaProviderModels(account.provider, await availableModels());
+  const subscriptionTier = account.subscriptionTier || account.plan || account.tier || null;
+  const verifiedAvailableModels = detectedModels.filter((model) => model?.available === true || model?.canUse === true || model?.availabilityStatus === "available");
+  const unavailableModels = detectedModels.filter((model) => !verifiedAvailableModels.includes(model)).map((model) => ({
+    ...model,
+    reason: availability.canUse ? "OMP chưa có bằng chứng khả dụng riêng cho model này" : availability.reason,
+  }));
+  const payload = {
     account: {
       id: quotaAccountId(account),
       providerKey: account.provider,
@@ -4623,9 +5471,28 @@ async function quotaModelsPayload(sessionId = null) {
       availabilityStatus: availability.status,
       availabilityLabel: availability.label,
       availabilityReason: availability.reason,
+      subscriptionTier,
+      subscriptionTierVerified: Boolean(subscriptionTier),
+      subscriptionTierSource: subscriptionTier ? "OMP account metadata" : "OMP chưa cung cấp tier thuê bao",
     },
-    models: quotaProviderModels(account.provider, await availableModels()),
+    detectedModels,
+    availableModels: availability.canUse ? verifiedAvailableModels : [],
+    unavailableModels,
+    models: detectedModels,
+    entitlement: {
+      verified: Boolean(subscriptionTier),
+      tier: subscriptionTier,
+      source: subscriptionTier ? "OMP account metadata" : "unverified",
+    },
+    modelAvailabilityVerified: verifiedAvailableModels.length > 0,
   };
+  void logEvent("info", "quota_models_load_complete", {
+    requestId,
+    canUse: availability.canUse,
+    detectedModelCount: detectedModels.length,
+    durationMs: Date.now() - startedAt,
+  });
+  return payload;
 }
 
 async function assertActiveQuotaAvailable(sessionId = null) {
@@ -4675,12 +5542,13 @@ function isQuotaGuardedCommand(type) {
 }
 
 function quotaError(res, status, code, message, field) {
+  res.observability = { ...(res.observability || {}), errorCode: code };
   return json(res, status, { ok: false, error: { code, message, ...(field ? { field } : {}) } });
 }
 
-async function ensureQuotaLatest() {
+async function ensureQuotaLatest(requestId = null) {
   const ageMs = latest.updatedAt ? Date.now() - latest.updatedAt : Infinity;
-  if (!latest.ok || ageMs > 90_000) await refresh();
+  if (!latest.ok || ageMs > 90_000) await refresh(requestId);
   if (!latest.ok) throw new Error("Không lấy được dữ liệu quota OMP");
   return latest;
 }
@@ -4965,6 +5833,71 @@ async function quotaProtectPayload() {
   };
 }
 
+async function quotaReadinessPayload(requestId = null) {
+  const checkedAt = new Date().toISOString();
+  const [protectResult, modelsResult, brokerResult, poolResult, gatewayResult] = await Promise.allSettled([
+    quotaProtectPayload(),
+    quotaModelsPayload(null, requestId),
+    (async () => {
+      const token = (await readFile(join(homedir(), ".omp", "auth-broker.token"), "utf8")).trim();
+      const response = await fetch("http://127.0.0.1:8765/v1/snapshot", { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(4000) });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    })(),
+    readFile(join(homedir(), ".omp", "antigravity-quota-pool.json"), "utf8").then(JSON.parse),
+    fetch("http://127.0.0.1:4000/v1/models", { signal: AbortSignal.timeout(3000) }).then((response) => response.status),
+  ]);
+  const protect = protectResult.status === "fulfilled" ? protectResult.value : null;
+  const modelData = modelsResult.status === "fulfilled" ? modelsResult.value : null;
+  const snapshot = brokerResult.status === "fulfilled" ? brokerResult.value : null;
+  const pool = poolResult.status === "fulfilled" ? poolResult.value : null;
+  const credentials = Array.isArray(snapshot?.credentials) ? snapshot.credentials : [];
+  const providerCounts = Object.entries(credentials.reduce((counts, item) => {
+    const provider = String(item?.provider || "unknown");
+    counts[provider] = (counts[provider] || 0) + 1;
+    return counts;
+  }, {})).map(([provider, count]) => ({ provider, count }));
+  const identityByAccount = new Map(credentials.map((item) => [
+    quotaAccountId({ provider: item.provider, email: item.credential?.email, projectId: item.credential?.projectId }),
+    item.identityKey,
+  ]));
+  const requiredIds = Array.isArray(protect?.appliedAccountIds) ? protect.appliedAccountIds : [];
+  const expectedPool = requiredIds.map((id) => identityByAccount.get(id));
+  const actualPool = Array.isArray(pool?.[LOGIN_PROVIDER]) ? pool[LOGIN_PROVIDER] : [];
+  const sortedExpectedPool = expectedPool.slice().sort();
+  const sortedActualPool = actualPool.slice().sort();
+  const poolAligned = Boolean(protect?.enabled && requiredIds.length > 0 && expectedPool.every((id) => typeof id === "string" && id) &&
+    sortedExpectedPool.length === sortedActualPool.length && sortedExpectedPool.every((id, index) => id === sortedActualPool[index]) && Array.isArray(pool?.["*"]) && pool["*"].length === 0);
+  const flash = (modelData?.detectedModels || []).find((model) => /gemini-3\.8-flash/i.test(String(model?.id || model?.name || "")));
+  const flashAvailable = Boolean(flash && (modelData?.availableModels || []).some((model) => String(model?.id || model?.name || "") === String(flash.id || flash.name || "")));
+  const gatewayStatus = gatewayResult.status === "fulfilled" ? gatewayResult.value : null;
+  const gatewayReachable = gatewayStatus === 401 || (gatewayStatus >= 200 && gatewayStatus < 300);
+  const accountReady = Boolean(protect?.activeAccountAvailability?.canUse && protect?.activeAccountProtected && protect?.nextRequestAllowed);
+  const brokerReady = brokerResult.status === "fulfilled" && credentials.length > 0;
+  const modelReady = modelsResult.status === "fulfilled" && modelData?.account?.canUse === true && flashAvailable;
+  const checks = [
+    { id: "dashboard", label: "Dashboard /quota", ok: true, detail: "Đang phản hồi trên cổng 4177" },
+    { id: "gateway", label: "OMP Auth Gateway", ok: gatewayReachable, detail: gatewayReachable ? `Cổng 4000 phản hồi HTTP ${gatewayStatus}; endpoint yêu cầu xác thực` : gatewayResult.status === "rejected" ? "Không kết nối được cổng 4000" : `Endpoint trả HTTP ${gatewayStatus}` },
+    { id: "broker", label: "OMP Auth Broker / OAuth", ok: brokerReady, detail: brokerReady ? `${credentials.length} credential; ${providerCounts.map((item) => `${item.provider}: ${item.count}`).join(" · ")}` : "Broker chưa phản hồi hoặc chưa có OAuth credential" },
+    { id: "pool", label: "Pool Gemini /quota", ok: poolAligned, detail: poolAligned ? `${requiredIds.length}/${requiredIds.length} account khớp Broker; wildcard rỗng (fail-closed)` : `Pool lệch hoặc chưa đủ dữ liệu; account trong phạm vi: ${requiredIds.length}` },
+    { id: "account", label: "Account đang chọn", ok: accountReady, detail: protect ? `${protect.activeAccountAvailability?.label || "Chưa xác định"}; ${protect.activeAccountProtected ? "đã nằm trong pool bảo vệ" : "chưa được bảo vệ"}${protect.cooldownSec ? `; cooldown ${protect.cooldownSec}s` : ""}` : "Không đọc được trạng thái quota" },
+    { id: "model", label: "Gemini 3.8 Flash", ok: modelReady, detail: modelReady ? "Account có thể dùng và model xuất hiện trong catalog OMP" : "Chưa xác minh model khả dụng cho account đang chọn" },
+  ];
+  return {
+    checkedAt,
+    ready: checks.every((item) => item.ok),
+    checks,
+    providers: providerCounts,
+    note: "Kiểm tra không gửi prompt và không tiêu quota. Muốn xác nhận end-to-end, cần một lượt Gemini thật thành công và xuất hiện trong lịch sử /quota.",
+    diagnostics: {
+      protect: protectResult.status === "rejected" ? "unavailable" : "available",
+      models: modelsResult.status === "rejected" ? "unavailable" : "available",
+      broker: brokerResult.status === "rejected" ? "unavailable" : "available",
+      pool: poolResult.status === "rejected" ? "unavailable" : "available",
+    },
+  };
+}
+
 async function quotaProtectConfig(req) {
   await ensureQuotaLatest();
   const current = await readProtectConfig();
@@ -4983,19 +5916,21 @@ async function quotaProtectConfig(req) {
   return quotaProtectPayload();
 }
 
-async function quotaHistoryPayload(scope) {
-  await ensureQuotaLatest();
+async function quotaHistoryPayload(scope, { requestId = null, forceRefresh = false } = {}) {
+  const startedAt = Date.now();
+  void logEvent("debug", "quota_history_payload_start", { requestId, scope: scope || "24h", forceRefresh });
+  await ensureQuotaLatest(requestId);
   const selectedScope = scope || "24h";
   if (selectedScope !== "all" && !QUOTA_HISTORY_SCOPES.has(selectedScope)) throw Object.assign(new Error("scope phải là 1h, 24h, 7d, 30d hoặc all"), { code: "BAD_REQUEST", field: "scope" });
-  const allItems = await readTokenHistory();
   const now = Date.now();
   const since = selectedScope === "all" ? 0 : now - QUOTA_HISTORY_SCOPES.get(selectedScope);
-  const importedAccounts = new Map(eligibleGeminiQuotaAccounts().map((account) => [quotaAccountId(account), account]));
+  const allItems = await readTokenHistory(since, { requestId, forceRefresh });
+  const importedAccounts = new Map([...(latest.accounts || []), ...(latest.authAccounts || [])].filter(isGeminiQuotaAccount).map((account) => [quotaAccountId(account), account]));
   const findImportedAccount = (item) => importedAccounts.get(String(item.accountId || "")) || null;
   const items = allItems.filter((item) => {
     const account = findImportedAccount(item);
-    const at = new Date(item.timestamp).getTime();
-    if (!account || !Number.isFinite(at) || at < since) return false;
+    const at = Date.parse(item.timestamp);
+    if (!account || !Number.isFinite(at) || at < since || at > now) return false;
     const provider = String(item.provider || "").toLowerCase();
     return provider === String(account.provider || "").toLowerCase() || provider === "google";
   });
@@ -5012,38 +5947,152 @@ async function quotaHistoryPayload(scope) {
       endpoint: account?.endpoint || "--",
       inputTokens: quotaFormatNumber(item.input),
       outputTokens: quotaFormatNumber(item.output),
+      cacheTokens: quotaFormatNumber(number(item.cacheRead) + number(item.cacheWrite)),
+      cacheReadTokens: item.cacheRead,
+      cacheWriteTokens: item.cacheWrite,
+      status: item.status || "unknown",
       totalTokens: quotaFormatNumber(item.total),
       latencyMs: item.latencyMs,
       ttftMs: item.ttftMs,
       latency: Number.isFinite(Number(item.latencyMs)) ? `${Math.round(Number(item.latencyMs))} ms` : "--",
     };
   });
+  const ompUsageMeta = {
+    scope: selectedScope,
+    scopeMode: selectedScope === "all" ? "unbounded" : "rolling",
+    cutoff: selectedScope === "all" ? null : new Date(since).toISOString(),
+    generatedAt: new Date(now).toISOString(),
+    itemsLimit: OMP_STATS_HISTORY_ITEMS_LIMIT,
+    totalExcludesCache: true,
+  };
+  let ompUsage;
+  let ompStats = null;
+  try {
+    ompStats = readOmpStatsHistory(join(homedir(), ".omp", "agent", "agent.db"), since, now, OMP_STATS_HISTORY_ITEMS_LIMIT);
+    ompUsage = {
+      ...ompUsageMeta,
+      available: ompStats.available,
+      records: ompStats.records,
+      returnedRecords: ompStats.items.length,
+      requests: ompStats.requests,
+      total: ompStats.total,
+      totalFormatted: quotaFormatCompact(ompStats.total),
+      input: ompStats.input,
+      inputFormatted: quotaFormatCompact(ompStats.input),
+      output: ompStats.output,
+      outputFormatted: quotaFormatCompact(ompStats.output),
+      cache: ompStats.cache,
+      cacheFormatted: quotaFormatCompact(ompStats.cache),
+      items: ompStats.items,
+    };
+  } catch (error) {
+    ompUsage = { ...ompUsageMeta, available: false, records: 0, returnedRecords: 0, requests: 0, total: 0, totalFormatted: "--", inputFormatted: "--", outputFormatted: "--", cacheFormatted: "--", items: [] };
+    void logEvent("warn", "quota_omp_stats_unavailable", { requestId, code: error?.code || error?.name || "unknown" });
+  }
+  const validTimes = items.map((item) => Date.parse(item.timestamp)).filter(Number.isFinite);
+  const validOmpTime = Number.isFinite(ompStats?.earliestTimestamp) ? [ompStats.earliestTimestamp] : [];
+  const trendTimes = [...validTimes, ...validOmpTime];
+  const trendStart = selectedScope === "all"
+    ? trendTimes.reduce((start, at) => Math.min(start, at), now - 12 * 60 * 60 * 1000)
+    : since;
   const trendEnd = now;
-  const validTimes = items.map((item) => new Date(item.timestamp).getTime()).filter(Number.isFinite);
-  const trendStart = selectedScope === "all" ? Math.min(...validTimes, now - 12 * 60 * 60 * 1000) : since;
-  const bucketMs = Math.max(1, (trendEnd - trendStart) / 12);
-  const hourlyTrend = Array.from({ length: 12 }, (_, index) => {
+  const dayMs = 24 * 60 * 60 * 1000;
+  const trendSpanDays = Math.max(1, Math.ceil((trendEnd - trendStart) / dayMs));
+  const bucketCount = selectedScope === "1h"
+    ? 60
+    : selectedScope === "24h"
+      ? 48
+      : selectedScope === "7d"
+        ? 28
+        : selectedScope === "30d"
+          ? 60
+          : trendSpanDays <= 90 ? trendSpanDays : Math.ceil(trendSpanDays / 7);
+  const bucketMs = Math.max(1, selectedScope === "all" && trendSpanDays > 90 ? 7 * dayMs : (trendEnd - trendStart) / bucketCount);
+  const trendBuckets = Array.from({ length: bucketCount }, () => ({ input: 0, cache: 0, output: 0 }));
+  for (const item of items) {
+    const at = Date.parse(item.timestamp);
+    const index = Math.min(bucketCount - 1, Math.floor((at - trendStart) / bucketMs));
+    if (index < 0) continue;
+    trendBuckets[index].input += number(item.input);
+    trendBuckets[index].cache += number(item.cacheRead) + number(item.cacheWrite);
+    trendBuckets[index].output += number(item.output);
+  }
+  if (ompStats?.available) {
+    try {
+      const ompTrend = readOmpStatsTrend(join(homedir(), ".omp", "agent", "agent.db"), since, now, trendStart, bucketMs, bucketCount);
+      for (const bucket of ompTrend) {
+        trendBuckets[bucket.bucket].input += bucket.input;
+        trendBuckets[bucket.bucket].cache += bucket.cache;
+        trendBuckets[bucket.bucket].output += bucket.output;
+      }
+    } catch (error) {
+      void logEvent("warn", "quota_omp_trend_unavailable", { requestId, code: error?.code || error?.name || "unknown" });
+    }
+  }
+  const timeZone = QUOTA_TIME_ZONE;
+  const includeYear = true;
+  const trendDate = new Intl.DateTimeFormat("vi-VN", { timeZone, day: "2-digit", month: "2-digit", ...(includeYear ? { year: "numeric" } : {}), hour: "2-digit", minute: "2-digit", hour12: false });
+  const trendTime = new Intl.DateTimeFormat("vi-VN", { timeZone, hour: "2-digit", minute: "2-digit", hour12: false });
+  const hourlyTrend = trendBuckets.map((bucket, index) => {
     const bucketStart = trendStart + index * bucketMs;
-    const bucketItems = items.filter((item) => {
-      const at = new Date(item.timestamp).getTime();
-      return at >= bucketStart && (index === 11 ? at <= trendEnd : at < bucketStart + bucketMs);
-    });
-    const input = bucketItems.reduce((sum, item) => sum + number(item.input), 0);
-    const output = bucketItems.reduce((sum, item) => sum + number(item.output), 0);
-    return { hour: new Date(bucketStart).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", hour12: false }), input, output, total: input + output, isPeak: false };
+    const dateParts = Object.fromEntries(trendDate.formatToParts(bucketStart).map(({ type, value }) => [type, value]));
+    return {
+      bucketStart: new Date(bucketStart).toISOString(),
+      bucketEnd: new Date(Math.min(trendEnd, bucketStart + bucketMs)).toISOString(),
+      label: `${includeYear ? `${dateParts.day}/${dateParts.month}/${dateParts.year}` : `${dateParts.day}/${dateParts.month}`} ${dateParts.hour}:${dateParts.minute}`,
+      hour: trendTime.format(bucketStart),
+      input: bucket.input,
+      cache: bucket.cache,
+      output: bucket.output,
+      total: bucket.input + bucket.cache + bucket.output,
+      isPeak: false,
+    };
   });
   const peak = Math.max(...hourlyTrend.map((item) => item.total), 0);
   hourlyTrend.forEach((item) => { item.isPeak = peak > 0 && item.total === peak; });
-  return {
+  const analytics = {
+    totalRequests: summary.requests + (ompStats?.requests || 0),
+    input: summary.input + (ompStats?.input || 0),
+    cache: summary.cacheRead + summary.cacheWrite + (ompStats?.cache || 0),
+    output: summary.output + (ompStats?.output || 0),
+  };
+  analytics.totalTokens = analytics.input + analytics.cache + analytics.output;
+  analytics.totalTokensFormatted = quotaFormatCompact(analytics.totalTokens);
+  analytics.inputTokensFormatted = quotaFormatCompact(analytics.input);
+  analytics.cacheTokensFormatted = quotaFormatCompact(analytics.cache);
+  analytics.outputTokensFormatted = quotaFormatCompact(analytics.output);
+  const payload = {
     scope: selectedScope,
+    scopeMode: selectedScope === "all" ? "unbounded" : "rolling",
+    cutoff: selectedScope === "all" ? null : new Date(since).toISOString(),
+    generatedAt: new Date(now).toISOString(),
     totalRequests: summary.requests,
     totalTokens: summary.total,
     totalTokensFormatted: quotaFormatCompact(summary.total),
-    inputTokensFormatted: quotaFormatCompact(summary.input + summary.cacheRead + summary.cacheWrite),
+    inputTokensFormatted: quotaFormatCompact(summary.input),
+    cacheTokensFormatted: quotaFormatCompact(summary.cacheRead + summary.cacheWrite),
+    cacheReadTokens: summary.cacheRead,
+    cacheWriteTokens: summary.cacheWrite,
+    timeZone,
     outputTokensFormatted: quotaFormatCompact(summary.output),
     hourlyTrend,
+    bucketIntervalMs: bucketMs,
+    totalRecords: items.length,
+    returnedRecords: mappedItems.length,
+    itemsLimit: 200,
+    hasMore: items.length > mappedItems.length,
     items: mappedItems,
+    ompUsage,
+    analytics,
   };
+  void logEvent("info", "quota_history_payload_complete", {
+    requestId,
+    scope: selectedScope,
+    totalRecords: items.length,
+    returnedRecords: mappedItems.length,
+    durationMs: Date.now() - startedAt,
+  });
+  return payload;
 }
 
 async function deleteQuotaAccount(accountId) {
@@ -5058,7 +6107,7 @@ async function deleteQuotaAccount(accountId) {
   await saveProtectConfig({ ...protectConfig, accountIds: protectConfig.accountIds.filter((id) => id !== String(accountId)) });
   const ompControl = await readOmpAccountControl();
   if (ompControl.enabled && ompControl.accountId === quotaAccountId(account)) await saveOmpAccountControl({ enabled: false });
-  historyCache = { loadedAt: 0, items: [] };
+  await resetHistoryCache();
   await refresh();
   await syncSafetyPolicy();
   broadcastStatus();
@@ -5101,11 +6150,11 @@ async function quotaSwitchAccount(req) {
   };
 }
 
-async function quotaSync(req) {
+async function quotaSync(req, requestId = null) {
   const body = await jsonBody(req);
   if (!body || Array.isArray(body)) throw Object.assign(new Error("Payload phải là object JSON."), { code: "BAD_REQUEST" });
   const startedAt = Date.now();
-  const snapshot = await refresh();
+  const snapshot = await refresh(requestId);
   if (!snapshot.ok) throw Object.assign(new Error("Không đồng bộ được dữ liệu quota OMP."), { code: "INTERNAL_SERVER_ERROR" });
   return {
     success: true,
@@ -5137,19 +6186,61 @@ const server = http.createServer(async (req, res) => {
   const requestUrl = new URL(req.url || "/", "http://127.0.0.1");
   res.requestId = randomUUID();
   res.setHeader("x-request-id", res.requestId);
+  const startedAt = Date.now();
+  let requestLogged = false;
+  res.observability = {};
+  res.on("finish", () => {
+    requestLogged = true;
+    const status = res.statusCode || 0;
+    const durationMs = Math.max(0, Date.now() - startedAt);
+    const fields = {
+      requestId: res.requestId,
+      method: req.method,
+      path: requestUrl.pathname,
+      status,
+      durationMs,
+      ...(res.observability || {}),
+    };
+    void logEvent(status >= 500 ? "error" : status >= 400 ? "warn" : "info", "http_request", fields);
+    if (durationMs >= OBSERVABILITY_SLOW_REQUEST_MS) void logEvent("warn", "http_slow_request", fields);
+  });
+  res.on("close", () => {
+    if (requestLogged || res.writableFinished) return;
+    void logEvent("warn", "http_request_aborted", {
+      requestId: res.requestId,
+      method: req.method,
+      path: requestUrl.pathname,
+      durationMs: Math.max(0, Date.now() - startedAt),
+      ...(res.observability || {}),
+    });
+  });
   res.cspNonce = applySecurityHeaders(res);
-  if (!isAllowedHost(req)) return json(res, 403, { ok: false, error: { code: "FORBIDDEN_HOST", message: "Host không được phép." } });
+  if (!isAllowedHost(req)) {
+    res.observability.errorCode = "FORBIDDEN_HOST";
+    return json(res, 403, { ok: false, error: { code: "FORBIDDEN_HOST", message: "Host không được phép." } });
+  }
   const authorizationError = authorizeApiRequest(req, requestUrl.pathname);
-  if (authorizationError) return json(res, authorizationError.status, { ok: false, error: { code: authorizationError.code, message: authorizationError.message } });
+  if (authorizationError) {
+    res.observability.errorCode = authorizationError.code;
+    return json(res, authorizationError.status, { ok: false, error: { code: authorizationError.code, message: authorizationError.message } });
+  }
   const rateLimitError = enforceRateLimit(req, requestUrl.pathname);
-  if (rateLimitError) return json(res, rateLimitError.status, { ok: false, error: { code: rateLimitError.code, message: rateLimitError.message } });
+  if (rateLimitError) {
+    res.observability.errorCode = rateLimitError.code;
+    return json(res, rateLimitError.status, { ok: false, error: { code: rateLimitError.code, message: rateLimitError.message } });
+  }
   if (requestUrl.pathname.startsWith("/api/v1/quota/")) {
     const route = requestUrl.pathname;
+    res.observability = {
+      area: "quota",
+      ...(route === "/api/v1/quota/history" ? { scope: requestUrl.searchParams.get("scope") || "24h" } : {}),
+    };
     const accountDeleteMatch = route.match(/^\/api\/v1\/quota\/accounts\/([^/]+)$/);
     const quotaRoutes = new Set([
       "/api/v1/quota/accounts",
       "/api/v1/quota/overview",
       "/api/v1/quota/protect-status",
+      "/api/v1/quota/readiness",
       "/api/v1/quota/protect-config",
       "/api/v1/quota/omp-control",
       "/api/v1/quota/history",
@@ -5157,20 +6248,26 @@ const server = http.createServer(async (req, res) => {
       "/api/v1/quota/models",
       "/api/v1/quota/switch",
       "/api/v1/quota/sync",
+      "/api/v1/quota/client-log",
     ]);
     try {
       if (accountDeleteMatch && req.method === "DELETE") return json(res, 200, await deleteQuotaAccount(decodeURIComponent(accountDeleteMatch[1])));
       if (!quotaRoutes.has(route)) return quotaError(res, 404, "NOT_FOUND", "Không tìm thấy tài nguyên theo yêu cầu.");
       if (route === "/api/v1/quota/accounts" && req.method === "GET") return json(res, 200, await quotaAccountsPayload(quotaSessionId(requestUrl.searchParams.get("sessionId"))));
-      if (route === "/api/v1/quota/models" && req.method === "GET") return json(res, 200, await quotaModelsPayload(quotaSessionId(requestUrl.searchParams.get("sessionId"))));
+      if (route === "/api/v1/quota/models" && req.method === "GET") return json(res, 200, await quotaModelsPayload(quotaSessionId(requestUrl.searchParams.get("sessionId")), res.requestId));
       if (route === "/api/v1/quota/overview" && req.method === "GET") return json(res, 200, await quotaOverviewPayload());
       if (route === "/api/v1/quota/protect-status" && req.method === "GET") return json(res, 200, await quotaProtectPayload());
+      if (route === "/api/v1/quota/readiness" && req.method === "GET") return json(res, 200, await quotaReadinessPayload(res.requestId));
       if (route === "/api/v1/quota/protect-config" && (req.method === "GET" || req.method === "POST")) return json(res, 200, await quotaProtectConfig(req));
       if (route === "/api/v1/quota/omp-control" && (req.method === "GET" || req.method === "POST")) return json(res, 200, await quotaOmpControl(req));
-      if (route === "/api/v1/quota/history" && req.method === "GET") return json(res, 200, await quotaHistoryPayload(requestUrl.searchParams.get("scope")));
+      if (route === "/api/v1/quota/history" && req.method === "GET") return json(res, 200, await quotaHistoryPayload(requestUrl.searchParams.get("scope"), {
+        requestId: res.requestId,
+        forceRefresh: requestUrl.searchParams.get("refresh") === "1",
+      }));
       if (route === "/api/v1/quota/quick-check" && req.method === "GET") return json(res, 200, await quotaQuickCheckPayload());
       if (route === "/api/v1/quota/switch" && req.method === "POST") return json(res, 200, await quotaSwitchAccount(req));
-      if (route === "/api/v1/quota/sync" && req.method === "POST") return json(res, 200, await quotaSync(req));
+      if (route === "/api/v1/quota/sync" && req.method === "POST") return json(res, 200, await quotaSync(req, res.requestId));
+      if (route === "/api/v1/quota/client-log" && req.method === "POST") return json(res, 202, await recordQuotaClientLog(req, res.requestId));
       return quotaError(res, 405, "METHOD_NOT_ALLOWED", "Phương thức HTTP không được hỗ trợ.");
     } catch (error) {
       const code = error.code || "INTERNAL_SERVER_ERROR";
@@ -5209,6 +6306,21 @@ const server = http.createServer(async (req, res) => {
       return chatError(res, error);
     }
   }
+  if (requestUrl.pathname === "/api/v1/agent-instructions") {
+    try {
+      if (req.method === "GET") return json(res, 200, { ...await readAgentInstructionsConfig(), maxChars: MAX_AGENT_INSTRUCTIONS_CHARS });
+      if (req.method !== "PUT") {
+        res.setHeader("Allow", "GET, PUT");
+        return json(res, 405, { ok: false, error: { code: "METHOD_NOT_ALLOWED", message: "Chỉ hỗ trợ đọc và sửa nội dung Agent OMP; không hỗ trợ xóa file." } });
+      }
+      const body = await jsonBody(req);
+      if (!body || Array.isArray(body) || typeof body !== "object" || Object.keys(body).some((key) => !["instructions", "version"].includes(key))) throw Object.assign(new Error("Payload chỉ nhận trường instructions và version."), { code: "BAD_REQUEST" });
+      if (typeof body.instructions !== "string") throw Object.assign(new Error("instructions phải là chuỗi."), { code: "BAD_REQUEST", field: "instructions" });
+      if (body.instructions.length > MAX_AGENT_INSTRUCTIONS_CHARS) throw Object.assign(new Error(`instructions tối đa ${MAX_AGENT_INSTRUCTIONS_CHARS} ký tự.`), { code: "BAD_REQUEST", field: "instructions" });
+      if (typeof body.version !== "string" || !/^[a-f0-9]{64}$/.test(body.version)) throw Object.assign(new Error("version là bắt buộc để tránh ghi đè thay đổi từ OMP."), { code: "BAD_REQUEST", field: "version" });
+      return json(res, 200, { ...await saveAgentInstructionsConfig(body.instructions, body.version), maxChars: MAX_AGENT_INSTRUCTIONS_CHARS });
+    } catch (error) { return chatError(res, error); }
+  }
   if (requestUrl.pathname === "/api/v1/terminal/open") {
     try {
       if (req.method !== "POST") return json(res, 405, { ok: false, error: { code: "METHOD_NOT_ALLOWED", message: "Phương thức HTTP không được hỗ trợ." } });
@@ -5227,6 +6339,14 @@ const server = http.createServer(async (req, res) => {
   }
   if (requestUrl.pathname === "/api/v1/sessions" || requestUrl.pathname.startsWith("/api/v1/sessions/")) {
     try {
+      if (requestUrl.pathname === "/api/v1/sessions/events" && req.method === "GET") {
+        res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-store", connection: "keep-alive" });
+        res.write(": connected\n\n");
+        const heartbeat = setInterval(() => { if (!res.writableEnded) res.write(": heartbeat " + Date.now() + "\n\n"); }, 15_000);
+        sessionEventClients.set(res, heartbeat);
+        res.on("close", () => { clearInterval(heartbeat); sessionEventClients.delete(res); });
+        return;
+      }
       if (requestUrl.pathname === "/api/v1/sessions" && req.method === "GET") {
         const rawLimit = requestUrl.searchParams.get("limit");
         const rawCursor = requestUrl.searchParams.get("cursor") || "0";
@@ -5238,6 +6358,10 @@ const server = http.createServer(async (req, res) => {
         const page = all.slice(cursor, cursor + limit);
         if (cursor + page.length < all.length) res.setHeader("x-next-cursor", String(cursor + page.length));
         res.setHeader("x-total-count", String(all.length));
+        if (requestUrl.searchParams.get("includeOrigins") === "1") {
+          const originApps = [...new Set(all.filter((session) => session.originType === "app").map((session) => session.originApp).filter(Boolean))].sort((a, b) => a.localeCompare(b, "vi"));
+          return json(res, 200, { sessions: page, originApps });
+        }
         return json(res, 200, page);
       }
       if (requestUrl.pathname === "/api/v1/sessions" && req.method === "POST") {
@@ -5245,6 +6369,7 @@ const server = http.createServer(async (req, res) => {
         if (body == null) throw Object.assign(new Error("Payload phải là object JSON."), { code: "BAD_REQUEST" });
         if (Array.isArray(body) || typeof body !== "object") throw Object.assign(new Error("Payload phải là object JSON."), { code: "BAD_REQUEST" });
         if (body.title != null && (typeof body.title !== "string" || body.title.trim().length > 200)) throw Object.assign(new Error("title phải có tối đa 200 ký tự"), { code: "BAD_REQUEST", field: "title" });
+        if (body.originApp != null && (typeof body.originApp !== "string" || !body.originApp.trim() || body.originApp.trim().length > 80)) throw Object.assign(new Error("originApp phải có từ 1 đến 80 ký tự"), { code: "BAD_REQUEST", field: "originApp" });
         const sessionId = randomUUID();
         const metadataAtCreation = await readChatMetadata();
         const defaultAccountId = typeof metadataAtCreation.geminiDefaultAccountId === "string"
@@ -5267,6 +6392,14 @@ const server = http.createServer(async (req, res) => {
           await mkdir(GENERAL_CHAT_CWD, { recursive: true, mode: 0o700 });
           cwd = GENERAL_CHAT_CWD;
         }
+        const originApp = typeof body.originApp === "string" ? body.originApp.trim() : "";
+        const origin = originApp === "Hòn π /chat"
+          ? { originType: "chat", originApp, originConfidence: "explicit" }
+          : originApp
+            ? { originType: "app", originApp, originConfidence: "declared" }
+            : withinRoot(OPEN_DESIGN_APP_CWD_ROOT, cwd)
+              ? { originType: "app", originApp: "Open Design", originConfidence: "inferred" }
+              : { originType: "unknown", originConfidence: "unknown" };
         const record = await ensureChatSession(sessionId, { cwd, title: body.title, ...(body.browserMode != null ? { browserMode: body.browserMode } : {}), ...(body.approvalMode != null ? { approvalMode: body.approvalMode } : {}), ...(body.planYolo != null ? { planYolo: body.planYolo } : {}), ...(body.planYoloModel != null ? { planYoloModel: body.planYoloModel } : {}), ...(body.advisor != null ? { advisor: body.advisor } : {}), ...(body.tools != null ? { tools: body.tools } : {}) });
         const now = new Date(record.createdAt || Date.now()).toISOString();
         const title = String(body.title || "Phiên làm việc mới").trim() || "Phiên làm việc mới";
@@ -5278,6 +6411,7 @@ const server = http.createServer(async (req, res) => {
           planYoloModel: record.planYoloModel,
           advisor: record.advisor === true,
           cwd: record.cwd,
+          ...origin,
           ...geminiDefaultSnapshot,
           ...(projectFolder ? { folderId: projectFolder.id, folderName: projectFolder.name } : {}),
         });
@@ -5310,6 +6444,67 @@ const server = http.createServer(async (req, res) => {
           if (!persisted) throw Object.assign(new Error("Không tìm thấy session OMP"), { code: "NOT_FOUND" });
         }
         return json(res, 200, messages);
+      }
+      if (req.method === "GET" && parts[4] === "context") {
+        const record = await ensureChatSession(sessionId, {}, { requireExisting: true });
+        const context = consoleBridge.get(record.contextId).summary();
+        const selected = record.selectedChatModel;
+        const modelId = context.model?.id || (typeof selected === "string" ? selected : selected?.id) || null;
+        const modelProvider = context.model?.provider || selected?.provider || null;
+        const catalogModel = availableModelsCache.items.find((item) => item.id === modelId && (!modelProvider || item.provider === modelProvider))
+          || availableModelsCache.items.find((item) => item.id === modelId);
+        let model = modelId ? {
+          id: modelId,
+          provider: modelProvider || catalogModel?.provider || null,
+          name: catalogModel?.name || modelId,
+          contextWindow: Number(selected?.contextWindow || catalogModel?.contextWindow || 0) || null,
+        } : null;
+        let usage = context.usage || null;
+        let usageUpdatedAt = context.usageUpdatedAt || null;
+        let contextUsage = context.contextUsage || null;
+        let contextUsageUpdatedAt = context.contextUsageUpdatedAt || null;
+        let contextUsageSource = contextUsage ? "OMP ACP" : null;
+        if (!usage || !contextUsage) {
+          const persisted = await readPersistedContextUsage(sessionId).catch(() => null);
+          const modelKey = (value) => String(value || "").toLowerCase().split("/").at(-1);
+          const matchesCurrentModel = !modelId || (modelKey(persisted?.model) === modelKey(modelId)
+            && (!persisted?.provider || !modelProvider || persisted.provider.toLowerCase() === modelProvider.toLowerCase()));
+          if (persisted && matchesCurrentModel) {
+            const persistedCatalogModel = availableModelsCache.items.find((item) => modelKey(item.id) === modelKey(persisted.model)
+              && (!persisted.provider || item.provider === persisted.provider));
+            if (!usage) {
+              usage = persisted.usage;
+              usageUpdatedAt = persisted.updatedAt;
+            }
+            if (!contextUsage) {
+              const size = Number(model?.contextWindow || persistedCatalogModel?.contextWindow || 0) || null;
+              contextUsage = { used: persisted.used, ...(size ? { size } : {}) };
+              contextUsageUpdatedAt = persisted.updatedAt;
+              contextUsageSource = "OMP session log · lượt gần nhất";
+              if (!model && persistedCatalogModel) {
+                model = {
+                  id: persisted.model,
+                  provider: persisted.provider || persistedCatalogModel.provider || null,
+                  name: persistedCatalogModel.name || persisted.model,
+                  contextWindow: Number(persistedCatalogModel.contextWindow || 0) || null,
+                };
+              }
+            }
+          }
+        }
+        return json(res, 200, {
+          ok: true,
+          sessionId,
+          status: contextUsage || usage ? "ready" : "waiting_for_usage",
+          model,
+          usage,
+          usageUpdatedAt,
+          contextUsage,
+          contextUsageUpdatedAt,
+          contextUsageSource,
+          compactSupported: context.protocol !== "acp" || context.compactSupported === true,
+          busy: contextHasChatWork(record.contextId),
+        });
       }
       if (req.method === "GET" && parts[4] === "memory") return json(res, 200, await sessionMemoryStatus(sessionId));
       if (req.method === "POST" && parts[4] === "memory" && parts[5] === "action") return json(res, 200, await sessionMemoryAction(sessionId, req));
@@ -5373,7 +6568,7 @@ const server = http.createServer(async (req, res) => {
       const sessionId = typeof body.sessionId === "string" && body.sessionId.trim() ? gatewaySessionId(body.sessionId.trim()) : randomUUID();
       const requestId = chatRequestId(body.requestId);
       if (activeChatRequests.has(requestId)) throw Object.assign(new Error("requestId đang được xử lý"), { code: "CONFLICT" });
-      const { model: selectedModel } = await resolveChatModel(chatModel(body.model), modelSource, modelProvider, sessionId, prompt);
+      const { model: selectedModel, outputMode, modeSource } = await resolveChatModel(chatModel(body.model), modelSource, modelProvider, sessionId, prompt, body.outputMode);
       const record = await ensureChatSession(sessionId, { ...body, approvalMode: selectedApprovalMode, browserMode: selectedBrowserMode });
       if (Object.hasOwn(body, "planYolo") || Object.hasOwn(body, "advisor")) await updateChatMetadata(sessionId, { planYolo: record.planYolo === true, planYoloModel: record.planYoloModel || null, advisor: record.advisor === true }, { touchUpdatedAt: false });
       record.selectedChatModel = selectedModel;
@@ -5390,7 +6585,8 @@ const server = http.createServer(async (req, res) => {
           browserMode: selectedBrowserMode,
           modelProvider: selectedModel.provider,
           attachments,
-        })) });
+          outputMode,
+        })), outputMode, modeSource });
       }
       catch (error) { observeChatRequest(requestId, sessionId, startedAt, "error", error); throw error; }
     } catch (error) { return chatError(res, error); }
@@ -5463,20 +6659,23 @@ const server = http.createServer(async (req, res) => {
       const imageGenerationModels = imageGeneration.models;
       const toolCatalog = await ompToolCatalog.read();
       const tools = toolCatalog.tools;
+      const browserModes = (await readOmpBrowserModes(toolCatalog)).map(({ runtime, ...mode }) => mode);
       return json(res, 200, {
         ok: true, capabilityVersion: OMP_CAPABILITY_VERSION, contractVersion: OMP_GATEWAY_VERSION,
         transport: { prompt: "http", stream: "sse", hostOnly: true },
         imageGenerationModels,
-        features: ["sessions", "streaming", "commands", "abort", "slash-commands", "file-references", "media-attachments", "image-generation", "approval-roundtrip", "browser-control", "memory", "session-duplicate", "session-export", "file-change-snapshots", "file-change-actions"],
+        features: ["sessions", "streaming", "commands", "abort", "slash-commands", "file-references", "media-attachments", "image-generation", "approval-roundtrip", "browser-control", "memory", "agent-instructions", "session-duplicate", "session-export", "file-change-snapshots", "file-change-actions"],
         sessionActions: { abort: "supported", followUp: "supported", fork: "supported", duplicate: "supported", export: "supported", reconnect: "supported", resumeQueue: "supported", steer: "unavailable" },
-        featureStatus: { "session-actions": "supported", "file-reference": "supported", "media-attachments": "supported", "image-generation": imageGeneration.status, "stream-recovery": "partial", approval: "supported", "agent-hub": "unavailable", memory: "supported", share: "partial", "browser-control": "supported", media: "partial", "screen-capture": "unavailable", "file-change-snapshots": "supported", "file-change-actions": "supported" },
+        featureStatus: { "session-actions": "supported", "file-reference": "supported", "media-attachments": "supported", "image-generation": imageGeneration.status, "stream-recovery": "partial", approval: "supported", "agent-hub": "unavailable", "agent-instructions": "supported", memory: "supported", share: "partial", "browser-control": "supported", media: "partial", "screen-capture": "unavailable", "file-change-snapshots": "supported", "file-change-actions": "supported" },
+        agentInstructions: { status: "supported", source: "omp-user-context-file", scope: "global-omp-sessions", transport: "omp-auto-loads-agents-md", versioning: "sha256-optimistic-lock", maxChars: MAX_AGENT_INSTRUCTIONS_CHARS },
         browserControl: {
           status: "supported",
-          provider: "omp-skill",
+          provider: "omp-skill-or-eval",
           invocation: "/skill:ego-browser",
+          nativePrelude: "eval/browser",
           actions: ["chat-prompt"],
           taskSpace: "managed by Ego Browser skill",
-          note: "Không có API action, URL, ref hoặc selector thủ công; OMP nhận order trong ô chat và skill tự điều khiển browser.",
+          note: "OMP nhận order trong ô chat. Ego Browser dùng skill; relay/Chrome/Electron dùng eval browser prelude qua CDP đã kết nối, giữ chế độ phê duyệt hiện tại.",
         },
         media: {
           status: "partial",
@@ -5496,11 +6695,26 @@ const server = http.createServer(async (req, res) => {
           browserPageScreenshot: "unavailable",
           note: "Ego Browser host hiện không cung cấp Page.captureScreenshot ổn định; snapshot page p1 là đọc cây trợ năng, không phải native screen capture.",
         },
-        models, tools, sessionModes: toolCatalog.sessionModes, catalog: toolCatalog.catalog, observedToolIds: toolCatalog.observedToolIds, commands: [...ACP_GATEWAY_COMMANDS].filter((command) => !BLOCKED_BROWSER_COMMANDS.has(command)).sort(), browsers: OMP_BROWSER_MODES, approvalModes: OMP_APPROVAL_MODES, shareModes: OMP_SHARE_MODES,
+        models, tools, sessionModes: toolCatalog.sessionModes, catalog: toolCatalog.catalog, observedToolIds: toolCatalog.observedToolIds, commands: [...ACP_GATEWAY_COMMANDS].filter((command) => !BLOCKED_BROWSER_COMMANDS.has(command)).sort(), browsers: browserModes, approvalModes: OMP_APPROVAL_MODES, shareModes: OMP_SHARE_MODES,
         safety: consoleBridge.safety(),
         note: "Catalog lấy từ OMP runtime; capability unavailable không được báo thành công.",
       });
     } catch (error) { return chatError(res, error); }
+  }
+  if (requestUrl.pathname === "/api/omp/v1/openai/models" && req.method === "GET") {
+    try {
+      const models = await availableModels();
+      return json(res, 200, {
+        object: "list",
+        data: [
+          { id: OPENAI_OMP_MODEL, object: "model", created: 0, owned_by: "omp" },
+          ...models.map((model) => ({ id: openAiModelAlias(model), object: "model", created: 0, owned_by: model.provider, name: openAiModelDisplayName(model, models) })),
+        ],
+      });
+    } catch (error) { return openAiError(res, error); }
+  }
+  if (requestUrl.pathname === "/api/omp/v1/openai/chat/completions" && req.method === "POST") {
+    return openAiCompletion(req, res);
   }
   if (requestUrl.pathname === "/api/v1/omp/capabilities/audit" && req.method === "POST") {
     try { return json(res, 200, { ok: true, catalog: await ompToolCatalog.read({ force: true }) }); }
@@ -5734,6 +6948,7 @@ const server = http.createServer(async (req, res) => {
   }
   return json(res, 404, { ok: false, error: { code: "NOT_FOUND", message: "Không tìm thấy tài nguyên theo yêu cầu." } });
   } catch (error) {
+    res.observability = { ...(res.observability || {}), ...logErrorFields(error) };
     if (!res.headersSent) json(res, 500, { ok: false, code: "INTERNAL_SERVER_ERROR", message: "Yêu cầu không thành công." });
     else res.end();
   }
@@ -5743,6 +6958,7 @@ server.on("error", (error) => {
   const message = error.code === "EADDRINUSE"
     ? `OMP Dashboard không khởi động: port ${PORT} đang được tiến trình khác sử dụng.`
     : `OMP Dashboard không khởi động: ${error.message}`;
+  void logEvent("error", "dashboard_server_error", { port: PORT, ...logErrorFields(error) });
   console.error(message);
   process.exitCode = 1;
 });
@@ -5791,7 +7007,41 @@ server.on("upgrade", (req, socket, head) => {
   });
 });
 
-server.listen(PORT, "127.0.0.1", () => { refresh(); setInterval(refresh, 60000); });
-const stopDashboard = async () => { for (const id of terminalSessions.keys()) closeTerminalSession(id, "shutdown"); await consoleBridge.close(); server.close(); process.exit(0); };
-process.on("SIGINT", stopDashboard);
-process.on("SIGTERM", stopDashboard);
+server.listen(PORT, "127.0.0.1", () => {
+  void logEvent("info", "dashboard_started", { port: PORT, quotaOnlyMode: QUOTA_ONLY_MODE });
+  const initialRefresh = refresh();
+  if (QUOTA_ONLY_MODE) {
+    void initialRefresh
+      .then(() => readTokenHistory(Date.now() - (QUOTA_HISTORY_RECENT_WINDOW_MS - 60_000), { requestId: "quota-history-prewarm" }))
+      .catch((error) => void logEvent("warn", "quota_history_prewarm_failed", { ...logErrorFields(error) }));
+    void initialRefresh
+      .then(() => availableModels())
+      .then((models) => void logEvent("info", "quota_models_prewarm_complete", { modelCount: models.length }))
+      .catch((error) => void logEvent("warn", "quota_models_prewarm_failed", { ...logErrorFields(error) }));
+  }
+  setInterval(refresh, 60000);
+  if (!QUOTA_ONLY_MODE) {
+    startOmpSessionWatcher();
+    void listChatSessions().catch(() => {});
+  }
+});
+let stopping = false;
+const stopDashboard = async (exitCode = 0) => {
+  if (stopping) return;
+  stopping = true;
+  for (const id of terminalSessions.keys()) closeTerminalSession(id, "shutdown");
+  if (ompSessionWatcher) { const watcher = ompSessionWatcher; ompSessionWatcher = null; watcher.close(); }
+  clearTimeout(ompSessionWatcherRetry);
+  clearTimeout(sessionCatalogRefreshTimer);
+  for (const [res, heartbeat] of sessionEventClients) { clearInterval(heartbeat); res.end(); }
+  sessionEventClients.clear();
+  await consoleBridge.close();
+  server.close();
+  await logEvent("info", "dashboard_stopped", { exitCode });
+  await observabilityLogQueue.catch(() => {});
+  process.exit(exitCode);
+};
+process.on("SIGINT", () => { void logEvent("info", "process_signal", { signal: "SIGINT" }).finally(() => stopDashboard(0)); });
+process.on("SIGTERM", () => { void logEvent("info", "process_signal", { signal: "SIGTERM" }).finally(() => stopDashboard(0)); });
+process.on("unhandledRejection", (reason) => { void logEvent("error", "process_unhandled_rejection", logErrorFields(reason)); });
+process.on("uncaughtException", (error) => { void logEvent("error", "process_uncaught_exception", logErrorFields(error)).finally(() => stopDashboard(1)); });

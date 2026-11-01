@@ -85,7 +85,7 @@ export class AcpWorker {
           auth: { terminal: false },
           elicitation: { form: {} },
         },
-        clientInfo: { name: "OMP Web Console", version: "0.1.0" },
+        clientInfo: { name: "Hòn π /chat", version: "0.1.0" },
       }, STARTUP_TIMEOUT_MS);
       await this.request("authenticate", { methodId: "agent" }, STARTUP_TIMEOUT_MS);
       if (this.failure) throw this.failure;

@@ -475,3 +475,25 @@ Thêm hai thao tác thật vào Chat: mic dùng Speech Recognition của trình 
 ## Kế hoạch nâng cấp UI Neuratalk — 2026-09-29
 
 Kế hoạch triển khai có map từng state mẫu (ảnh, tệp, queue, lifecycle, approval, quota, terminal) sang dữ liệu OMP thật tại [neuratalk-ui-upgrade-plan-2026-09-29.md](neuratalk-ui-upgrade-plan-2026-09-29.md). UI mẫu là chuẩn trình bày; runtime hiện hữu tiếp tục là nguồn sự thật và `/chat` chỉ cutover sau preview parity.
+
+
+## Đồng bộ tab Agent OMP với file context thật — 2026-10-01
+
+### Nguồn dữ liệu đã xác minh
+
+- `omp config path` trả `~/.omp/agent`; OMP 18.4.6 tự nạp `AGENTS.md` tại đây vào session. File hiện có 12.459 byte, 10.928 ký tự, 93 dòng.
+- Bản triển khai trước lưu prompt riêng trong `~/.omp/usage-dashboard/` và truyền `--append-system-prompt`; cách đó không đồng bộ với Agent OMP thật.
+
+### Thiết kế sửa đúng nguồn
+
+- GET đọc trực tiếp `PI_CODING_AGENT_DIR/AGENTS.md` (mặc định `~/.omp/agent/AGENTS.md`); UI nạp nguyên nội dung, không thay bằng mẫu ngắn.
+- PUT ghi atomic vào chính file đó. API dùng SHA-256 optimistic lock để chặn bản nháp cũ; trước khi thay file hiện có sẽ lưu bản sao quyền `0600` trong `~/.omp/usage-dashboard/backups/agent-instructions/`.
+- Nút “Nạp lại từ OMP” đọc chỉnh sửa ngoài dashboard; tab Agent và khi quay lại cửa sổ cũng tải lại nếu chưa có bản nháp. Khi có xung đột, giữ bản nháp và khóa lưu đến khi nạp lại, không tự đổi version của bản nháp.
+- Màn Cài đặt chỉ thêm/bớt nội dung trong AGENTS.md; không có nút/API xóa file. DELETE trả 405; kể cả lưu nội dung rỗng vẫn giữ file. ACP/RPC dựa vào cơ chế OMP tự nạp context.
+- Handler Agent localStorage trong legacy chỉ hoạt động ngoài `/chat`; production dùng duy nhất API file OMP.
+- Cập nhật capability source/scope/transport; deploy có backup trước khi restart. Không sửa `AGENTS.md` chỉ bằng việc mở trang hoặc deploy.
+
+### Nghiệm thu
+
+- Contract fake OMP kiểm tra đọc file dài, thêm/bớt/làm rỗng nội dung mà file vẫn tồn tại, từ chối DELETE, backup, nạp chỉnh sửa ngoài, chống ghi đè version cũ, và không truyền prompt nhân đôi qua ACP/RPC.
+- Đồng bộ `product-release/`, kiểm tra runtime và Settings bằng dashboard live; không gọi model thật.

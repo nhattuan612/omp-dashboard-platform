@@ -1,6 +1,6 @@
 {
   "name": "hon-pi-omp-dashboard-product",
-  "version": "2026.09.29",
+  "version": "2026.10.02",
   "entrypoints": {
     "chat": "/chat",
     "quota": "/quota",
@@ -8,6 +8,8 @@
   },
   "files": [
     "server.mjs",
+    "omp-stats-history.mjs",
+    "chat-output-mode.mjs",
     "package-lock.json",
     "package.json",
     "scripts/fix-node-pty-helper.mjs",

@@ -4,7 +4,12 @@ set -eu
 base_url=${OMP_DASHBOARD_BASE_URL:-http://127.0.0.1:4177}
 runtime_cwd=${OMP_DASHBOARD_RUNTIME_CWD:-/Users/trannhattuan/.omp/usage-dashboard}
 tmp_dir=$(mktemp -d)
-trap 'rm -rf "$tmp_dir"' EXIT
+symlink_path=
+cleanup() {
+  [ -z "$symlink_path" ] || /bin/rm -f "$symlink_path"
+  /bin/rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
 
 assert_status() {
   expected=$1
@@ -29,6 +34,18 @@ assert_status 403 /usr/bin/curl -sS -H 'Host: evil.example' -o "$tmp_dir/host.js
 assert_status 403 /usr/bin/curl -sS -b "$tmp_dir/cookies" -H 'Origin: https://evil.example' -o "$tmp_dir/origin.json" -w '%{http_code}' "$base_url/api/console/state"
 assert_status 403 /usr/bin/curl -sS -b "$tmp_dir/cookies" -H 'content-type: application/json' -d '{"contextId":"x","command":{"type":"bash","command":"echo unsafe"}}' -o "$tmp_dir/command.json" -w '%{http_code}' "$base_url/api/console/command"
 assert_status 403 /usr/bin/curl -sS -b "$tmp_dir/cookies" -H 'content-type: application/json' -d '{"cwd":"/"}' -o "$tmp_dir/cwd.json" -w '%{http_code}' "$base_url/api/console/start"
+assert_status 403 /usr/bin/curl -sS -b "$tmp_dir/cookies" -H 'content-type: application/json' -d '{"cwd":"/tmp"}' -o "$tmp_dir/tmp-cwd.json" -w '%{http_code}' "$base_url/api/console/start"
+assert_status 400 /usr/bin/curl -sS -b "$tmp_dir/cookies" -H 'content-type: application/json' -d '{"cwd":"/etc/hosts"}' -o "$tmp_dir/file-cwd.json" -w '%{http_code}' "$base_url/api/console/start"
+assert_status 200 /usr/bin/curl -sS -b "$tmp_dir/cookies" -o "$tmp_dir/workspaces.json" -w '%{http_code}' "$base_url/api/v1/workspaces"
+workspace_root=$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).roots?.[0]?.path||""))' < "$tmp_dir/workspaces.json")
+[ -n "$workspace_root" ] || { echo "no valid workspace root returned" >&2; exit 1; }
+/usr/bin/curl -sS -b "$tmp_dir/cookies" --get --data-urlencode "path=$workspace_root" -o "$tmp_dir/valid-workspace.json" "$base_url/api/v1/workspaces"
+/usr/bin/grep -Fq "\"currentPath\":\"$workspace_root\"" "$tmp_dir/valid-workspace.json"
+symlink_path="$workspace_root/.omp-security-escape-$$"
+[ ! -e "$symlink_path" ] || { echo "symlink fixture path already exists" >&2; exit 1; }
+/bin/ln -s "$tmp_dir" "$symlink_path"
+/usr/bin/curl -sS -b "$tmp_dir/cookies" --get --data-urlencode "path=$symlink_path" -o "$tmp_dir/symlink-cwd.json" -w '%{http_code}' "$base_url/api/v1/workspaces" | /usr/bin/grep -qx '403'
+assert_status 403 /usr/bin/curl -sS -b "$tmp_dir/cookies" -H 'content-type: application/json' -d "{\"cwd\":\"$symlink_path\"}" -o "$tmp_dir/symlink-console-cwd.json" -w '%{http_code}' "$base_url/api/console/start"
 assert_status 400 /usr/bin/curl -sS -b "$tmp_dir/cookies" -o "$tmp_dir/browser-mode.json" -w '%{http_code}' "$base_url/api/v1/chat/stream?prompt=ping&model=neural-flash-3.8&browserMode=invalid"
 assert_status 400 /usr/bin/curl -sS -b "$tmp_dir/cookies" -H 'content-type: application/json' -d '{"contextId":"x","modelSource":"invalid","command":{"type":"set_model","modelId":"not-in-catalog"}}' -o "$tmp_dir/model-source.json" -w '%{http_code}' "$base_url/api/console/command"
 /usr/bin/grep -q '"field":"modelSource"' "$tmp_dir/model-source.json"

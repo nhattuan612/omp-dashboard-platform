@@ -22,36 +22,6 @@ Dashboard chạy cục bộ trên macOS để:
 
 Dashboard không phải backend cloud, không tự lưu credential Google lên GitHub và không sửa mã nguồn lõi của OMP.
 
-## Giới thiệu chi tiết
-
-OMP Dashboard Platform là giao diện quản lý chạy cùng máy với OMP CLI. Thay vì theo dõi quota bằng lệnh terminal và dùng một cửa sổ riêng để chat, người dùng có thể mở dashboard trên trình duyệt để xem trạng thái tài khoản và làm việc với OMP tại một địa chỉ local.
-
-### Dashboard hỗ trợ những việc gì?
-
-| Khu vực | Mục đích | Chức năng chính |
-|---|---|---|
-| **Chat — <code>/chat</code>** | Làm việc với OMP qua giao diện web | Tạo và quản lý session, chọn model và công cụ OMP đang cung cấp, gửi prompt, xem phản hồi streaming, xử lý yêu cầu phê duyệt và hủy lượt đang chạy. |
-| **Quota — <code>/quota</code>** | Theo dõi các tài khoản Google/OAuth dùng với OMP | Xem quota theo cửa sổ thời gian, trạng thái bảo vệ tài khoản, lịch sử token, biểu đồ sử dụng và chính sách xoay tài khoản khi đã bật cấu hình tương ứng. |
-| **Health — <code>/healthz</code>** | Kiểm tra runtime local | Cho installer và người vận hành biết dashboard có đang phản hồi hay không. |
-
-### Dashboard phối hợp với OMP ra sao?
-
-Trình duyệt gửi yêu cầu tới Node.js server trên cùng máy. Server giao tiếp với OMP CLI đã cài trong môi trường người dùng: phần chat dùng luồng ACP của OMP; phần quota đọc trạng thái tài khoản và mức sử dụng do OMP cung cấp. Dashboard là lớp giao diện và điều phối local, không thay thế OMP, không cung cấp model riêng và không tự cấp tài khoản Google.
-
-Luồng sử dụng thông thường là: cài OMP CLI → cài dashboard → mở <code>/quota</code> để đăng nhập/chọn tài khoản và kiểm tra trạng thái → mở <code>/chat</code> để tạo session và trò chuyện. Chức năng khả dụng phụ thuộc phiên bản OMP, model, công cụ và quyền mà OMP hiện có.
-
-### Phạm vi sử dụng
-
-Đây là công cụ cá nhân chạy trên máy macOS, không phải dịch vụ SaaS hay server dùng chung. Dashboard bind vào <code>127.0.0.1</code>; dữ liệu OAuth, session và trạng thái tiếp tục do OMP lưu trong vùng dữ liệu local của người dùng. Không cần cài PI/Open Design wrapper riêng để chạy dashboard. Các giới hạn cài đặt và địa chỉ truy cập được mô tả ở phần [Cần cài gì?](#cần-cài-gì) và [IP, port và phạm vi truy cập](#ip-port-và-phạm-vi-truy-cập).
-
-### Pool tài khoản và lưu ý sử dụng
-
-OMP hỗ trợ đăng nhập Google Gemini; dashboard giúp người dùng đăng nhập lần lượt các tài khoản Gemini mà mình có quyền sử dụng, gom chúng thành một pool để theo dõi quota và chủ động chọn tài khoản cho từng phiên. Pool chỉ giúp quản lý và lựa chọn tài khoản thuận tiện hơn, không làm tăng quota riêng của tài khoản hay miễn trừ giới hạn và điều khoản dịch vụ của Google.
-
-Tác giả **Tuấn Vũng Tàu** không khuyến khích dùng nhiều tài khoản để spam hàng loạt hoặc né giới hạn dịch vụ. Google có thể yêu cầu xác minh, hạn chế hoặc khóa tài khoản; dashboard không bảo đảm tài khoản sẽ tránh được các biện pháp này. Tác giả không chịu trách nhiệm nếu tài khoản bị Google hạn chế hoặc khóa do cách sử dụng; người dùng tự chịu trách nhiệm với cách sử dụng và tình trạng tài khoản của mình.
-
-Theo thử nghiệm nội bộ của tác giả, tài khoản **Add Family** có vẻ dễ bị Google chặn hơn tài khoản mua gói trực tiếp. Đây là quan sát cá nhân, không phải kết luận hay chính sách chính thức của Google, và không bảo đảm áp dụng cho mọi tài khoản.
-
 ## Giao diện
 
 Dashboard gồm hai khu vực chính: `/quota` để theo dõi tài khoản, OAuth và quota; `/chat` để chat streaming với OMP.

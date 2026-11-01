@@ -176,3 +176,86 @@ Chi tiết và acceptance: [neuratalk-ui-upgrade-plan-2026-09-29.md](neuratalk-u
 - [x] Sửa model popover: accessible name, state ARIA đồng bộ, Escape đóng và trả focus; browser source smoke 320–1440px pass.
 - [ ] Cutover cần Síp duyệt. Sau bản vá, source/runtime chỉ lệch `honpi-chat-dashboard-SKE.html` và `honpi-chat-dashboard-legacy.js`; chưa deploy/restart.
 - [ ] Full ledger 258 control/13 modal chưa chạy lại; kế hoạch cũng nhắc `/chat-preview` nhưng route này hiện chưa có.
+
+---
+
+## Phân loại nguồn cuộc trò chuyện — 2026-10-01
+
+- Quy tắc UI: chat do `/chat` tạo không có icon; nguồn chưa xác định hiện `$`; app ngoài đã nhận diện thì gom vào folder dự án phù hợp hoặc tạo folder riêng.
+- Phạm vi chỉ là metadata/sidebar và gom nhóm. Không dùng nguồn này để đổi Flow, nội dung chat, prompt, model hay token.
+- Cần OMP lưu danh tính client/app vào metadata session khi tạo và trả lại qua API danh sách. Không dùng whitelist app cố định; nguồn app do client tự khai báo nên chỉ được xem là nhãn giao diện, không phải căn cứ bảo mật.
+- Trạng thái: runtime OMP `18.4.6` đã cập nhật audit; backup mới nhất: `/Users/trannhattuan/.omp/usage-dashboard/backups/deploy/20261001-161054-origin-pagination-fix` (`SHA256SUMS` đạt). Patch nguồn: `patches/omp-origin-metadata-v18.4.6.patch`.
+- Quy tắc sau audit: OMP trực tiếp hiện `π`; `/chat` không icon; nguồn chưa xác minh hiện `$`; app có danh tính được gom vào folder phù hợp. ACP nhận diện động từ `clientInfo`, không dùng whitelist. OMP `rpc`/`rpc-ui` không có danh tính mặc định thành `unknown`.
+- Dashboard chỉ suy luận Open Design cho session cũ không có `originType`; giữ `unknown` đã khai báo và app thiếu tên ở trạng thái chưa xác minh. Việc này chỉ tác động metadata/sidebar/folder, không đổi Flow, nội dung chat, prompt, model hay token.
+- Kiểm tra đạt: `check:types`; 2 test ACP tập trung (có và không có `clientInfo`); build, `omp/18.4.6`, codesign; `node --check`; `patch --dry-run`; runtime `/healthz`, `/chat`, JS asset đều HTTP 200 và asset có badge `π`.
+- Giới hạn: client ACP khai báo `clientInfo` được nhận diện động. RPC client không gửi danh tính vẫn hiện `$`; không thể đặt tên app từ giao thức hiện tại. Chỉ session cũ thiếu hẳn `originType` mới có thể được suy luận Open Design bằng CWD; chưa gửi PR upstream.
+
+- Audit tiếp 2026-10-01: phiên CLI không tương tác mặc định `unknown`; ACP `_omp/sessions/listAll` hỗ trợ offset và thứ tự tạo ổn định; bridge lấy đủ trang, phát hiện trang lặp/thiếu và vẫn trả danh sách theo hoạt động mới nhất.
+- Kiểm chứng: ACP test tập trung, `bun run check`, build + codesign, patch dry-run đều đạt; bridge runtime trả đủ 1.735/1.735 session; mô phỏng 6.001 session qua 2 trang cũng đạt, không trùng ID. Health, `/chat`, JS asset: HTTP 200.
+- Rà lịch sử chỉ đọc header JSONL trong 15:00–15:40 +07: có 2 header, cả hai thiếu origin trong header và metadata là app/inferred; không có header gắn `omp`, chưa thấy nhãn `π` sai. Không sửa metadata lịch sử.
+- Lưu ý kiểm chứng: OMP `listAll` đọc prefix giới hạn và tail giới hạn để dựng catalog; nội dung không in ra hay lưu thêm. Quét lịch sử chỉ đọc header.
+
+- Khắc phục audit 2026-10-01: server giữ snapshot catalog và một refresh đang chạy; khởi động/watcher làm mới snapshot, còn `GET /sessions` chỉ đọc snapshot đã ổn định. Mỗi cập nhật metadata session đánh dấu snapshot cũ; app mới được gom folder trong lượt refresh, không phải trong GET lặp lại.
+- Tin cậy nguồn: chỉ metadata `chat` explicit do dashboard ghi mới là `/chat` không icon. `clientInfo` ACP mang tên `Hòn π /chat` vẫn là app, nên không thể giả nguồn dashboard.
+- Hậu kiểm source: 115 session-action scenarios pass; contract chứng minh GET không ghi metadata, hai GET đồng thời dùng một ACP scan; focused ACP pagination pass; `node --check`, `git diff --check`, `patch --dry-run` pass. Patch OMP cập nhật thêm regression test, chưa đổi binary OMP ở lượt này.
+- Đã deploy/restart dashboard: backup `/Users/trannhattuan/.omp/usage-dashboard/backups/deploy/20261001-165235-42698`, manifest checksum pass; LaunchAgent running (PID 43064); `/healthz`, `GET /chat`, chat asset đều 200. Runtime `server.mjs` và bridge khớp source checksum. Live catalog có cookie trả 200 và metadata không đổi ở lượt GET cache.
+
+---
+
+## Đồng bộ hai chiều tab Agent OMP với AGENTS.md — 2026-10-01
+
+Chi tiết và quyết định: [plan.md — Đồng bộ file context Agent OMP](plan.md#đồng-bộ-tab-agent-omp-với-file-context-thật--2026-10-01).
+
+- [x] Điều tra: nguồn thật là `~/.omp/agent/AGENTS.md` (OMP tự nạp); bản deploy trước ghi vào cấu hình dashboard riêng nên chưa đấu nối Agent thật.
+- [x] API đọc/ghi atomic file context, backup bản cũ, hash chống ghi đè và hỗ trợ file dài.
+- [x] UI đọc/nạp lại thay đổi từ OMP, lưu thẳng file.
+- [x] Đồng bộ `product-release/`; 116 contract scenarios pass; deploy/restart sau backup checksum.
+- [x] Live health/chat/quota 200; Agent API chưa xác thực 401; Settings nạp đúng 10.928 ký tự/93 dòng. `AGENTS.md` giữ nguyên hash `70345e5a…92b46f6`; không gọi model thật.
+- [x] Backup cuối: `/Users/trannhattuan/.omp/usage-dashboard/backups/deploy/20261001-191035-64822`; LaunchAgent PID 65150, trạng thái running.
+
+### Rà lại quyền chỉnh nội dung — 2026-10-02
+
+- [x] Giữ API GET/PUT; từ chối DELETE, thêm/bớt/làm rỗng nội dung vẫn giữ file AGENTS.md.
+- [x] Bỏ nút “Xóa toàn bộ”; tắt handler localStorage legacy trên `/chat`.
+- [x] Khi xung đột, giữ bản nháp và khóa Lưu đến khi nạp lại; tải lại khi mở tab/quay về cửa sổ nếu chưa sửa.
+- [x] 116 contract scenarios pass; thêm/bớt/làm rỗng nội dung giữ file, DELETE 405, stale version 409.
+- [x] UI regression dùng API giả xác nhận giữ bản nháp/khóa lưu khi conflict, nạp lại version mới, lưu thêm/bớt, tự đọc khi mở tab/quay lại cửa sổ và không chạy handler localStorage cũ.
+- [x] Deploy/restart sau backup `/Users/trannhattuan/.omp/usage-dashboard/backups/deploy/20261002-072748-75215`; manifest checksum pass; LaunchAgent PID 75557 running, health/chat/quota 200.
+- [x] API có auth đọc đúng toàn bộ 10.928 ký tự từ file OMP; hash file Agent thật giữ nguyên. Source/runtime/product-release parity và syntax/diff check pass; TaskSpace 163 đã finish, không gọi model thật.
+
+Phạm vi chặn xóa là màn Cài đặt Agent OMP và API cấu hình tương ứng; không áp dụng bộ lọc lệnh bash/terminal tùy ý trong OMP.
+
+---
+
+## Đồng bộ thanh Công cụ OMP — 2026-10-02
+
+- [x] Backup source/release/runtime trước sửa: `~/.omp/usage-dashboard/backups/tool-sync/20261002-074416`, 17 file checksum đạt.
+- [x] Xác minh OMP 18.4.6: 14 builtin RPC/ACP; audit overlay xdev tạm thấy thêm 38 MCP, không gọi model hoặc sửa config thật.
+- [x] Cập nhật map 18.4.6, kiểm tra descriptor trước khi cho phép chọn; hiển thị mọi trạng thái và lý do bị khóa.
+- [x] API/audit lỗi giữ danh sách cuối gồm MCP; đồng bộ không báo thành công giả.
+- [x] 120 contract scenarios pass; live hiển thị đủ 58 hàng/14 switch khả dụng; desktop/tablet/mobile 1440/768/390/320px không tràn ngang.
+- [x] UI fixture stale/probe/HTTP error giữ đủ 58 hàng, khóa thao tác, báo rõ lý do và phục hồi sau đồng bộ.
+- [x] Deploy/restart sau backup `~/.omp/usage-dashboard/backups/deploy/20261002-075428-81445`; manifest checksum đạt; health/chat/quota 200, LaunchAgent running.
+- [x] Kiểm tra cuối 120 contract scenarios pass, bao gồm GET sau audit lỗi không khôi phục cache thành công cũ. Final backup `/Users/trannhattuan/.omp/usage-dashboard/backups/deploy/20261002-080214-83426` checksum đạt; LaunchAgent PID 83751 running; source/runtime/release parity, health/chat/quota 200, Agent file giữ nguyên hash.
+- [x] TaskSpace 164 đã finish keep=[]; không gọi model thật.
+
+## Settings và OMP modes — 2026-10-02
+
+- [x] Hoàn tất [kế hoạch chuẩn hóa Settings và đấu nối OMP](settings-sync-plan-2026-10-02.md): 6 tab theo demo, không duplicate ID/control, Models hiển thị giới hạn inline, Browser/Share/Memory gọi trạng thái thật, Enter queue/block thực; giữ nguyên file Agent.
+- [x] Live UI 30 tổ hợp (6 tab × 1440/1024/768/375/320), reduced-motion, font/glyph tiếng Việt và shell responsive: không tràn, ID duy nhất, không lỗi console.
+- [x] Backend contract 123/123; OMP approval wrapper 6/6; preview interaction 16/16 và capability retry sau API lỗi. Memory API báo backend `off`; không chạy thao tác Memory.
+- [x] Backup trước sửa/deploy checksum đạt; source/runtime/release đồng bộ; health/chat/quota 200; Agent file SHA-256 không đổi. Backup deploy cuối: `~/.omp/usage-dashboard/backups/deploy/20261002-092545-3852`.
+- [x] Chrome/Electron CDP loopback đã cấu hình riêng cho OMP và API trả `supported/ready`; Relay vẫn báo `extension_disconnected` đến khi extension được load.
+
+## OMP Browser Relay — bootstrap follow-up — 2026-10-02
+
+- [x] Chọn Relay; cài bộ extension bằng `omp browser-relay install` tại `~/.omp/browser-relay/extension`.
+- [x] Sửa deadlock capability: Relay cho phép chọn `Khởi chạy cùng chat` khi endpoint chưa chạy; OMP worker nhận config overlay per-chat và có thể tự bootstrap relay. `test-session-actions.mjs`: 124 scenarios pass; gồm prewarm với endpoint `endpoint_unavailable` và extension `503`.
+- [ ] Load extension Relay unpacked trong Chrome nếu Síp muốn tiếp tục nhánh Relay; hiện ưu tiên Chrome/Electron CDP riêng.
+
+## Chrome/Electron CDP — 2026-10-02
+
+- [x] Backup cấu hình OMP trước khi nối CDP: `~/.omp/backups/omp-agent-config-before-cdp-20261002.yml` (mode `600`).
+- [x] Mở Chrome profile riêng `~/.omp/browser-profiles/omp-cdp`, CDP loopback `127.0.0.1:9225`; không dùng Chrome cá nhân hoặc cổng headless `9223`.
+- [x] Đặt `browser.cdpUrl=http://127.0.0.1:9225`; API capabilities live trả `chrome-electron: supported/ready`; `/healthz`, `/chat`, `/quota` đều `200`.
+- [ ] Relay vẫn chờ extension tại `~/.omp/browser-relay/extension`; service `9224` còn giữ nguyên, chưa bật `browser.relay` global.

@@ -201,7 +201,7 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["account", "models"],
+                  "required": ["account", "detectedModels", "availableModels", "unavailableModels", "models"],
                   "properties": {
                     "account": {
                       "type": "object",
@@ -219,6 +219,23 @@
                     "models": {
                       "type": "array",
                       "items": { "$ref": "#/components/schemas/AIModel" }
+                    },
+                    "detectedModels": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/AIModel" }
+                    },
+                    "availableModels": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/AIModel" }
+                    },
+                    "unavailableModels": {
+                      "type": "array",
+                      "items": {
+                        "allOf": [
+                          { "$ref": "#/components/schemas/AIModel" },
+                          { "type": "object", "required": ["reason"], "properties": { "reason": { "type": "string" } } }
+                        ]
+                      }
                     }
                   }
                 },
@@ -388,7 +405,7 @@
       "get": {
         "tags": ["Token Analytics"],
         "summary": "Lấy nhật ký tiêu thụ Token OMP theo khoảng thời gian",
-        "description": "Lịch sử chỉ tính usage khớp tài khoản OAuth Gemini, provider/model Gemini và credential pin đúng thứ tự thời gian. Account không nhận diện được, usage OpenAI/Anthropic và model ngoài Gemini bị loại, kể cả scope=all. Hỗ trợ: 1h, 24h, 7d, 30d, all.",
+        "description": "Các scope 1h/24h/7d/30d là cửa sổ trượt tính từ generatedAt; all không giới hạn. Cutoff dùng UTC ISO-8601, nhãn trend dùng timezone Asia/Ho_Chi_Minh và mỗi bucket có bucketStart/bucketEnd chính xác. History chỉ tính usage Google Gemini có credential_pin khớp account OAuth đã nhận diện; account hiện không đủ quota entitlement vẫn được giữ trong lịch sử nếu identity còn ánh xạ được. Response items tối đa 200 dòng; totalRecords/returnedRecords/hasMore mô tả đầy đủ việc cắt dữ liệu. Thêm refresh=1 để bỏ qua cache khi đọc tươi.",
         "operationId": "getQuotaHistory",
         "parameters": [
           {
@@ -401,6 +418,13 @@
               "enum": ["1h", "24h", "7d", "30d", "all"],
               "default": "24h"
             }
+          },
+          {
+            "name": "refresh",
+            "in": "query",
+            "required": false,
+            "description": "Đặt 1 để bỏ qua cache History và đọc lại session JSONL.",
+            "schema": { "type": "string", "enum": ["1"] }
           }
         ],
         "responses": {
@@ -1342,6 +1366,14 @@
         "required": [
           "scope",
           "totalRequests",
+          "scopeMode",
+          "generatedAt",
+          "timeZone",
+          "bucketIntervalMs",
+          "totalRecords",
+          "returnedRecords",
+          "itemsLimit",
+          "hasMore",
           "totalTokensFormatted",
           "inputTokensFormatted",
           "outputTokensFormatted",
@@ -1353,6 +1385,15 @@
             "enum": ["1h", "24h", "7d", "30d", "all"],
             "example": "24h"
           },
+          "scopeMode": { "type": "string", "enum": ["rolling", "unbounded"] },
+          "cutoff": { "type": ["string", "null"], "format": "date-time" },
+          "generatedAt": { "type": "string", "format": "date-time" },
+          "timeZone": { "type": "string", "enum": ["Asia/Ho_Chi_Minh"] },
+          "bucketIntervalMs": { "type": "number", "minimum": 1 },
+          "totalRecords": { "type": "integer", "minimum": 0 },
+          "returnedRecords": { "type": "integer", "minimum": 0, "maximum": 200 },
+          "itemsLimit": { "type": "integer", "const": 200 },
+          "hasMore": { "type": "boolean" },
           "totalRequests": {
             "type": "integer",
             "example": 146
@@ -1389,10 +1430,14 @@
       },
       "HourlyTrendItem": {
         "type": "object",
-        "required": ["hour", "input", "output", "total", "isPeak"],
+        "required": ["bucketStart", "bucketEnd", "label", "hour", "input", "cache", "output", "total", "isPeak"],
         "properties": {
+          "bucketStart": { "type": "string", "format": "date-time" },
+          "bucketEnd": { "type": "string", "format": "date-time" },
+          "label": { "type": "string", "description": "Ngày/tháng/năm và giờ theo timeZone Asia/Ho_Chi_Minh." },
           "hour": { "type": "string", "example": "14:00" },
           "input": { "type": "integer", "example": 48200 },
+          "cache": { "type": "integer", "example": 1200 },
           "output": { "type": "integer", "example": 9800 },
           "total": { "type": "integer", "example": 58000 },
           "isPeak": { "type": "boolean", "example": true }
@@ -1553,6 +1598,7 @@
           "browserMode": { "type": "string", "enum": ["ego-browser", "none"], "default": "none" },
           "approvalMode": { "type": "string", "enum": ["always-ask", "write", "yolo"] },
           "attachments": { "type": "array", "maxItems": 4, "items": { "type": "object" } },
+          "outputMode": { "type": "string", "enum": ["text", "image", "auto"], "default": "auto", "description": "Chọn phản hồi văn bản, tạo ảnh, hoặc tự nhận diện theo nội dung yêu cầu." },
           "modelSource": { "type": "string", "enum": ["quota", "omp"], "default": "quota", "description": "quota cho phép toàn bộ model OMP provider google-antigravity của account được chọn, gồm mọi family; omp dùng catalog đầy đủ, còn model Antigravity vẫn ghim credential đã chọn." }
         }
       },
