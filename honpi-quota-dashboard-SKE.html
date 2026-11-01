@@ -4147,6 +4147,23 @@ button:not(.modal-close)[disabled] {
 .readiness-caption, .readiness-note { color: var(--muted); font-size: 11px; margin-top: 3px; }
 .readiness-guidance { margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--border-soft); color: var(--fg-2); font-size: 10px; line-height: 1.5; }
 .readiness-checked-at { color: var(--muted); font-size: 10px; }
+.activity-log { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); min-width: 0; }
+.activity-log > summary { display: flex; align-items: center; gap: 10px; padding: 10px 13px; cursor: pointer; list-style: none; }
+.activity-log > summary::-webkit-details-marker { display: none; }
+.activity-log-title { color: var(--fg); font-size: 12px; font-weight: 700; }
+.activity-log-updated { margin-left: auto; color: var(--muted); font: 10px var(--font-mono); }
+.activity-log-body { padding: 0 12px 12px; }
+.activity-log-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 7px; color: var(--muted); font-size: 10px; }
+.activity-log-list { display: grid; gap: 5px; max-height: 300px; overflow: auto; padding: 8px; border: 1px solid var(--border-soft); border-radius: 8px; background: var(--surface-hover); }
+.activity-log-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 10px; padding: 6px 7px; border-bottom: 1px solid var(--border-soft); font-size: 10px; }
+.activity-log-entry:last-child { border-bottom: 0; }
+.activity-log-entry-title { color: var(--fg); font-weight: 650; overflow-wrap: anywhere; }
+.activity-log-entry-meta, .activity-log-entry-details, .activity-log-empty { color: var(--muted); }
+.activity-log-entry-meta { white-space: nowrap; font: 9px var(--font-mono); }
+.activity-log-entry-details { grid-column: 1 / -1; overflow-wrap: anywhere; }
+.activity-log-entry.is-error .activity-log-entry-title { color: var(--danger-text); }
+.activity-log-entry.is-warn .activity-log-entry-title { color: var(--warn-text); }
+.activity-log-empty { margin: auto; padding: 14px; text-align: center; }
 .model-test { margin: 0 0 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
 .model-test > summary { display: flex; align-items: center; gap: 10px; padding: 10px 13px; cursor: pointer; list-style: none; }
 .model-test > summary::-webkit-details-marker { display: none; }
@@ -4424,6 +4441,14 @@ button:not([disabled]) { transform:none !important; transition:background-color 
             <div class="readiness-guidance">Tuyến Gemini /quota cần Dashboard + OMP Auth Gateway + Auth Broker + Google Antigravity OAuth trong pool. Không cần bật OAuth provider khác; pool wildcard phải rỗng. Broker hiện chỉ cho biết credential đã đăng ký, không cung cấp cờ bật/tắt toàn bộ provider.</div>
             <div id="readiness-note" class="readiness-note">Kiểm tra không gửi prompt và không tiêu quota.</div>
           </section>
+
+          <details class="activity-log" id="activity-log">
+            <summary><span class="activity-log-title">LOG hoạt động</span><span id="activity-log-updated" class="activity-log-updated">Chưa tải</span></summary>
+            <div class="activity-log-body">
+              <div class="activity-log-toolbar"><span id="activity-log-status">Mở LOG để xem hoạt động gần đây.</span><button id="activity-log-refresh" class="btn btn-secondary btn-sm" type="button">Tải lại</button></div>
+              <div id="activity-log-list" class="activity-log-list" role="log" aria-live="polite"><div class="activity-log-empty">Mở LOG để tải lịch sử.</div></div>
+            </div>
+          </details>
 
           <details class="model-test" id="model-test" open>
             <summary><span class="model-test-title">Chat thử model OMP</span><span class="model-test-hint">Chọn model, gửi câu hỏi và xem phản hồi thật</span><span id="model-test-count" class="model-test-count">Đang tải danh sách…</span></summary>
@@ -4935,7 +4960,8 @@ button:not([disabled]) { transform:none !important; transition:background-color 
   // shortcut: history summaries can be 2m stale; add shared caching only if multi-tab queries remain costly.
   const HISTORY_SCOPE_REFRESH_INTERVAL_MS = 120000;
   let quotaModelsLoadedAt = 0;
-  let readinessCheckedAt = 0, readinessLoading = false;
+  const activityLogClientEvents = new Set(['dashboard_ui_loaded', 'dashboard_tab_changed', 'manual_sync_started', 'readiness_check_started']);
+  let readinessCheckedAt = 0, readinessLoading = false, activityLogLoadedAt = 0, activityLogRequest = null;
   let modelTestCatalog = [], modelTestCatalogLoadedAt = 0, modelTestLoading = false, modelTestSending = false;
   const modelTestSessions = new Map(), modelTestConversations = new Map();
   function clientLog(level, event, payload = {}) {
@@ -4943,7 +4969,37 @@ button:not([disabled]) { transform:none !important; transition:background-color 
     if (typeof console !== 'undefined' && typeof console[level === 'error' ? 'error' : level === 'warn' ? 'warn' : 'info'] === 'function') {
       console[level === 'error' ? 'error' : level === 'warn' ? 'warn' : 'info']('[quota-ui]', event, entry);
     }
-    if ((level === 'warn' || level === 'error') && !document.hidden) void fetch('/api/v1/quota/client-log', { method: 'POST', keepalive: true, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ level, event, requestId: payload.requestId, scope: payload.scope, durationMs: payload.durationMs, errorName: payload.errorName }) }).catch(() => {});
+    if (!document.hidden && ((level === 'warn' || level === 'error') || activityLogClientEvents.has(event))) void fetch('/api/v1/quota/client-log', { method: 'POST', keepalive: true, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ level, event, requestId: payload.requestId, scope: payload.scope, durationMs: payload.durationMs, errorName: payload.errorName, tab: payload.tab }) }).catch(() => {});
+  }
+  async function loadActivityLog(force = false) {
+    if (document.hidden || activityLogRequest || (!force && Date.now() - activityLogLoadedAt < 10000)) return activityLogRequest;
+    const list = document.getElementById('activity-log-list'), status = document.getElementById('activity-log-status'), updated = document.getElementById('activity-log-updated'), button = document.getElementById('activity-log-refresh');
+    if (!list) return;
+    if (status) status.textContent = 'Đang tải lịch sử hoạt động…';
+    if (button) button.disabled = true;
+    list.innerHTML = '<div class="activity-log-empty">Đang tải…</div>';
+    activityLogRequest = (async () => {
+      try {
+        const result = await api('/api/v1/quota/client-log?limit=100');
+        const events = Array.isArray(result.events) ? result.events : [];
+        list.innerHTML = events.length ? events.map((item) => {
+          const time = new Date(item.timestamp).toLocaleString('vi-VN');
+          const level = ['error', 'warn'].includes(item.level) ? item.level : '';
+          return `<article class="activity-log-entry ${level ? `is-${level}` : ''}"><strong class="activity-log-entry-title">${esc(item.title)}</strong><time class="activity-log-entry-meta">${esc(time)}</time>${item.details ? `<span class="activity-log-entry-details">${esc(item.details)}</span>` : ''}</article>`;
+        }).join('') : '<div class="activity-log-empty">Chưa có hoạt động được ghi.</div>';
+        activityLogLoadedAt = Date.now();
+        if (status) status.textContent = `${events.length} hoạt động gần đây`;
+        if (updated) updated.textContent = `Cập nhật ${new Date().toLocaleTimeString('vi-VN')}`;
+      } catch (error) {
+        list.innerHTML = '<div class="activity-log-empty">Không tải được lịch sử. Hãy thử lại.</div>';
+        if (status) status.textContent = 'Tải lịch sử thất bại';
+        clientLog('warn', 'activity_log_load_failed', { errorName: error?.name || 'Error' });
+      } finally {
+        activityLogRequest = null;
+        if (button) button.disabled = false;
+      }
+    })();
+    return activityLogRequest;
   }
   function deferQuotaLoadWhileHidden() {
     if (!document.hidden) return false;
@@ -5834,7 +5890,7 @@ button:not([disabled]) { transform:none !important; transition:background-color 
     }
   }
   async function refreshHistory(){const b=document.getElementById('history-refresh');if(b)b.disabled=true;try{await loadHistoryScopes(true);showToast('✓ Đã tải lại nhật ký Token OMP')}finally{if(b)b.disabled=false}}
-  async function triggerSync(){const b=document.getElementById('syncBtn'), icon=b?.querySelector('.sync-icon');if(b)b.disabled=true;if(icon)icon.classList.add('spinning');try{const out=await api(API.sync,{method:'POST',body:'{}'});quotaModelsLoadedAt=0;await loadAll({ afterCurrent: true });countdownSec=30;showToast(`✓ ${out.message||'Đã đồng bộ dữ liệu'}`)}catch(e){showToast(`✕ Đồng bộ thất bại: ${e.message}`)}finally{if(icon)icon.classList.remove('spinning');if(b)b.disabled=false}}
+  async function triggerSync(){clientLog('info','manual_sync_started');const b=document.getElementById('syncBtn'), icon=b?.querySelector('.sync-icon');if(b)b.disabled=true;if(icon)icon.classList.add('spinning');try{const out=await api(API.sync,{method:'POST',body:'{}'});quotaModelsLoadedAt=0;await loadAll({ afterCurrent: true });countdownSec=30;showToast(`✓ ${out.message||'Đã đồng bộ dữ liệu'}`)}catch(e){showToast(`✕ Đồng bộ thất bại: ${e.message}`)}finally{if(icon)icon.classList.remove('spinning');if(b)b.disabled=false}}
   async function switchActiveAccount(id){const a=ACCOUNTS.find(x=>x.id===id);if(!a)return;try{await api(API.switchAccount,{method:'POST',body:JSON.stringify({accountId:id})});quotaModelsLoadedAt=0;await loadAll({ afterCurrent: true });showToast(`✓ Đã kích hoạt tài khoản ${a.email}`)}catch(e){showToast(`✕ Chuyển tài khoản thất bại: ${e.message}`)}}
   function openQuickCheckModal(){renderQuickModalAccounts();updateActiveUI();document.getElementById('quickCheckModal')?.classList.add('open')}
   function closeQuickCheckModal(){document.getElementById('quickCheckModal')?.classList.remove('open')}
@@ -6140,12 +6196,14 @@ button:not([disabled]) { transform:none !important; transition:background-color 
   const dashboardTabs = document.querySelector('.topbar-tabs');
   const setDashboardTab = (name) => {
     const check = name === 'check';
+    if (document.getElementById('tab-check').getAttribute('aria-selected') === String(check)) return;
     document.getElementById('quota-view').hidden = check;
     document.getElementById('check-view').hidden = !check;
     document.getElementById('tab-quota').setAttribute('aria-selected', String(!check));
     document.getElementById('tab-check').setAttribute('aria-selected', String(check));
     document.getElementById('tab-quota').tabIndex = check ? -1 : 0;
     document.getElementById('tab-check').tabIndex = check ? 0 : -1;
+    clientLog('info', 'dashboard_tab_changed', { tab: check ? 'check' : 'quota' });
   };
   dashboardTabs?.addEventListener('click', (event) => {
     const tab = event.target.closest('[role="tab"]');
@@ -6159,7 +6217,9 @@ button:not([disabled]) { transform:none !important; transition:background-color 
     setDashboardTab(next);
     document.getElementById(`tab-${next}`).focus();
   });
-  document.getElementById('readiness-refresh')?.addEventListener('click', () => void loadReadiness(true));
+  document.getElementById('readiness-refresh')?.addEventListener('click', () => { clientLog('info', 'readiness_check_started'); void loadReadiness(true); });
+  document.getElementById('activity-log')?.addEventListener('toggle', (event) => { if (event.currentTarget.open) void loadActivityLog(); });
+  document.getElementById('activity-log-refresh')?.addEventListener('click', () => void loadActivityLog(true));
   document.getElementById('model-test-form')?.addEventListener('submit', sendModelTestMessage);
   document.getElementById('model-test-select')?.addEventListener('change', renderModelTestConversation);
   document.getElementById('model-test-reload')?.addEventListener('click', () => void loadModelTestCatalog(true));
@@ -6167,6 +6227,7 @@ button:not([disabled]) { transform:none !important; transition:background-color 
   window.addEventListener('keydown',e=>{if(e.key==='Escape'){closeQuickCheckModal();closeAccountDetails()}if(e.altKey&&(e.key==='t'||e.key==='T')){e.preventDefault();setTheme((document.documentElement.getAttribute('data-theme')||'dark')==='light'?'dark':'light')}});
   document.addEventListener('visibilitychange',()=>{if(document.hidden){if(loginPoll){clearTimeout(loginPoll);loginPoll=null;loginPollPaused=true}if(loginStatusRequestInFlight)loginPollPaused=true;updateQuotaLoadStatus('paused');return}countdownSec=30;const t=document.getElementById('topbarCountdown'),q=document.getElementById('quickModalCountdown');if(t)t.textContent='30s';if(q)q.textContent='30s';if(quotaRefreshPending||!lastQuotaLoadAt||Date.now()-lastQuotaLoadAt>=QUOTA_REFRESH_INTERVAL_MS){quotaRefreshPending=false;loadAll().catch(e=>showToast(`✕ Tự đồng bộ thất bại: ${e.message}`))}else updateQuotaLoadStatus('ready');if(loginPollPaused&&!loginStatusRequestInFlight){loginPollPaused=false;if(loginPoll){clearTimeout(loginPoll);loginPoll=null}void pollLoginStatus()}});
   setInterval(()=>{if(document.hidden)return;countdownSec=countdownSec<=1?30:countdownSec-1;tickAccountResetCountdowns();tickHistoryAges();const a=active();const t=document.getElementById('topbarCountdown'),q=document.getElementById('quickModalCountdown');if(t)t.textContent=`${countdownSec}s`;if(q)q.textContent=`${countdownSec}s`;if(countdownSec===30)loadAll().catch(e=>showToast(`✕ Tự đồng bộ thất bại: ${e.message}`))},1000);
+  clientLog('info', 'dashboard_ui_loaded');
   (async()=>{try{clearStaticDemo();setTheme(localStorage.getItem('omp-quota-theme')||'light');await loadAll()}catch(e){showToast(`✕ Không tải được quota OMP: ${e.message}`);const g=document.getElementById('accounts-grid');if(g)g.innerHTML=`<div class="text-muted" style="padding:16px">Không thể tải dữ liệu live: ${esc(e.message)}</div>`}})();
   </script>
 </body>

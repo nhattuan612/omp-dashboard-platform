@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import * as pty from "node-pty";
 import { existsSync, readFileSync, statSync, watch as watchFs } from "node:fs";
-import { appendFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { WebSocketServer, WebSocket } from "ws";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -43,6 +43,11 @@ const OMP_LOG_ROOT = join(homedir(), ".omp/logs");
 const OBSERVABILITY_LOG_FILE = resolve(process.env.OMP_DASHBOARD_LOG_FILE || join(ROOT, "logs", "dashboard-events.jsonl"));
 const OBSERVABILITY_LOG_BACKUP = `${OBSERVABILITY_LOG_FILE}.1`;
 const OBSERVABILITY_LOG_MAX_BYTES = 20 * 1024 * 1024;
+const OBSERVABILITY_ACTIVITY_MAX_BYTES = 256 * 1024;
+const OBSERVABILITY_ACTIVITY_MAX_ENTRIES = 100;
+const QUOTA_UI_INFO_EVENTS = new Set(["dashboard_ui_loaded", "dashboard_tab_changed", "manual_sync_started", "readiness_check_started"]);
+const QUOTA_UI_ERROR_EVENTS = new Set(["history_scope_error", "activity_log_load_failed"]);
+const ACTIVITY_SAFE_SCOPES = new Set(["1h", "24h", "7d", "30d", "all", "session", "default"]);
 const OMP_ARCHIVE_ROOT = join(homedir(), ".omp/agent/archive/console-sessions");
 const OMP_TRASH_ROOT = join(homedir(), ".omp/agent/trash/console-sessions");
 const OMP_AGENT_BLOB_ROOT = join(homedir(), ".omp/agent/blobs");
@@ -104,6 +109,7 @@ const GEMINI_PROVIDER_KEYS = new Set(["google-gemini-cli", "google-antigravity"]
 const LOGIN_PROVIDER_LABEL = "Google Cloud OAuth · OMP";
 let latest = { ok: false, error: "Đang tải dữ liệu…", updatedAt: null, accounts: [], authAccounts: [], accountsWithoutUsage: [], disabledCredentials: [], capacity: {}, preferredAccountEmail: null };
 let refreshing = null;
+let lastQuotaUsageSnapshot = null;
 let brokerUsageCache = null;
 let loginProcess = null;
 let login = { state: "idle", provider: null, url: null, message: null };
@@ -1326,6 +1332,17 @@ async function refresh(requestId = null) {
       generationCheckedAt: generationHealth.get(quotaAccountId(account))?.checkedAt || null,
       generationModel: generationHealth.get(quotaAccountId(account))?.model || null,
     }));
+    const usageSnapshot = new Map();
+    for (const account of snapshot.accounts) for (const limit of account.limits || []) {
+      const key = `${account.provider || "OMP"}|${limit.label || limit.id || "quota"}|${limit.window || "default"}`;
+      usageSnapshot.set(key, (usageSnapshot.get(key) || 0) + Math.round((Number(limit.usedFraction) || 0) * 10000));
+    }
+    if (lastQuotaUsageSnapshot) {
+      const keys = new Set([...lastQuotaUsageSnapshot.keys(), ...usageSnapshot.keys()]);
+      const changedWindowCount = [...keys].filter((key) => lastQuotaUsageSnapshot.get(key) !== usageSnapshot.get(key)).length;
+      if (changedWindowCount) void logEvent("info", "quota_usage_changed", { changedWindowCount });
+    }
+    lastQuotaUsageSnapshot = usageSnapshot;
     const generationByEmail = new Map(snapshot.accounts.map((account) => [account.email.toLowerCase(), account]));
     snapshot.authAccounts = snapshot.authAccounts.map((account) => ({
       ...account,
@@ -1420,9 +1437,111 @@ async function recordQuotaClientLog(req, requestId) {
   const body = await readJsonBody(req);
   const level = ["warn", "error"].includes(body?.level) ? body.level : "info";
   const event = typeof body?.event === "string" && /^[a-z0-9_:-]{1,80}$/i.test(body.event) ? body.event : "client_event";
-  const fields = { requestId, clientRequestId: typeof body?.requestId === "string" ? body.requestId.slice(0, 80) : undefined, scope: typeof body?.scope === "string" ? body.scope.slice(0, 20) : undefined, durationMs: Number.isFinite(Number(body?.durationMs)) ? Math.max(0, Math.min(600000, Number(body.durationMs))) : undefined, errorName: typeof body?.errorName === "string" ? body.errorName.slice(0, 80) : undefined };
+  if (level === "info" ? !QUOTA_UI_INFO_EVENTS.has(event) : !QUOTA_UI_ERROR_EVENTS.has(event)) return { ok: true, skipped: true };
+  const fields = { requestId, clientRequestId: typeof body?.requestId === "string" ? body.requestId.slice(0, 80) : undefined, durationMs: Number.isFinite(Number(body?.durationMs)) ? Math.max(0, Math.min(600000, Number(body.durationMs))) : undefined, errorName: typeof body?.errorName === "string" ? body.errorName.slice(0, 80) : undefined };
+  if (QUOTA_UI_INFO_EVENTS.has(event)) fields.tab = body?.tab === "check" || body?.tab === "quota" ? body.tab : undefined;
+  if (ACTIVITY_SAFE_SCOPES.has(body?.scope)) fields.scope = body.scope;
   await logEvent(level, `quota_ui_${event}`, Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)));
   return { ok: true, requestId };
+}
+
+const ACTIVITY_SAFE_PATHS = new Set([
+  "/quota", "/chat", "/api/login", "/api/v1/quota/accounts", "/api/v1/quota/overview",
+  "/api/v1/quota/readiness", "/api/v1/quota/history", "/api/v1/quota/models",
+  "/api/v1/quota/switch", "/api/v1/quota/sync", "/api/v1/quota/quick-check",
+  "/api/v1/quota/protect-config", "/api/v1/quota/omp-control", "/api/v1/chat/stream",
+]);
+const ACTIVITY_EVENT_TITLES = {
+  quota_refresh_start: "Bắt đầu làm mới quota",
+  quota_refresh_complete: "Đã cập nhật quota",
+  quota_refresh_failed: "Làm mới quota thất bại",
+  quota_history_loaded: "Đã tải lịch sử quota",
+  quota_history_load_start: "Bắt đầu tải lịch sử quota",
+  quota_history_load_complete: "Đã tải lịch sử quota",
+  quota_history_load_failed: "Tải lịch sử quota thất bại",
+  quota_history_index_load_failed: "Đọc chỉ mục quota thất bại",
+  quota_history_payload_complete: "Đã tổng hợp lịch sử quota",
+  quota_history_cache_hit: "Dùng cache lịch sử quota",
+  quota_ui_history_scope_error: "Lỗi tải lịch sử quota",
+  quota_ui_activity_log_load_failed: "Không tải được LOG",
+  chat_request: "Lượt chat OMP / sử dụng quota",
+  oauth_account_add_started: "Bắt đầu thêm tài khoản OAuth",
+  oauth_account_add_completed: "Đã thêm tài khoản OAuth",
+  oauth_account_add_failed: "Thêm tài khoản OAuth thất bại",
+  quota_account_removed: "Đã xoá tài khoản quota",
+  quota_account_selected: "Đã chọn tài khoản quota",
+  quota_usage_changed: "Mức sử dụng quota thay đổi",
+  http_slow_request: "Request chậm",
+  http_request_aborted: "Request bị ngắt",
+};
+
+function quotaActivityView(entry) {
+  if (!entry || typeof entry !== "object" || typeof entry.event !== "string") return null;
+  const event = entry.event;
+  if (event === "http_request" && ((entry.path === "/api/v1/quota/client-log") || (entry.path === "/api/login-status" && Number(entry.status) < 400))) return null;
+  const level = ["debug", "info", "warn", "error"].includes(entry.level) ? entry.level : "info";
+  let title = Object.hasOwn(ACTIVITY_EVENT_TITLES, event) ? ACTIVITY_EVENT_TITLES[event] : null;
+  if (event === "quota_ui_dashboard_ui_loaded") title = "Đã tải giao diện dashboard";
+  if (event === "quota_ui_dashboard_tab_changed") title = entry.tab === "check" ? "Mở tab CHECK" : "Mở tab QUOTA";
+  if (event === "quota_ui_manual_sync_started") title = "Bắt đầu đồng bộ thủ công";
+  if (event === "quota_ui_readiness_check_started") title = "Bắt đầu kiểm tra hệ thống";
+  let safePath = null, safeMethod = null;
+  if (event === "http_request" || event === "http_slow_request" || event === "http_request_aborted") {
+    safePath = typeof entry.path === "string" && ACTIVITY_SAFE_PATHS.has(entry.path) ? entry.path : null;
+    safeMethod = ["GET", "POST", "PUT", "PATCH", "DELETE"].includes(entry.method) ? entry.method : null;
+    if (event === "http_request") title = Number(entry.status) >= 400 ? "Request thất bại" : safePath === "/quota" ? "Tải giao diện quota" : safePath === "/chat" ? "Tải giao diện chat" : "Request hệ thống";
+    else title = ACTIVITY_EVENT_TITLES[event];
+  }
+  if (!title) title = event.startsWith("quota_ui_") ? "Hoạt động giao diện" : event.startsWith("quota_history_") ? "Hoạt động lịch sử quota" : event.startsWith("quota_models_") ? "Hoạt động danh sách model" : event.startsWith("quota_") ? "Hoạt động quota" : event.startsWith("http_") ? "Request hệ thống" : event.startsWith("chat_") ? "Hoạt động chat" : "Sự kiện hệ thống";
+  const details = [];
+  if (safeMethod && safePath) details.push(`${safeMethod} ${safePath}`);
+  if (Number.isFinite(Number(entry.status)) && Number(entry.status) >= 100) details.push(`HTTP ${Number(entry.status)}`);
+  for (const [key, label] of [["durationMs", "ms"], ["accountCount", "tài khoản"], ["changedWindowCount", "cửa sổ quota"], ["totalRecords", "bản ghi"], ["returnedRecords", "trả về"], ["sqliteSelectCount", "SQLite SELECT"]]) {
+    const value = Number(entry[key]);
+    if (Number.isFinite(value) && value >= 0 && value <= 100000000) details.push(`${label === "ms" ? Math.round(value) : value} ${label}`);
+  }
+  if (["completed", "aborted", "error", "success", "waiting", "starting"].includes(entry.status) && entry.event !== "http_request") details.push(entry.status);
+  if (ACTIVITY_SAFE_SCOPES.has(entry.scope)) details.push(`phạm vi ${entry.scope}`);
+  if (typeof entry.errorCode === "string" && /^[A-Z0-9_]{1,60}$/.test(entry.errorCode)) details.push(entry.errorCode);
+  const timestamp = typeof entry.timestamp === "string" && Number.isFinite(Date.parse(entry.timestamp)) ? new Date(entry.timestamp).toISOString() : null;
+  if (!timestamp) return null;
+  return { timestamp, level, title, details: details.join(" · ") };
+}
+
+async function readObservabilityTail(file) {
+  let handle;
+  try {
+    const info = await stat(file);
+    const length = Math.min(info.size, OBSERVABILITY_ACTIVITY_MAX_BYTES);
+    if (!length) return [];
+    handle = await open(file, "r");
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, info.size - length);
+    const text = buffer.toString("utf8");
+    return text.slice(info.size > length ? Math.max(0, text.indexOf("\n") + 1) : 0).split("\n").filter(Boolean);
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function quotaActivityPayload(url) {
+  const requested = Number(url.searchParams.get("limit"));
+  const limit = Number.isInteger(requested) && requested > 0 ? Math.min(requested, OBSERVABILITY_ACTIVITY_MAX_ENTRIES) : OBSERVABILITY_ACTIVITY_MAX_ENTRIES;
+  const events = [];
+  for (const file of [OBSERVABILITY_LOG_FILE, OBSERVABILITY_LOG_BACKUP]) {
+    const lines = await readObservabilityTail(file);
+    for (let i = lines.length - 1; i >= 0 && events.length < limit; i--) {
+      try {
+        const view = quotaActivityView(JSON.parse(lines[i]));
+        if (view) events.push(view);
+      } catch { /* skip incomplete or malformed log entries */ }
+    }
+    if (events.length >= limit) break;
+  }
+  return { events };
 }
 
 async function selectAccount(req) {
@@ -1503,6 +1622,7 @@ function loginErrorMessage(value, fallback) {
 
 function startLogin(targetEmail = null) {
   if (loginProcess) throw Object.assign(new Error("Đang có một phiên đăng nhập OAuth khác"), { code: "CONFLICT" });
+  void logEvent("info", "oauth_account_add_started", { provider: LOGIN_PROVIDER });
   const loginAccountEmail = targetEmail || latest.preferredAccountEmail || null;
   login = { state: "starting", provider: LOGIN_PROVIDER, accountEmail: loginAccountEmail, url: null, message: `Đang tạo phiên ${LOGIN_PROVIDER_LABEL}…` };
   const child = spawn(OMP_BIN, ["auth-broker", "login", LOGIN_PROVIDER], { env: OMP_ENV });
@@ -1525,12 +1645,14 @@ function startLogin(targetEmail = null) {
   child.stderr.on("data", read);
   child.on("error", (error) => {
     login = { state: "error", provider: LOGIN_PROVIDER, accountEmail: loginAccountEmail, url: null, message: loginErrorMessage(error.message, "Không thể khởi chạy OAuth.") };
+    void logEvent("error", "oauth_account_add_failed", { provider: LOGIN_PROVIDER, errorName: error.name || "Error" });
     loginProcess = null;
   });
   child.on("close", (code) => {
     loginProcess = null;
     if (code !== 0) {
       login = { state: "error", provider: LOGIN_PROVIDER, accountEmail: loginAccountEmail, url: null, message: loginErrorMessage(output, `OMP login exited with ${code}`) };
+      void logEvent("error", "oauth_account_add_failed", { provider: LOGIN_PROVIDER, exitCode: code });
       return;
     }
     void refresh().then(async (snapshot) => {
@@ -1546,11 +1668,14 @@ function startLogin(targetEmail = null) {
         login = { state: "error", provider: LOGIN_PROVIDER, accountEmail: loginAccountEmail, url: null, message };
       } else {
         login = { state: "complete", provider: LOGIN_PROVIDER, accountEmail: account.email, url: null, message: `${LOGIN_PROVIDER_LABEL} đã đăng nhập; quota đang được cập nhật.` };
+        void logEvent("info", "oauth_account_add_completed", { provider: LOGIN_PROVIDER, accountCount: accounts.length });
       }
+      if (login.state === "error") void logEvent("error", "oauth_account_add_failed", { provider: LOGIN_PROVIDER });
       await syncSafetyPolicy();
       broadcastStatus();
     }).catch((error) => {
       login = { state: "error", provider: LOGIN_PROVIDER, accountEmail: loginAccountEmail, url: null, message: error.message };
+      void logEvent("error", "oauth_account_add_failed", { provider: LOGIN_PROVIDER, errorName: error.name || "Error" });
       broadcastStatus();
     });
   });
@@ -5950,6 +6075,7 @@ async function deleteQuotaAccount(accountId) {
   broadcastStatus();
   const selection = await readGeminiSelection();
   const active = geminiQuotaAccounts().find((item) => quotaAccountId(item) === selection.accountId);
+  void logEvent("info", "quota_account_removed", { accountCount: geminiQuotaAccounts().length });
   return { success: true, removedEmail: account.email, activeEmail: active?.email || null, accountsCount: geminiQuotaAccounts().length, message: `Đã xoá tài khoản Gemini ${account.email}.` };
 }
 
@@ -5973,6 +6099,7 @@ async function quotaSwitchAccount(req) {
     await updateGeminiDefaultAccount(account);
     await syncOmpAccountControl(account);
   }
+  void logEvent("info", "quota_account_selected", { scope: sessionId ? "session" : "default", provider: account.provider || LOGIN_PROVIDER });
   await syncSafetyPolicy();
   broadcastStatus();
   return {
@@ -6104,6 +6231,7 @@ const server = http.createServer(async (req, res) => {
       if (route === "/api/v1/quota/quick-check" && req.method === "GET") return json(res, 200, await quotaQuickCheckPayload());
       if (route === "/api/v1/quota/switch" && req.method === "POST") return json(res, 200, await quotaSwitchAccount(req));
       if (route === "/api/v1/quota/sync" && req.method === "POST") return json(res, 200, await quotaSync(req, res.requestId));
+      if (route === "/api/v1/quota/client-log" && req.method === "GET") return json(res, 200, await quotaActivityPayload(requestUrl));
       if (route === "/api/v1/quota/client-log" && req.method === "POST") return json(res, 202, await recordQuotaClientLog(req, res.requestId));
       return quotaError(res, 405, "METHOD_NOT_ALLOWED", "Phương thức HTTP không được hỗ trợ.");
     } catch (error) {
