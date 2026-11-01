@@ -4446,14 +4446,6 @@ button:not([disabled]) { transform:none !important; transition:background-color 
             <div id="readiness-note" class="readiness-note">Kiểm tra không gửi prompt và không tiêu quota.</div>
           </section>
 
-          <details class="activity-log" id="activity-log">
-            <summary><span class="activity-log-title">LOG hoạt động</span><span id="activity-log-updated" class="activity-log-updated">Chưa tải</span></summary>
-            <div class="activity-log-body">
-              <div class="activity-log-toolbar"><span id="activity-log-status">Mở LOG để xem hoạt động gần đây.</span><button id="activity-log-refresh" class="btn btn-secondary btn-sm" type="button">Tải lại</button></div>
-              <div id="activity-log-list" class="activity-log-list" role="log" aria-live="polite"><div class="activity-log-empty">Mở LOG để tải lịch sử.</div></div>
-            </div>
-          </details>
-
           <details class="model-test" id="model-test" open>
             <summary><span class="model-test-title">Chat thử model OMP</span><span class="model-test-hint">Chọn model, gửi câu hỏi và xem phản hồi thật</span><span id="model-test-count" class="model-test-count">Đang tải danh sách…</span></summary>
             <div class="model-test-body">
@@ -4461,6 +4453,14 @@ button:not([disabled]) { transform:none !important; transition:background-color 
               <div class="model-test-notice" id="model-test-notice">Gemini Antigravity sẽ ghim tài khoản đang dùng trong /quota vào phiên chat và đi qua pool /quota. Model khác dùng tuyến OMP tương ứng; gửi prompt có thể dùng quota hoặc phát sinh phí của provider.</div>
               <div id="model-test-log" class="model-test-log" role="log" aria-live="polite"><div class="model-test-empty">Chọn model rồi gửi prompt để kiểm tra phản hồi.</div></div>
               <form id="model-test-form" class="model-test-form"><textarea id="model-test-prompt" class="model-test-prompt" rows="2" maxlength="4000" required aria-label="Prompt thử model" placeholder="Nhập câu hỏi thử… (⌘/Ctrl + Enter để gửi)"></textarea><button class="btn btn-primary btn-sm" id="model-test-send" type="submit">Gửi thử</button></form>
+            </div>
+          </details>
+
+          <details class="activity-log" id="activity-log">
+            <summary><span class="activity-log-title">LOG hoạt động</span><span id="activity-log-updated" class="activity-log-updated">Chưa tải</span></summary>
+            <div class="activity-log-body">
+              <div class="activity-log-toolbar"><span id="activity-log-status">Mở LOG để xem hoạt động gần đây.</span><button id="activity-log-refresh" class="btn btn-secondary btn-sm" type="button">Tải lại</button></div>
+              <div id="activity-log-list" class="activity-log-list" role="log" aria-live="polite"><div class="activity-log-empty">Mở LOG để tải lịch sử.</div></div>
             </div>
           </details>
         </section>
