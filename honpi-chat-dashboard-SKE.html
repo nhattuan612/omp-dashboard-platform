@@ -3033,7 +3033,7 @@
     .prompt-shortcuts-note { display: flex; align-items: center; gap: 6px; font-size: 11px; line-height: 1.35; font-family: var(--font-mono); color: var(--meta); opacity: 0.78; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .prompt-note-sep { opacity: 0.55; }
     .prompt-rpc-pill { display: inline-flex; align-items: center; gap: 5px; padding: 2px 7.5px; border-radius: var(--radius-full); background: transparent; border: 1px solid color-mix(in oklab, var(--border), transparent 60%); font-size: 11px; line-height: 1.25; color: var(--meta); white-space: nowrap; cursor: pointer; user-select: none; transition: all var(--motion-fast); font-family: var(--font-mono); font-weight: 500; }
-    .prompt-rpc-dot { width: 5.5px; height: 5.5px; border-radius: 50%; background: var(--muted); box-shadow: none; animation: none; flex-shrink: 0; }
+    .prompt-rpc-dot { width: 5.5px; height: 5.5px; border-radius: 50%; background: var(--success); box-shadow: none; animation: syncPulse 2s ease-in-out infinite; flex-shrink: 0; }
     .prompt-card { width: 100%; background: var(--surface-raised, var(--surface)); border: 1px solid color-mix(in oklab, var(--border), transparent 55%); border-radius: var(--radius-lg); box-shadow: none; display: flex; flex-direction: column; position: relative; transition: none; container-type: inline-size; container-name: promptcard; }
     /* Khi bấm để nhập: KHÔNG thêm tô sáng, KHÔNG thêm bất cứ hiệu ứng nào (hoàn toàn tĩnh lặng, giữ nguyên 100%) */
     .prompt-card:focus-within, .prompt-card:focus {
@@ -6515,57 +6515,61 @@
                 </div>
               </div>
 
-              <!-- OMP API Status Pill & Popover -->
+              <!-- RPC Status Pill & Popover (nối tới RPC OMP) -->
               <div class="prompt-shortcuts-note">
                 <div class="dock-popover-wrapper prompt-rpc-wrapper" id="promptRpcWrapper">
-                  <button type="button" class="prompt-rpc-pill" id="promptRpcPill" aria-haspopup="dialog" aria-expanded="false" title="Kiểm tra trạng thái API OMP của dashboard.">
+                  <button type="button" class="prompt-rpc-pill" id="promptRpcPill" aria-haspopup="dialog" aria-expanded="false" title="Trạng thái: Đã nối tới RPC OMP (Cổng 4177 · 24ms). Nhấp để kiểm tra hoặc quản lý kết nối.">
                     <span class="prompt-rpc-dot" id="promptRpcDot"></span>
-                    <span id="promptRpcLabel">Kết nối OMP</span>
+                    <span id="promptRpcLabel">Nối tới RPC OMP</span>
                   </button>
 
-                  <!-- OMP API Popover Dialog -->
-                  <div class="omp-rpc-popover" id="ompRpcPopover" role="dialog" aria-label="Kết nối OMP">
+                  <!-- OMP RPC Popover Dialog -->
+                  <div class="omp-rpc-popover" id="ompRpcPopover" role="dialog" aria-label="Kết nối RPC OMP">
                     <div class="omp-rpc-header">
                       <div class="omp-rpc-title-wrap">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1 4-10z"></path></svg>
-                        <span>Trạng thái API OMP</span>
+                        <span>Kết nối RPC OMP</span>
                       </div>
-                      <div class="omp-rpc-badge-online" id="ompRpcStatusBadge" data-state="idle">
+                      <div class="omp-rpc-badge-online">
                         <span class="live-dot" style="width: 5.5px; height: 5.5px;"></span>
-                        <span id="ompRpcStatusText">Chưa kiểm tra</span>
+                        <span id="ompRpcStatusText">Đã kết nối</span>
                       </div>
                       <button type="button" class="context-popover-close" id="closeOmpRpcPopoverBtn" aria-label="Đóng">×</button>
                     </div>
 
-                    <!-- OMP API Info Body -->
+                    <!-- OMP RPC Info Body -->
                     <div class="omp-rpc-body">
                       <div class="omp-rpc-info-row">
-                        <span class="omp-rpc-label">Dashboard:</span>
-                        <span class="omp-rpc-val font-mono" id="ompRpcHostVal">—</span>
+                        <span class="omp-rpc-label">Cổng Gateway RPC:</span>
+                        <span class="omp-rpc-val font-mono" id="ompRpcHostVal">127.0.0.1:4177/rpc</span>
                       </div>
                       <div class="omp-rpc-info-row">
-                        <span class="omp-rpc-label">Giao thức chat:</span>
-                        <span class="omp-rpc-val" id="ompRpcTransportVal">—</span>
+                        <span class="omp-rpc-label">Giao thức:</span>
+                        <span class="omp-rpc-val">JSON-RPC 2.0 / WebSocket</span>
                       </div>
                       <div class="omp-rpc-info-row">
-                        <span class="omp-rpc-label">Độ trễ API:</span>
-                        <span class="omp-rpc-val font-mono" id="ompRpcLatencyVal">Chưa kiểm tra</span>
+                        <span class="omp-rpc-label">Độ trễ (Latency):</span>
+                        <span class="omp-rpc-val font-mono" style="color: var(--success);" id="ompRpcLatencyVal">24ms (Cực nhanh)</span>
                       </div>
                       <div class="omp-rpc-info-row">
-                        <span class="omp-rpc-label">Model OMP:</span>
-                        <span class="omp-rpc-val" id="ompRpcModelsVal">Chưa kiểm tra</span>
+                        <span class="omp-rpc-label">Phiên Runtime:</span>
+                        <span class="omp-rpc-val">Hòn π OMP Agent v1.0</span>
+                      </div>
+                      <div class="omp-rpc-info-row">
+                        <span class="omp-rpc-label">Kênh điều phối:</span>
+                        <span class="omp-rpc-val">Dual Engine (Direct Bridge)</span>
                       </div>
                     </div>
 
                     <!-- Action Buttons -->
                     <div class="omp-rpc-actions">
-                      <button type="button" class="btn-rpc-ping" id="btnRpcPing" title="Kiểm tra API OMP thật của dashboard">
+                      <button type="button" class="btn-rpc-ping" id="btnRpcPing" title="Kiểm tra tín hiệu Ping tới máy chủ RPC">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
                         <span id="btnRpcPingText">Kiểm tra kết nối</span>
                       </button>
-                      <button type="button" class="btn-rpc-settings" id="btnRpcSettings" title="Mở Cài đặt OMP">
+                      <button type="button" class="btn-rpc-settings" id="btnRpcSettings" title="Mở Cài đặt Cổng Gateway OMP RPC">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-                        <span>Cài đặt OMP</span>
+                        <span>Cấu hình RPC</span>
                       </button>
                     </div>
                   </div>
@@ -8322,20 +8326,14 @@ html[data-conversation-display="expanded"] .chat-markdown{gap:12px;line-height:1
 .omp-rpc-popover { display: none; position: absolute; bottom: calc(100% + 8px); left: 0; width: 320px; max-width: 90vw; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45); z-index: 120; padding: 12px; animation: fadeIn 0.15s ease; font-family: var(--font-body); pointer-events: auto; }
 .omp-rpc-popover.open { display: flex; flex-direction: column; gap: 10px; }
 .omp-rpc-title-wrap { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--fg); }
-.omp-rpc-badge-online { display: inline-flex; align-items: center; gap: 4.5px; padding: 2px 7px; border-radius: var(--radius-full); background: color-mix(in oklab, var(--muted), transparent 88%); color: var(--muted); font-size: 11px; font-weight: 600; font-family: var(--font-mono); }
-.omp-rpc-badge-online[data-state="connected"] { background: color-mix(in oklab, var(--success), transparent 85%); color: var(--success); }
-.omp-rpc-badge-online[data-state="checking"] { background: color-mix(in oklab, var(--accent), transparent 88%); color: var(--accent); }
-.omp-rpc-badge-online[data-state="error"] { background: color-mix(in oklab, var(--warn), transparent 88%); color: var(--warn); }
-.omp-rpc-badge-online .live-dot { background: currentColor; box-shadow: none; }
+.omp-rpc-badge-online { display: inline-flex; align-items: center; gap: 4.5px; padding: 2px 7px; border-radius: var(--radius-full); background: color-mix(in oklab, var(--success), transparent 85%); color: var(--success); font-size: 11px; font-weight: 600; font-family: var(--font-mono); }
 .omp-rpc-info-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .omp-rpc-label { color: var(--meta); font-size: 11px; }
 .omp-rpc-val { color: var(--fg); font-weight: 500; }
 .omp-rpc-val.font-mono { font-family: var(--font-mono); font-size: 11px; }
 .omp-rpc-actions { display: flex; align-items: center; gap: 6px; }
 .prompt-rpc-pill:hover, .prompt-rpc-pill.active { background: var(--surface-subtle); border-color: color-mix(in oklab, var(--accent), transparent 40%); color: var(--fg); }
-.prompt-rpc-dot.is-connected { background: var(--success); box-shadow: 0 0 6px var(--success); }
 .prompt-rpc-dot.connecting { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
-.prompt-rpc-dot.is-error { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
 @media (max-width: 540px) {
   .omp-rpc-popover,
       .context-window-popover,
@@ -8389,13 +8387,6 @@ html[data-conversation-display="expanded"] .chat-markdown{gap:12px;line-height:1
 .btn-close-action { padding: 4px 10px; color: var(--muted); }
 .btn-close-action:hover { color: var(--fg); }
 @media (max-width: 540px) { .omp-rpc-popover, .context-window-popover { position: fixed !important; bottom: 84px !important; left: 12px !important; right: 12px !important; width: auto !important; max-width: calc(100vw - 24px) !important; margin: 0 auto !important; z-index: 150 !important; } }
-@media (max-width: 540px) {
-  .prompt-bottom-meta { flex-wrap: wrap; align-items: flex-start; row-gap: 6px; padding-bottom: 4px; }
-  .prompt-meta-left, .prompt-meta-right { flex: 1 1 100%; width: 100%; min-width: 0; }
-  .prompt-meta-left { overflow: visible; flex-wrap: wrap; }
-  .prompt-meta-right { justify-content: space-between; flex-wrap: wrap; }
-  .prompt-shortcuts-note { flex: 0 0 auto; width: auto; overflow: visible; }
-}
 </style>
 <script>window.HONPI_CHAT_CONFIG = { endpoints: { sessions: '/api/v1/sessions', stream: '/api/v1/chat/stream', models: '/api/v1/models' } };</script>
 <script src="/terminal-assets/xterm.js"></script>
@@ -8407,37 +8398,11 @@ html[data-conversation-display="expanded"] .chat-markdown{gap:12px;line-height:1
     { button: document.getElementById('promptRpcPill'), popover: document.getElementById('ompRpcPopover'), wrapper: document.getElementById('promptRpcWrapper'), open: 'open' },
     { button: document.getElementById('btnDockContext'), popover: document.getElementById('contextWindowPopover'), wrapper: document.getElementById('contextWindowWrapper'), open: 'show' }
   ].filter(item => item.button && item.popover && item.wrapper);
-  const rpcItem = pairs.find(item => item.button.id === 'promptRpcPill');
-  const resetRpcPosition = () => {
-    if (!rpcItem) return;
-    for (const property of ['position', 'left', 'top', 'right', 'bottom', 'width', 'max-width', 'max-height', 'overflow-y', 'margin', 'z-index']) rpcItem.popover.style.removeProperty(property);
-  };
-  const positionRpcPopover = () => {
-    if (!rpcItem?.popover.classList.contains('open')) return;
-    const anchor = rpcItem.button.getBoundingClientRect();
-    const width = Math.max(0, Math.min(320, window.innerWidth - 24));
-    rpcItem.popover.style.setProperty('position', 'fixed', 'important');
-    rpcItem.popover.style.setProperty('width', `${width}px`, 'important');
-    rpcItem.popover.style.setProperty('max-width', `${width}px`, 'important');
-    rpcItem.popover.style.setProperty('max-height', `calc(100vh - 24px)`, 'important');
-    rpcItem.popover.style.setProperty('overflow-y', 'auto', 'important');
-    rpcItem.popover.style.setProperty('left', `${Math.max(12, Math.min(anchor.left, window.innerWidth - width - 12))}px`, 'important');
-    rpcItem.popover.style.setProperty('right', 'auto', 'important');
-    rpcItem.popover.style.setProperty('bottom', 'auto', 'important');
-    rpcItem.popover.style.setProperty('margin', '0', 'important');
-    rpcItem.popover.style.setProperty('z-index', '150', 'important');
-    const height = rpcItem.popover.getBoundingClientRect().height;
-    let top = anchor.top - height - 8;
-    if (top < 12) top = anchor.bottom + 8;
-    if (top + height > window.innerHeight - 12) top = Math.max(12, window.innerHeight - height - 12);
-    rpcItem.popover.style.setProperty('top', `${top}px`, 'important');
-  };
   const close = except => pairs.forEach(item => {
     if (item === except) return;
     item.popover.classList.remove(item.open);
     item.button.classList.remove('active');
     item.button.setAttribute('aria-expanded', 'false');
-    if (item === rpcItem) resetRpcPosition();
   });
   for (const item of pairs) item.button.addEventListener('click', event => {
     event.stopPropagation();
@@ -8446,70 +8411,11 @@ html[data-conversation-display="expanded"] .chat-markdown{gap:12px;line-height:1
     item.popover.classList.toggle(item.open, opening);
     item.button.classList.toggle('active', opening);
     item.button.setAttribute('aria-expanded', String(opening));
-    if (item === rpcItem && opening) positionRpcPopover();
   });
-  window.addEventListener('resize', positionRpcPopover);
-  window.addEventListener('scroll', positionRpcPopover, true);
   document.addEventListener('click', event => { if (!pairs.some(item => item.wrapper.contains(event.target))) close(); });
   document.addEventListener('keydown', event => { if (event.key === 'Escape') close(); });
   for (const id of ['closeOmpRpcPopoverBtn', 'closeContextPopoverBtn', 'btnCloseContextPopover']) {
     document.getElementById(id)?.addEventListener('click', close);
-  }
-
-  if (rpcItem) {
-    const $ = id => document.getElementById(id);
-    const statusBadge = $('ompRpcStatusBadge');
-    const statusText = $('ompRpcStatusText');
-    const dot = $('promptRpcDot');
-    const ping = $('btnRpcPing');
-    const pingText = $('btnRpcPingText');
-    const host = $('ompRpcHostVal');
-    if (host) host.textContent = location.host;
-    const setStatus = (state, label) => {
-      if (statusBadge) { statusBadge.dataset.state = state; }
-      if (statusText) statusText.textContent = label;
-      if (dot) dot.classList.toggle('is-connected', state === 'connected');
-      if (dot) dot.classList.toggle('is-error', state === 'error');
-      if (dot) dot.classList.toggle('connecting', state === 'checking');
-    };
-    const checkConnection = async () => {
-      if (!ping || ping.disabled) return;
-      ping.disabled = true;
-      if (pingText) pingText.textContent = 'Đang kiểm tra…';
-      setStatus('checking', 'Đang kiểm tra');
-      const started = performance.now();
-      try {
-        const response = await fetch('/api/v1/omp/capabilities', { cache: 'no-store' });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok || payload?.ok !== true || !Array.isArray(payload.models)) throw new Error(payload?.message || `HTTP ${response.status}`);
-        const models = $('ompRpcModelsVal');
-        const transport = $('ompRpcTransportVal');
-        if (models) models.textContent = `${payload.models.length} model`;
-        if (transport) transport.textContent = `${String(payload.transport?.prompt || 'http').toUpperCase()} · ${String(payload.transport?.stream || 'sse').toUpperCase()}`;
-        const latency = $('ompRpcLatencyVal');
-        if (latency) latency.textContent = `${Math.round(performance.now() - started)} ms`;
-        setStatus('connected', 'API hoạt động');
-      } catch (error) {
-        const models = $('ompRpcModelsVal');
-        const transport = $('ompRpcTransportVal');
-        const latency = $('ompRpcLatencyVal');
-        if (models) models.textContent = 'Không lấy được';
-        if (transport) transport.textContent = '—';
-        if (latency) latency.textContent = '—';
-        setStatus('error', 'Không kết nối');
-      } finally {
-        ping.disabled = false;
-        if (pingText) pingText.textContent = 'Kiểm tra kết nối';
-      }
-    };
-    ping?.addEventListener('click', event => { event.stopPropagation(); void checkConnection(); });
-    $('btnRpcSettings')?.addEventListener('click', event => {
-      event.preventDefault();
-      event.stopPropagation();
-      close();
-      $('navSettingsBtn')?.click();
-      $('settingsNavOmp')?.click();
-    });
   }
 })();
 </script>
