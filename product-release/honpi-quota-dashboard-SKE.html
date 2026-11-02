@@ -4206,13 +4206,10 @@ button:not(.modal-close)[disabled] {
 .local-api-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; }
 .local-api-note { margin-top:4px; color:var(--muted); font-size:11px; line-height:1.45; }
 .local-api-endpoint { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:8px; margin:10px 0 5px; padding:8px; border:1px solid var(--border-soft); border-radius:8px; background:var(--surface-hover); font-size:11px; }
-.local-api-endpoint code, .local-api-card code, .local-api-key-reveal code { min-width:0; overflow-wrap:anywhere; color:var(--fg); font:11px/1.5 var(--font-mono); }
+.local-api-endpoint code, .local-api-card code { min-width:0; overflow-wrap:anywhere; color:var(--fg); font:11px/1.5 var(--font-mono); }
 .local-api-create-form { display:grid; grid-template-columns:minmax(160px,1fr) minmax(220px,1.4fr) auto; align-items:end; gap:8px; margin-top:10px; }
 .local-api-create-form label, .local-api-card label { display:grid; gap:4px; min-width:0; color:var(--muted); font-size:10px; font-weight:650; }
 .local-api-create-form input, .local-api-create-form select, .local-api-card input, .local-api-card select { width:100%; min-width:0; height:34px; padding:0 9px; border:1px solid var(--border-control); border-radius:7px; background:var(--surface); color:var(--fg); font:11px var(--font-body); }
-.local-api-key-reveal { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px 12px; align-items:center; margin-top:10px; padding:10px; border:1px solid var(--border-control); border-radius:8px; background:var(--success-bg); }
-.local-api-key-reveal > div { grid-column:1 / -1; }
-.local-api-key-reveal code { padding:7px; border:1px solid var(--border-soft); border-radius:6px; background:var(--surface); user-select:all; }
 .local-api-count { color:var(--muted); font:10px var(--font-mono); }
 .local-api-status { margin-top:8px; color:var(--muted); font-size:11px; }
 .local-api-list { display:grid; gap:8px; margin-top:8px; }
@@ -4230,7 +4227,7 @@ button:not(.modal-close)[disabled] {
 .local-api-history-status.is-error { color:var(--danger-text); }
 .local-api-empty { padding:12px; color:var(--muted); text-align:center; font-size:11px; }
 @media (max-width:700px) { .local-api-create-form { grid-template-columns:1fr; } .local-api-create-form .btn { justify-self:start; } .local-api-card-controls { grid-template-columns:1fr 1fr; } .local-api-endpoint { grid-template-columns:1fr; } .local-api-endpoint .btn { justify-self:start; } }
-@media (max-width:480px) { .local-api-heading { align-items:flex-start; } .local-api-card-controls { grid-template-columns:1fr; } .local-api-key-reveal { grid-template-columns:1fr; } .local-api-key-reveal > div { grid-column:auto; } .local-api-history-row { grid-template-columns:1fr auto; } .local-api-history-row code { grid-column:1 / -1; } }
+@media (max-width:480px) { .local-api-heading { align-items:flex-start; } .local-api-card-controls { grid-template-columns:1fr; } .local-api-history-row { grid-template-columns:1fr auto; } .local-api-history-row code { grid-column:1 / -1; } }
 .readiness-pill, .readiness-state { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; font-weight: 700; white-space: nowrap; }
 .readiness-pill { padding: 5px 9px; font-size: 11px; border: 1px solid var(--border); }
 .readiness-pill.is-ready, .readiness-state.is-ready { color: var(--success-text); background: var(--success-bg); }
@@ -4502,7 +4499,7 @@ button:not([disabled]) { transform:none !important; transition:background-color 
 
         <section class="dashboard-panel api-panel" id="api-view" role="tabpanel" aria-labelledby="tab-api" hidden>
           <section class="local-api-section">
-            <div class="local-api-heading"><div><strong>API trên máy này</strong><div class="local-api-note">Tạo key riêng cho từng model. Endpoint chỉ truy cập qua 127.0.0.1 / localhost của máy này.</div></div><button class="btn btn-secondary btn-sm" id="local-api-reload" type="button">Tải lại</button></div>
+            <div class="local-api-heading"><div><strong>API trên máy này</strong><div class="local-api-note">Mặc định dùng được tất cả model; có thể ghim riêng một model. Endpoint chỉ truy cập qua 127.0.0.1 / localhost.</div></div><button class="btn btn-secondary btn-sm" id="local-api-reload" type="button">Tải lại</button></div>
             <div class="local-api-endpoint"><span>Endpoint OpenAI-compatible</span><code id="local-api-endpoint-url"></code><button class="btn btn-secondary btn-sm" id="local-api-copy-endpoint" type="button">Sao chép endpoint</button></div>
             <div class="local-api-note">Dùng Bearer key trong ứng dụng/CLI. Browser app ở port khác bị chặn CORS; không dùng endpoint này từ máy khác.</div>
           </section>
@@ -4510,13 +4507,13 @@ button:not([disabled]) { transform:none !important; transition:background-color 
             <strong>Tạo API</strong>
             <form id="local-api-create-form" class="local-api-create-form">
               <label>Tên API<input id="local-api-name" maxlength="80" required autocomplete="off" placeholder="Ví dụ: Cursor local"></label>
-              <label>Model<select id="local-api-model" required><option value="">Đang tải model…</option></select></label>
+              <label>Model<select id="local-api-model" required><option value="all">Tất cả model</option></select></label>
               <button class="btn btn-primary btn-sm" id="local-api-create" type="submit">Tạo API key</button>
             </form>
-            <div class="local-api-key-reveal" id="local-api-key-reveal" role="status" aria-live="polite" hidden><div><strong>Key mới · chỉ hiển thị lần này</strong><div class="local-api-note">Sao chép và lưu key ngay. Dashboard chỉ lưu hash nên không thể xem lại.</div></div><code id="local-api-created-key"></code><button class="btn btn-secondary btn-sm" id="local-api-copy-key" type="button">Sao chép key</button></div>
+            <div class="local-api-note">Key đầy đủ được lưu cục bộ với quyền file 600 để có thể xem và sao chép lại.</div>
           </section>
           <section class="local-api-section">
-            <div class="local-api-heading"><div><strong>API đã tạo</strong><div class="local-api-note">Mỗi key ghim một model; thu hồi key sẽ chặn các request mới.</div></div><span class="local-api-count" id="local-api-count">Đang tải…</span></div>
+            <div class="local-api-heading"><div><strong>API đã tạo</strong><div class="local-api-note">Key dùng tất cả model hoặc model đã ghim; thu hồi sẽ chặn request mới.</div></div><span class="local-api-count" id="local-api-count">Đang tải…</span></div>
             <div class="local-api-status" id="local-api-status" aria-live="polite">Đang tải danh sách API…</div>
             <div class="local-api-list" id="local-api-list"></div>
           </section>
@@ -5841,10 +5838,10 @@ button:not([disabled]) { transform:none !important; transition:background-color 
   function renderLocalApiModels() {
     const select = document.getElementById('local-api-model');
     if (!select) return;
-    select.innerHTML = localApiModels.map(model => `<option value="${esc(model.id)}">${esc(model.name || model.id)} · ${esc(model.id)}</option>`).join('') || '<option value="">Không có model khả dụng</option>';
-    select.disabled = !localApiModels.length;
+    select.innerHTML = '<option value="all">Tất cả model</option>' + localApiModels.map(model => `<option value="${esc(model.id)}">${esc(model.name || model.id)} · ${esc(model.id)}</option>`).join('');
+    select.disabled = false;
     const create = document.getElementById('local-api-create');
-    if (create) create.disabled = !localApiModels.length;
+    if (create) create.disabled = false;
   }
   function renderLocalApiList() {
     const list = document.getElementById('local-api-list'), count = document.getElementById('local-api-count');
@@ -5852,8 +5849,10 @@ button:not([disabled]) { transform:none !important; transition:background-color 
     if (count) count.textContent = `${localApiItems.length} API`;
     if (!localApiItems.length) { list.innerHTML = '<div class="local-api-empty">Chưa có API. Tạo key ở mục bên trên.</div>'; return; }
     list.innerHTML = localApiItems.map(item => {
-      const options = localApiModels.some(model => model.id === item.model) ? localApiModels : [{ id: item.model, name: item.model }, ...localApiModels];
-      return `<article class="local-api-card" data-api-id="${esc(item.id)}"><div class="local-api-card-controls"><label>Tên<input data-api-name maxlength="80" value="${esc(item.name)}" autocomplete="off"></label><label>Model<select data-api-model>${options.map(model => `<option value="${esc(model.id)}" ${model.id === item.model ? 'selected' : ''}>${esc(model.name || model.id)} · ${esc(model.id)}</option>`).join('')}</select></label><button class="btn btn-secondary btn-sm" type="button" data-api-save>Lưu</button><button class="btn btn-secondary btn-sm" type="button" data-api-revoke>Thu hồi</button></div><div class="local-api-card-key">Key: <code>${esc(item.keyHint)}••••••••</code><span>Chỉ lưu hash; không thể xem lại key.</span></div><button class="btn btn-secondary btn-sm local-api-history-toggle" type="button" data-api-history-toggle>Xem 50 request gần nhất</button><div class="local-api-history" data-api-history hidden><div class="local-api-empty">Chưa có request.</div></div></article>`;
+      const missingModel = item.model !== 'all' && !localApiModels.some(model => model.id === item.model) ? `<option value="${esc(item.model)}" selected>${esc(item.model)}</option>` : '';
+      const options = `<option value="all" ${item.model === 'all' ? 'selected' : ''}>Tất cả model</option>` + missingModel + localApiModels.map(model => `<option value="${esc(model.id)}" ${model.id === item.model ? 'selected' : ''}>${esc(model.name || model.id)} · ${esc(model.id)}</option>`).join('');
+      const key = item.key ? `<code data-api-key>${esc(item.key)}</code><button class="btn btn-secondary btn-sm" type="button" data-api-copy-key>Sao chép key</button>` : `<code>${esc(item.keyHint || 'Key cũ')}</code><span>Key cũ chỉ còn hash; hãy thu hồi và tạo API mới để xem đầy đủ.</span>`;
+      return `<article class="local-api-card" data-api-id="${esc(item.id)}"><div class="local-api-card-controls"><label>Tên<input data-api-name maxlength="80" value="${esc(item.name)}" autocomplete="off"></label><label>Model<select data-api-model>${options}</select></label><button class="btn btn-secondary btn-sm" type="button" data-api-save>Lưu</button><button class="btn btn-secondary btn-sm" type="button" data-api-revoke>Thu hồi</button></div><div class="local-api-card-key">Key: ${key}</div><button class="btn btn-secondary btn-sm local-api-history-toggle" type="button" data-api-history-toggle>Xem 50 request gần nhất</button><div class="local-api-history" data-api-history hidden><div class="local-api-empty">Chưa có request.</div></div></article>`;
     }).join('');
   }
   async function loadLocalApis(force = false) {
@@ -5870,16 +5869,16 @@ button:not([disabled]) { transform:none !important; transition:background-color 
         localApiLoadedAt = Date.now();
         renderLocalApiModels();
         renderLocalApiList();
-        if (status) status.textContent = localApiModels.length ? 'Key được lưu dưới dạng hash; endpoint chỉ nhận request từ ứng dụng trên máy này.' : 'Chưa tải được danh sách model; bạn vẫn có thể xem và thu hồi API đã tạo.';
+        if (status) status.textContent = 'Key được lưu trên máy với quyền file 600; endpoint chỉ nhận request từ ứng dụng trên máy này.';
         const endpoint = document.getElementById('local-api-endpoint-url');
         if (endpoint) endpoint.textContent = `${location.origin}/api/local/v1/chat/completions`;
       } catch (error) {
         if (status) status.textContent = `Không tải được API: ${error.message}`;
         if (!localApiModels.length) {
           const select = document.getElementById('local-api-model');
-          if (select) select.innerHTML = '<option value="">Tải danh sách model thất bại</option>';
+          if (select) { select.innerHTML = '<option value="all">Tất cả model</option>'; select.disabled = false; }
           const create = document.getElementById('local-api-create');
-          if (create) create.disabled = true;
+          if (create) create.disabled = false;
         }
       } finally { localApiLoading = null; if (reload) reload.disabled = false; }
     })();
@@ -5919,19 +5918,18 @@ button:not([disabled]) { transform:none !important; transition:background-color 
     event.preventDefault();
     const name = String(document.getElementById('local-api-name')?.value || '').trim();
     const model = String(document.getElementById('local-api-model')?.value || '');
-    const button = document.getElementById('local-api-create'), reveal = document.getElementById('local-api-key-reveal');
+    const button = document.getElementById('local-api-create');
     if (!name || !model) return;
     if (button) { button.disabled = true; button.textContent = 'Đang tạo…'; }
     try {
       const result = await api('/api/v1/local-apis', { method: 'POST', body: JSON.stringify({ name, model }) });
-      document.getElementById('local-api-created-key').textContent = result.key;
-      reveal.dataset.apiId = result.api.id;
-      reveal.hidden = false;
+      localApiItems = [result.api, ...localApiItems.filter(item => item.id !== result.api.id)];
+      localApiLoadedAt = Date.now();
+      renderLocalApiList();
       document.getElementById('local-api-name').value = '';
-      await loadLocalApis(true);
-      showToast('✓ Đã tạo API key; hãy sao chép key ngay.');
+      showToast('✓ Đã tạo API key; key đầy đủ đang hiển thị trong danh sách.');
     } catch (error) { showToast(`✕ Tạo API thất bại: ${error.message}`); }
-    finally { if (button) { button.disabled = !localApiModels.length; button.textContent = 'Tạo API key'; } }
+    finally { if (button) { button.disabled = false; button.textContent = 'Tạo API key'; } }
   }
   async function saveLocalApi(card, button) {
     button.disabled = true;
@@ -5948,8 +5946,6 @@ button:not([disabled]) { transform:none !important; transition:background-color 
     button.disabled = true;
     try {
       await api(`/api/v1/local-apis/${encodeURIComponent(card.dataset.apiId)}`, { method: 'DELETE' });
-      const reveal = document.getElementById('local-api-key-reveal');
-      if (reveal?.dataset.apiId === card.dataset.apiId) { reveal.hidden = true; document.getElementById('local-api-created-key').textContent = ''; }
       await loadLocalApis(true);
       showToast('✓ Đã thu hồi API key.');
     } catch (error) { showToast(`✕ Không thu hồi được API: ${error.message}`); button.disabled = false; }
@@ -6406,10 +6402,10 @@ button:not([disabled]) { transform:none !important; transition:background-color 
   document.getElementById('local-api-create-form')?.addEventListener('submit', createLocalApi);
   document.getElementById('local-api-reload')?.addEventListener('click', () => void loadLocalApis(true));
   document.getElementById('local-api-copy-endpoint')?.addEventListener('click', () => copyLocalApiText(document.getElementById('local-api-endpoint-url')?.textContent || '', 'endpoint'));
-  document.getElementById('local-api-copy-key')?.addEventListener('click', () => copyLocalApiText(document.getElementById('local-api-created-key')?.textContent || '', 'API key'));
   document.getElementById('local-api-list')?.addEventListener('click', (event) => {
     const button = event.target.closest('button'), card = button?.closest('[data-api-id]');
     if (!button || !card) return;
+    if (button.matches('[data-api-copy-key]')) void copyLocalApiText(card.querySelector('[data-api-key]')?.textContent || '', 'API key');
     if (button.matches('[data-api-history-toggle]')) void toggleLocalApiHistory(card, button);
     if (button.matches('[data-api-save]')) void saveLocalApi(card, button);
     if (button.matches('[data-api-revoke]')) void revokeLocalApi(card, button);

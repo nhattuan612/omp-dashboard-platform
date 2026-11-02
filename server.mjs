@@ -5177,8 +5177,12 @@ async function openAiCompletion(req, res, { apiProfile = null } = {}) {
   try {
     const body = await jsonBody(req);
     if (body.model != null && typeof body.model !== "string") throw Object.assign(new Error("model phải là chuỗi."), { code: "BAD_REQUEST", field: "model" });
-    const requestedModel = apiProfile?.model || (typeof body.model === "string" && body.model.trim() ? body.model.trim() : OPENAI_OMP_MODEL);
-    const selectedModel = resolveOpenAiModel(requestedModel, await availableModels());
+    const requestedModel = apiProfile?.model === "all"
+      ? (typeof body.model === "string" && body.model.trim() ? body.model.trim() : OPENAI_OMP_MODEL)
+      : apiProfile?.model || (typeof body.model === "string" && body.model.trim() ? body.model.trim() : OPENAI_OMP_MODEL);
+    const models = await availableModels();
+    const selectedModel = resolveOpenAiModel(requestedModel, models);
+    if (apiProfile) res.localApiModel = openAiModelAlias(selectedModel);
     const thinking = openAiThinking(body);
     if (body.stream != null && typeof body.stream !== "boolean") throw Object.assign(new Error("stream phải là boolean."), { code: "BAD_REQUEST", field: "stream" });
     stream = body.stream === true;
@@ -5248,7 +5252,7 @@ async function getLocalApiState() {
       throw error;
     });
   const state = await localApiStateLoad;
-  if (state?.version !== 1 || !Array.isArray(state.apis) || state.apis.some((api) => !api || typeof api.id !== "string" || typeof api.name !== "string" || typeof api.model !== "string" || !/^[a-f0-9]{64}$/.test(api.secretHash || ""))) {
+  if (state?.version !== 1 || !Array.isArray(state.apis) || state.apis.some((api) => !api || typeof api.id !== "string" || typeof api.name !== "string" || typeof api.model !== "string" || !/^[a-f0-9]{64}$/.test(api.secretHash || "") || (api.key != null && (typeof api.key !== "string" || createHash("sha256").update(api.key).digest("hex") !== api.secretHash)))) {
     throw Object.assign(new Error("Local API config không hợp lệ."), { code: "INTERNAL_SERVER_ERROR" });
   }
   localApiState = state;
@@ -5284,6 +5288,7 @@ function localApiView(api) {
     model: api.model,
     keyHint: api.keyHint,
     createdAt: api.createdAt,
+    ...(api.key ? { key: api.key } : {}),
   };
 }
 
@@ -5354,11 +5359,11 @@ async function handleLocalApiManagement(req, res, pathname) {
       const body = await jsonBody(req);
       const name = typeof body?.name === "string" ? body.name.trim() : "";
       if (!name || name.length > 80 || typeof body?.model !== "string") return fail("BAD_REQUEST", "Tên API và model hợp lệ là bắt buộc.");
-      const model = resolveOpenAiModel(body.model, await availableModels());
+      const model = body.model === "all" ? "all" : openAiModelAlias(resolveOpenAiModel(body.model, await availableModels()));
       const key = `sk-omp-local-${randomBytes(32).toString("base64url")}`;
-      const api = { id: randomUUID(), name, model: openAiModelAlias(model), keyHint: key.slice(0, 18), secretHash: createHash("sha256").update(key).digest("hex"), createdAt: new Date().toISOString() };
+      const api = { id: randomUUID(), name, model, key, keyHint: key.slice(0, 18), secretHash: createHash("sha256").update(key).digest("hex"), createdAt: new Date().toISOString() };
       await mutateLocalApiState((state) => { state.apis.push(api); });
-      return json(res, 201, { api: localApiView(api), key });
+      return json(res, 201, { api: localApiView(api) });
     }
     if (apiIdMatch?.[2] && req.method === "GET") {
       const requests = await readLocalApiHistory(apiIdMatch[1]);
@@ -5367,16 +5372,16 @@ async function handleLocalApiManagement(req, res, pathname) {
     }
     if (apiIdMatch && !apiIdMatch[2] && req.method === "PUT") {
       const body = await jsonBody(req);
-      const models = typeof body?.model === "string" ? await availableModels() : null;
+      const models = typeof body?.model === "string" && body.model !== "all" ? await availableModels() : null;
       const name = body?.name == null ? null : typeof body.name === "string" ? body.name.trim() : "";
       if (name === "" || (name != null && name.length > 80)) return fail("BAD_REQUEST", "Tên API phải có từ 1 đến 80 ký tự.");
-      const model = models ? resolveOpenAiModel(body.model, models) : null;
+      const model = typeof body?.model === "string" ? (body.model === "all" ? "all" : openAiModelAlias(resolveOpenAiModel(body.model, models))) : null;
       let updated;
       await mutateLocalApiState((state) => {
         const api = state.apis.find((item) => item.id === apiIdMatch[1]);
         if (!api) throw Object.assign(new Error("Không tìm thấy API."), { code: "NOT_FOUND" });
         if (name != null) api.name = name;
-        if (model) api.model = openAiModelAlias(model);
+        if (model) api.model = model;
         updated = localApiView(api);
       });
       return json(res, 200, { api: updated });
@@ -5403,7 +5408,7 @@ async function openAiLocalApiCompletion(req, res) {
   const record = (status) => {
     if (recorded || !profile) return;
     recorded = true;
-    void recordLocalApiRequest(profile.id, profile.model, status, Date.now() - startedAt)
+    void recordLocalApiRequest(profile.id, res.localApiModel || profile.model, status, Date.now() - startedAt)
       .catch((error) => void logEvent("warn", "local_api_history_save_failed", { errorName: error?.name || "Error" }));
   };
   res.once("finish", () => record(res.localApiStatus || res.statusCode || 0));
@@ -6564,8 +6569,8 @@ const server = http.createServer(async (req, res) => {
       const profile = localApiCredential(req, state.apis);
       if (!profile) return json(res, 401, { error: { message: "Bearer API key không hợp lệ.", type: "authentication_error", code: "UNAUTHORIZED" } });
       const models = await availableModels();
-      const model = resolveOpenAiModel(profile.model, models);
-      return json(res, 200, { object: "list", data: [{ id: profile.model, object: "model", created: 0, owned_by: model.provider, name: openAiModelDisplayName(model, models) }] });
+      const selectedModels = profile.model === "all" ? models : [resolveOpenAiModel(profile.model, models)];
+      return json(res, 200, { object: "list", data: selectedModels.map((model) => ({ id: openAiModelAlias(model), object: "model", created: 0, owned_by: model.provider, name: openAiModelDisplayName(model, models) })) });
     } catch (error) { return openAiError(res, error); }
   }
   if (requestUrl.pathname === "/api/local/v1/chat/completions" && req.method === "POST") {
