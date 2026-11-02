@@ -5852,7 +5852,8 @@ button:not([disabled]) { transform:none !important; transition:background-color 
       const missingModel = item.model !== 'all' && !localApiModels.some(model => model.id === item.model) ? `<option value="${esc(item.model)}" selected>${esc(item.model)}</option>` : '';
       const options = `<option value="all" ${item.model === 'all' ? 'selected' : ''}>Tất cả model</option>` + missingModel + localApiModels.map(model => `<option value="${esc(model.id)}" ${model.id === item.model ? 'selected' : ''}>${esc(model.name || model.id)} · ${esc(model.id)}</option>`).join('');
       const key = item.key ? `<code data-api-key>${esc(item.key)}</code><button class="btn btn-secondary btn-sm" type="button" data-api-copy-key>Sao chép key</button>` : `<code>${esc(item.keyHint || 'Key cũ')}</code><span>Key cũ chỉ còn hash; hãy thu hồi và tạo API mới để xem đầy đủ.</span>`;
-      return `<article class="local-api-card" data-api-id="${esc(item.id)}"><div class="local-api-card-controls"><label>Tên<input data-api-name maxlength="80" value="${esc(item.name)}" autocomplete="off"></label><label>Model<select data-api-model>${options}</select></label><button class="btn btn-secondary btn-sm" type="button" data-api-save>Lưu</button><button class="btn btn-secondary btn-sm" type="button" data-api-revoke>Thu hồi</button></div><div class="local-api-card-key">Key: ${key}</div><button class="btn btn-secondary btn-sm local-api-history-toggle" type="button" data-api-history-toggle>Xem 50 request gần nhất</button><div class="local-api-history" data-api-history hidden><div class="local-api-empty">Chưa có request.</div></div></article>`;
+      const copyConfig = item.key ? '<button class="btn btn-secondary btn-sm" type="button" data-api-copy-config>Sao chép cấu hình</button>' : '<button class="btn btn-secondary btn-sm" type="button" disabled title="Key cũ không còn đầy đủ; hãy tạo API mới">Sao chép cấu hình</button>';
+      return `<article class="local-api-card" data-api-id="${esc(item.id)}"><div class="local-api-card-controls"><label>Tên<input data-api-name maxlength="80" value="${esc(item.name)}" autocomplete="off"></label><label>Model<select data-api-model>${options}</select></label><button class="btn btn-secondary btn-sm" type="button" data-api-save>Lưu</button><button class="btn btn-secondary btn-sm" type="button" data-api-revoke>Thu hồi</button></div><div class="local-api-card-key">Key: ${key}${copyConfig}</div><button class="btn btn-secondary btn-sm local-api-history-toggle" type="button" data-api-history-toggle>Xem 50 request gần nhất</button><div class="local-api-history" data-api-history hidden><div class="local-api-empty">Chưa có request.</div></div></article>`;
     }).join('');
   }
   async function loadLocalApis(force = false) {
@@ -6406,6 +6407,15 @@ button:not([disabled]) { transform:none !important; transition:background-color 
     const button = event.target.closest('button'), card = button?.closest('[data-api-id]');
     if (!button || !card) return;
     if (button.matches('[data-api-copy-key]')) void copyLocalApiText(card.querySelector('[data-api-key]')?.textContent || '', 'API key');
+    if (button.matches('[data-api-copy-config]')) {
+      const profile = localApiItems.find(item => item.id === card.dataset.apiId);
+      const selectedModel = card.querySelector('[data-api-model]')?.value;
+      if (!profile?.key) { showToast('✕ API cũ không còn key đầy đủ; hãy tạo API mới.'); return; }
+      if (selectedModel !== profile.model) { showToast('✕ Hãy lưu model trước khi sao chép cấu hình.'); return; }
+      const model = profile.model === 'all' ? 'omp-default' : profile.model;
+      const config = [`Base URL: ${location.origin}/api/local/v1`, `Model: ${model}`, `Bearer key: ${profile.key}`].join('\n');
+      void copyLocalApiText(config, 'cấu hình API');
+    }
     if (button.matches('[data-api-history-toggle]')) void toggleLocalApiHistory(card, button);
     if (button.matches('[data-api-save]')) void saveLocalApi(card, button);
     if (button.matches('[data-api-revoke]')) void revokeLocalApi(card, button);
