@@ -6412,7 +6412,7 @@ button:not([disabled]) { transform:none !important; transition:background-color 
       const selectedModel = card.querySelector('[data-api-model]')?.value;
       if (!profile?.key) { showToast('✕ API cũ không còn key đầy đủ; hãy tạo API mới.'); return; }
       if (selectedModel !== profile.model) { showToast('✕ Hãy lưu model trước khi sao chép cấu hình.'); return; }
-      const model = profile.model === 'all' ? 'omp-default' : profile.model;
+      const model = profile.model === 'all' ? 'ping to check all models (GET /models; use a listed ID for chat)' : profile.model;
       const config = [`Base URL: ${location.origin}/api/local/v1`, `Model: ${model}`, `Bearer key: ${profile.key}`].join('\n');
       void copyLocalApiText(config, 'cấu hình API');
     }
