@@ -45,6 +45,16 @@ const OBSERVABILITY_LOG_BACKUP = `${OBSERVABILITY_LOG_FILE}.1`;
 const OBSERVABILITY_LOG_MAX_BYTES = 20 * 1024 * 1024;
 const OBSERVABILITY_ACTIVITY_MAX_BYTES = 256 * 1024;
 const OBSERVABILITY_ACTIVITY_MAX_ENTRIES = 100;
+const LOCAL_API_CONFIG_FILE = join(ROOT, "local-apis.json");
+const LOCAL_API_HISTORY_FILE = join(ROOT, "local-api-requests.jsonl");
+const LOCAL_API_HISTORY_LIMIT = 50;
+const LOCAL_API_HISTORY_MAX_BYTES = 1024 * 1024;
+const LOCAL_API_HISTORY_RETAIN_ENTRIES = 1000;
+let localApiState = null;
+let localApiStateLoad = null;
+let localApiMutationQueue = Promise.resolve();
+let localApiHistoryWriteQueue = Promise.resolve();
+let localApiHistoryBytes = null;
 const QUOTA_UI_INFO_EVENTS = new Set(["dashboard_ui_loaded", "dashboard_tab_changed", "manual_sync_started", "readiness_check_started"]);
 const QUOTA_UI_ERROR_EVENTS = new Set(["history_scope_error", "activity_log_load_failed"]);
 const ACTIVITY_SAFE_SCOPES = new Set(["1h", "24h", "7d", "30d", "all", "session", "default"]);
@@ -221,7 +231,7 @@ function requiresApiAuth(pathname) {
 }
 
 function requiresDashboardSession(pathname) {
-  return requiresApiAuth(pathname) && !pathname.startsWith("/api/omp/v1/");
+  return requiresApiAuth(pathname) && !pathname.startsWith("/api/omp/v1/") && !pathname.startsWith("/api/local/v1/");
 }
 
 function authorizeApiRequest(req, pathname) {
@@ -236,7 +246,7 @@ function authorizeApiRequest(req, pathname) {
 function enforceRateLimit(req, pathname) {
   if (!requiresApiAuth(pathname) || !["POST", "PUT", "DELETE"].includes(req.method)) return null;
   const isLogin = pathname === "/api/login";
-  const isChat = pathname === "/api/v1/chat/send" || pathname === "/api/v1/chat/stream";
+  const isChat = pathname === "/api/v1/chat/send" || pathname === "/api/v1/chat/stream" || pathname === "/api/local/v1/chat/completions";
   const isTerminalOpen = pathname === "/api/v1/terminal/open";
   const limit = isLogin ? 5 : isChat ? CHAT_RATE_LIMIT : isTerminalOpen ? 10 : 120;
   if (limit <= 0) return null;
@@ -1439,7 +1449,7 @@ async function recordQuotaClientLog(req, requestId) {
   const event = typeof body?.event === "string" && /^[a-z0-9_:-]{1,80}$/i.test(body.event) ? body.event : "client_event";
   if (level === "info" ? !QUOTA_UI_INFO_EVENTS.has(event) : !QUOTA_UI_ERROR_EVENTS.has(event)) return { ok: true, skipped: true };
   const fields = { requestId, clientRequestId: typeof body?.requestId === "string" ? body.requestId.slice(0, 80) : undefined, durationMs: Number.isFinite(Number(body?.durationMs)) ? Math.max(0, Math.min(600000, Number(body.durationMs))) : undefined, errorName: typeof body?.errorName === "string" ? body.errorName.slice(0, 80) : undefined };
-  if (QUOTA_UI_INFO_EVENTS.has(event)) fields.tab = body?.tab === "check" || body?.tab === "quota" ? body.tab : undefined;
+  if (QUOTA_UI_INFO_EVENTS.has(event)) fields.tab = ["check", "quota", "api"].includes(body?.tab) ? body.tab : undefined;
   if (ACTIVITY_SAFE_SCOPES.has(body?.scope)) fields.scope = body.scope;
   await logEvent(level, `quota_ui_${event}`, Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)));
   return { ok: true, requestId };
@@ -1488,7 +1498,7 @@ function quotaActivityView(entry) {
   const state = failed ? "error" : warned ? "warn" : succeeded ? "success" : "normal";
   let title = Object.hasOwn(ACTIVITY_EVENT_TITLES, event) ? ACTIVITY_EVENT_TITLES[event] : null;
   if (event === "quota_ui_dashboard_ui_loaded") title = "Đã tải giao diện dashboard";
-  if (event === "quota_ui_dashboard_tab_changed") title = entry.tab === "check" ? "Mở tab CHECK" : "Mở tab QUOTA";
+  if (event === "quota_ui_dashboard_tab_changed") title = entry.tab === "check" ? "Mở tab CHECK" : entry.tab === "api" ? "Mở tab API" : "Mở tab QUOTA";
   if (event === "quota_ui_manual_sync_started") title = "Bắt đầu đồng bộ thủ công";
   if (event === "quota_ui_readiness_check_started") title = "Bắt đầu kiểm tra hệ thống";
   let safePath = null, safeMethod = null;
@@ -3956,6 +3966,7 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
   const persistUserMessage = () => {
     if (userMessagePersisted) return;
     userMessagePersisted = true;
+    if (options.persistMessages === false) return;
     appendChatMessage(sessionId, { id: `msg-${startedAt}`, role: "user", content: prompt, attachments, createdAt: new Date(startedAt).toISOString() });
   };
   let reply = "";
@@ -4007,7 +4018,7 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
       if (failure) return finish(reject, Object.assign(new Error(failure.message), { code: failure.code }));
       const text = frameAssistantText(frame);
       assistantAttachments = mergeChatAttachments(assistantAttachments, frameAssistantAttachments(frame));
-      if (frame.type === "message_update" && frame.assistantMessageEvent?.type === "text_delta") reply += text;
+      if (frame.type === "message_update" && frame.assistantMessageEvent?.type === "text_delta") { reply += text; options.onTextDelta?.(text); }
       if (frame.type === "message_end" && frame.message?.role === "assistant") { assistantMessage = frame.message; reply = chatMessageText(frame.message) || reply; }
       if (frame.type === "agent_end" && frame.isTerminal !== false) {
         if (active.abortRequested) {
@@ -4020,7 +4031,7 @@ async function collectChatTurn(record, sessionId, prompt, model, requestId, opti
         for (const block of chatBodyBlocksFromMessage(assistantMessage, requestId)) mergeChatBodyBlock(bodyBlocks, block);
         const fileChanges = await finalizeFileChangeTracker(fileChangeTracker);
         const message = { id: `msg-${Date.now()}`, role: "assistant", content: reply || chatMessageText(assistantMessage), model: assistantMessage?.model || model || "neural-flash-3.8", createdAt: new Date().toISOString(), ...(bodyBlocks.length ? { body: bodyBlocks } : {}), ...(assistantAttachments.length ? { attachments: assistantAttachments } : {}), ...(fileChanges ? { fileChanges: fileChangeView(fileChanges) } : {}), ...(assistantMessage?.usage?.total ? { totalTokens: assistantMessage.usage.total } : {}) };
-        appendChatMessage(sessionId, message);
+        if (options.persistMessages !== false) appendChatMessage(sessionId, message);
         finish(resolve, message);
       }
     });
@@ -5060,6 +5071,348 @@ function gatewayPrompt(body) {
     ? `/skill:ego-browser ${message}`
     : message;
   return { type: behavior, message: outboundMessage, ...(Array.isArray(body.images) ? { images: body.images } : {}) };
+}
+
+const OPENAI_OMP_MODEL = "omp-default";
+
+function openAiModelAlias(model) {
+  return `${model.provider}/${model.id}`;
+}
+
+function openAiModelDisplayName(model, models) {
+  return models.some((item) => item.id === model.id && item.provider !== model.provider)
+    ? `${model.name} (${model.provider})`
+    : model.name;
+}
+
+function resolveOpenAiModel(modelId, models) {
+  const alias = String(modelId || "").replace(/^omp\//, "");
+  if (alias === OPENAI_OMP_MODEL) {
+    return models.find((item) => item.isDefault)
+      || models.find((item) => item.provider === LOGIN_PROVIDER && item.id === "gemini-3.8-flash")
+      || models[0];
+  }
+  const separator = alias.indexOf("/");
+  const matches = separator > 0
+    ? models.filter((item) => item.provider === alias.slice(0, separator) && item.id === alias.slice(separator + 1))
+    : models.filter((item) => item.id === alias);
+  if (matches.length !== 1) {
+    const detail = matches.length ? `Model cần kèm provider: ${modelId}` : `Model không tồn tại: ${modelId}`;
+    throw Object.assign(new Error(detail), { code: "MODEL_NOT_FOUND", field: "model" });
+  }
+  return matches[0];
+}
+
+function openAiThinking(body) {
+  const value = body.thinking ?? body.reasoning_effort;
+  if (value == null) return "";
+  if (typeof value !== "string") throw Object.assign(new Error("reasoning_effort phải là chuỗi."), { code: "BAD_REQUEST", field: "reasoning_effort" });
+  return chatThinking(value === "minimal" ? "low" : value === "xhigh" ? "max" : value);
+}
+
+function openAiChatInput(body) {
+  if (!body || Array.isArray(body) || typeof body !== "object") throw Object.assign(new Error("Payload phải là object JSON."), { code: "BAD_REQUEST" });
+  if (!Array.isArray(body.messages) || !body.messages.length || body.messages.length > 128) throw Object.assign(new Error("messages phải có 1-128 phần tử."), { code: "BAD_REQUEST", field: "messages" });
+  const lines = [];
+  const attachments = [];
+  for (const message of body.messages) {
+    const role = String(message?.role || "");
+    if (!message || !["system", "developer", "user", "assistant", "tool"].includes(role)) throw Object.assign(new Error("messages chứa role không hỗ trợ."), { code: "BAD_REQUEST", field: "messages.role" });
+    const parts = Array.isArray(message.content) ? message.content : [message.content];
+    const content = [];
+    for (const part of parts) {
+      if (typeof part === "string") { content.push(part); continue; }
+      if (!part || typeof part !== "object") continue;
+      if (part.type === "text" && typeof part.text === "string") { content.push(part.text); continue; }
+      if (part.type === "image_url" || part.type === "input_image") {
+        const image = part.image_url?.url || part.image_url || part.url || part.data;
+        const dataUrl = typeof image === "string" ? image : "";
+        if (!/^data:image\/[a-z0-9.+-]+;base64,/i.test(dataUrl)) throw Object.assign(new Error("OMP Gateway chỉ nhận ảnh nhúng data URL."), { code: "BAD_REQUEST", field: "messages.content" });
+        if (attachments.length >= MAX_CHAT_ATTACHMENTS) throw Object.assign(new Error(`Chỉ hỗ trợ tối đa ${MAX_CHAT_ATTACHMENTS} ảnh mỗi lượt.`), { code: "BAD_REQUEST", field: "messages.content" });
+        const type = dataUrl.slice(5, dataUrl.indexOf(";"));
+        const attachment = normalizeChatAttachment({ name: `openwork-image-${attachments.length + 1}`, type, data: dataUrl });
+        if (!attachment) throw Object.assign(new Error("Ảnh nhúng không hợp lệ hoặc vượt giới hạn."), { code: "BAD_REQUEST", field: "messages.content" });
+        attachments.push(attachment);
+        content.push(`[ảnh đính kèm ${attachments.length}]`);
+      }
+    }
+    if (Array.isArray(message.tool_calls)) for (const call of message.tool_calls.slice(0, 16)) {
+      const name = String(call?.function?.name || "tool").slice(0, 100);
+      const args = typeof call?.function?.arguments === "string" ? call.function.arguments.slice(0, 4000) : "";
+      content.push(`[yêu cầu gọi tool ${name}: ${args}]`);
+    }
+    const text = content.join("\n").trim();
+    if (text) lines.push(`[${role}${message.name ? ` ${String(message.name).slice(0, 100)}` : ""}]\n${text}`);
+  }
+  return { prompt: chatPrompt(lines.join("\n\n")), attachments };
+}
+
+function openAiError(res, error) {
+  const code = String(error?.code || "INTERNAL_SERVER_ERROR");
+  const message = publicErrorMessage(code, error?.message, "Yêu cầu OpenWork không thành công.");
+  return json(res, errorStatus(code), { error: { message, type: errorStatus(code) === 400 ? "invalid_request_error" : "server_error", code } });
+}
+
+function openAiChunk(res, id, model, delta, finishReason = null) {
+  if (!res.writableEnded) res.write(`data: ${JSON.stringify({ id, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model, choices: [{ index: 0, delta, finish_reason: finishReason }] })}\n\n`);
+}
+
+async function openAiCompletion(req, res, { apiProfile = null } = {}) {
+  let sessionId = "";
+  let record = null;
+  let disconnected = false;
+  let finished = false;
+  let stream = false;
+  const requestId = `openwork-${randomUUID()}`;
+  const abort = () => {
+    if (finished || disconnected) return;
+    disconnected = true;
+    void abortChatRequest(null, { requestId, sessionId }).catch(() => {});
+  };
+  req.once("aborted", abort);
+  res.once("close", () => { if (!res.writableEnded) abort(); });
+  try {
+    const body = await jsonBody(req);
+    if (body.model != null && typeof body.model !== "string") throw Object.assign(new Error("model phải là chuỗi."), { code: "BAD_REQUEST", field: "model" });
+    const requestedModel = apiProfile?.model || (typeof body.model === "string" && body.model.trim() ? body.model.trim() : OPENAI_OMP_MODEL);
+    const selectedModel = resolveOpenAiModel(requestedModel, await availableModels());
+    const thinking = openAiThinking(body);
+    if (body.stream != null && typeof body.stream !== "boolean") throw Object.assign(new Error("stream phải là boolean."), { code: "BAD_REQUEST", field: "stream" });
+    stream = body.stream === true;
+    const { prompt, attachments } = openAiChatInput(body);
+    const cwdHeader = req.headers["x-omp-cwd"];
+    if (Array.isArray(cwdHeader) || (cwdHeader != null && typeof cwdHeader !== "string") || String(cwdHeader || "").length > 4096) throw Object.assign(new Error("X-OMP-CWD không hợp lệ."), { code: "BAD_REQUEST", field: "cwd" });
+    const requestedCwd = typeof cwdHeader === "string" && cwdHeader.trim() ? cwdHeader.trim() : GENERAL_CHAT_CWD;
+    if (requestedCwd === GENERAL_CHAT_CWD) await mkdir(GENERAL_CHAT_CWD, { recursive: true, mode: 0o700 });
+    const cwd = await consoleBridge.validateWorkspaceDirectory(requestedCwd);
+    const approvalHeader = req.headers["x-omp-approval-mode"];
+    if (Array.isArray(approvalHeader) || (approvalHeader != null && typeof approvalHeader !== "string")) throw Object.assign(new Error("X-OMP-APPROVAL-MODE không hợp lệ."), { code: "BAD_REQUEST" });
+    const selectedApproval = approvalMode(approvalHeader);
+    sessionId = `openwork-${randomUUID()}`;
+    await createGatewaySession({ sessionId, cwd, approvalMode: selectedApproval });
+    record = gatewayRecord(sessionId);
+    if (disconnected) return;
+    const completionId = `chatcmpl-${randomUUID()}`;
+    let streamedText = false;
+    if (stream) {
+      res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-store", connection: "keep-alive" });
+      res.write(`data: ${JSON.stringify({ id: completionId, object: "chat.completion.chunk", created: Math.floor(Date.now() / 1000), model: requestedModel, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] })}\n\n`);
+    }
+    const turn = collectChatTurn(record, sessionId, prompt, selectedModel.id, requestId, {
+      attachments,
+      modelProvider: selectedModel.provider,
+      thinking,
+      persistMessages: false,
+      onTextDelta(text) {
+        if (stream && !disconnected && text) { streamedText = true; openAiChunk(res, completionId, requestedModel, { content: text }); }
+      },
+    });
+    if (disconnected) await abortChatRequest(null, { requestId, sessionId }).catch(() => {});
+    const result = await turn;
+    finished = true;
+    if (disconnected) return;
+    if (stream) {
+      if (!streamedText && result.reply) openAiChunk(res, completionId, requestedModel, { content: result.reply });
+      openAiChunk(res, completionId, requestedModel, {}, "stop");
+      res.end("data: [DONE]\n\n");
+    } else {
+      json(res, 200, { id: completionId, object: "chat.completion", created: Math.floor(Date.now() / 1000), model: requestedModel, choices: [{ index: 0, message: { role: "assistant", content: result.reply }, finish_reason: "stop" }] });
+    }
+  } catch (error) {
+    finished = true;
+    if (disconnected || res.destroyed) return;
+    res.localApiStatus = errorStatus(error.code || "INTERNAL_SERVER_ERROR");
+    if (stream && res.headersSent) {
+      res.write(`data: ${JSON.stringify({ error: { message: publicErrorMessage(error.code || "INTERNAL_SERVER_ERROR", error.message), type: "server_error", code: error.code || "INTERNAL_SERVER_ERROR" } })}\n\n`);
+      res.end("data: [DONE]\n\n");
+    } else openAiError(res, error);
+  } finally {
+    finished = true;
+    req.removeListener("aborted", abort);
+    if (record) {
+      await consoleBridge.stop(record.contextId).catch(() => {});
+      gatewaySessions.delete(record.sessionId);
+    }
+  }
+}
+
+async function getLocalApiState() {
+  if (localApiState) return localApiState;
+  if (!localApiStateLoad) localApiStateLoad = readFile(LOCAL_API_CONFIG_FILE, "utf8")
+    .then((text) => JSON.parse(text))
+    .catch((error) => {
+      if (error.code === "ENOENT") return { version: 1, apis: [] };
+      throw error;
+    });
+  const state = await localApiStateLoad;
+  if (state?.version !== 1 || !Array.isArray(state.apis) || state.apis.some((api) => !api || typeof api.id !== "string" || typeof api.name !== "string" || typeof api.model !== "string" || !/^[a-f0-9]{64}$/.test(api.secretHash || ""))) {
+    throw Object.assign(new Error("Local API config không hợp lệ."), { code: "INTERNAL_SERVER_ERROR" });
+  }
+  localApiState = state;
+  return state;
+}
+
+async function mutateLocalApiState(update) {
+  const operation = localApiMutationQueue.then(async () => {
+    const current = await getLocalApiState();
+    const next = JSON.parse(JSON.stringify(current));
+    const result = await update(next);
+    await mkdir(dirname(LOCAL_API_CONFIG_FILE), { recursive: true, mode: 0o700 });
+    const temporary = `${LOCAL_API_CONFIG_FILE}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+      await rename(temporary, LOCAL_API_CONFIG_FILE);
+    } catch (error) {
+      await rm(temporary, { force: true }).catch(() => {});
+      throw error;
+    }
+    localApiState = next;
+    localApiStateLoad = Promise.resolve(next);
+    return result;
+  });
+  localApiMutationQueue = operation.catch(() => {});
+  return operation;
+}
+
+function localApiView(api) {
+  return {
+    id: api.id,
+    name: api.name,
+    model: api.model,
+    keyHint: api.keyHint,
+    createdAt: api.createdAt,
+  };
+}
+
+function localApiCredential(req, apis) {
+  const match = typeof req.headers.authorization === "string"
+    ? /^Bearer\s+([A-Za-z0-9._~-]{20,200})$/i.exec(req.headers.authorization.trim())
+    : null;
+  if (!match) return null;
+  const digest = createHash("sha256").update(match[1]).digest();
+  return apis.find((api) => {
+    const expected = Buffer.from(api.secretHash, "hex");
+    return expected.length === digest.length && timingSafeEqual(expected, digest);
+  }) || null;
+}
+
+async function recordLocalApiRequest(apiId, model, status, durationMs) {
+  const operation = localApiHistoryWriteQueue.then(async () => {
+    await mkdir(dirname(LOCAL_API_HISTORY_FILE), { recursive: true, mode: 0o700 });
+    if (localApiHistoryBytes == null) localApiHistoryBytes = await stat(LOCAL_API_HISTORY_FILE).then((info) => info.size).catch(() => 0);
+    const line = `${JSON.stringify({ apiId, at: new Date().toISOString(), model, status, durationMs: Math.max(0, Math.round(durationMs)) })}\n`;
+    const lineBytes = Buffer.byteLength(line);
+    if (localApiHistoryBytes + lineBytes > LOCAL_API_HISTORY_MAX_BYTES) {
+      const existing = await readFile(LOCAL_API_HISTORY_FILE, "utf8").catch(() => "");
+      const retained = existing.split("\n").filter(Boolean).slice(-LOCAL_API_HISTORY_RETAIN_ENTRIES);
+      const compacted = retained.length ? `${retained.join("\n")}\n` : "";
+      const temporary = `${LOCAL_API_HISTORY_FILE}.${process.pid}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(temporary, compacted, { mode: 0o600, flag: "wx" });
+        await rename(temporary, LOCAL_API_HISTORY_FILE);
+      } catch (error) {
+        await rm(temporary, { force: true }).catch(() => {});
+        throw error;
+      }
+      localApiHistoryBytes = Buffer.byteLength(compacted);
+    }
+    await appendFile(LOCAL_API_HISTORY_FILE, line, { mode: 0o600 });
+    localApiHistoryBytes += lineBytes;
+  });
+  localApiHistoryWriteQueue = operation.catch(() => {});
+  await operation;
+}
+
+async function readLocalApiHistory(apiId) {
+  const state = await getLocalApiState();
+  const api = state.apis.find((item) => item.id === apiId);
+  if (!api) return null;
+  const lines = await readFile(LOCAL_API_HISTORY_FILE, "utf8").catch((error) => error.code === "ENOENT" ? "" : Promise.reject(error));
+  const requests = lines.split("\n").filter(Boolean).flatMap((line) => {
+    try {
+      const item = JSON.parse(line);
+      return item.apiId === apiId ? [{ at: item.at, model: item.model, status: item.status, durationMs: item.durationMs }] : [];
+    } catch { return []; }
+  });
+  return requests.slice(-LOCAL_API_HISTORY_LIMIT).reverse();
+}
+
+async function handleLocalApiManagement(req, res, pathname) {
+  const apiIdMatch = pathname.match(/^\/api\/v1\/local-apis\/([a-f0-9-]{36})(?:\/(requests))?$/i);
+  if (pathname !== "/api/v1/local-apis" && !apiIdMatch) return false;
+  const fail = (code, message) => json(res, code === "METHOD_NOT_ALLOWED" ? 405 : errorStatus(code), { ok: false, error: { code, message } });
+  try {
+    if (pathname === "/api/v1/local-apis" && req.method === "GET") {
+      const state = await getLocalApiState();
+      const models = await availableModels().catch(() => []);
+      return json(res, 200, { apis: state.apis.map(localApiView), models: models.map((model) => ({ id: openAiModelAlias(model), name: openAiModelDisplayName(model, models), provider: model.provider })) });
+    }
+    if (pathname === "/api/v1/local-apis" && req.method === "POST") {
+      const body = await jsonBody(req);
+      const name = typeof body?.name === "string" ? body.name.trim() : "";
+      if (!name || name.length > 80 || typeof body?.model !== "string") return fail("BAD_REQUEST", "Tên API và model hợp lệ là bắt buộc.");
+      const model = resolveOpenAiModel(body.model, await availableModels());
+      const key = `sk-omp-local-${randomBytes(32).toString("base64url")}`;
+      const api = { id: randomUUID(), name, model: openAiModelAlias(model), keyHint: key.slice(0, 18), secretHash: createHash("sha256").update(key).digest("hex"), createdAt: new Date().toISOString() };
+      await mutateLocalApiState((state) => { state.apis.push(api); });
+      return json(res, 201, { api: localApiView(api), key });
+    }
+    if (apiIdMatch?.[2] && req.method === "GET") {
+      const requests = await readLocalApiHistory(apiIdMatch[1]);
+      if (!requests) return fail("NOT_FOUND", "Không tìm thấy API.");
+      return json(res, 200, { requests, limit: LOCAL_API_HISTORY_LIMIT });
+    }
+    if (apiIdMatch && !apiIdMatch[2] && req.method === "PUT") {
+      const body = await jsonBody(req);
+      const models = typeof body?.model === "string" ? await availableModels() : null;
+      const name = body?.name == null ? null : typeof body.name === "string" ? body.name.trim() : "";
+      if (name === "" || (name != null && name.length > 80)) return fail("BAD_REQUEST", "Tên API phải có từ 1 đến 80 ký tự.");
+      const model = models ? resolveOpenAiModel(body.model, models) : null;
+      let updated;
+      await mutateLocalApiState((state) => {
+        const api = state.apis.find((item) => item.id === apiIdMatch[1]);
+        if (!api) throw Object.assign(new Error("Không tìm thấy API."), { code: "NOT_FOUND" });
+        if (name != null) api.name = name;
+        if (model) api.model = openAiModelAlias(model);
+        updated = localApiView(api);
+      });
+      return json(res, 200, { api: updated });
+    }
+    if (apiIdMatch && !apiIdMatch[2] && req.method === "DELETE") {
+      let removed = false;
+      await mutateLocalApiState((state) => {
+        const index = state.apis.findIndex((item) => item.id === apiIdMatch[1]);
+        if (index >= 0) { state.apis.splice(index, 1); removed = true; }
+      });
+      return removed ? json(res, 200, { ok: true }) : fail("NOT_FOUND", "Không tìm thấy API.");
+    }
+    return fail("METHOD_NOT_ALLOWED", "Phương thức không được hỗ trợ.");
+  } catch (error) {
+    const code = error.code || "INTERNAL_SERVER_ERROR";
+    return fail(code, code === "INTERNAL_SERVER_ERROR" ? "Không thể đọc hoặc lưu cấu hình API local." : String(error.message || "Yêu cầu không hợp lệ."));
+  }
+}
+
+async function openAiLocalApiCompletion(req, res) {
+  const startedAt = Date.now();
+  let profile = null;
+  let recorded = false;
+  const record = (status) => {
+    if (recorded || !profile) return;
+    recorded = true;
+    void recordLocalApiRequest(profile.id, profile.model, status, Date.now() - startedAt)
+      .catch((error) => void logEvent("warn", "local_api_history_save_failed", { errorName: error?.name || "Error" }));
+  };
+  res.once("finish", () => record(res.localApiStatus || res.statusCode || 0));
+  res.once("close", () => { if (!res.writableFinished) record(499); });
+  try {
+    const state = await getLocalApiState();
+    profile = localApiCredential(req, state.apis);
+    if (!profile) return json(res, 401, { error: { message: "Bearer API key không hợp lệ.", type: "authentication_error", code: "UNAUTHORIZED" } });
+    return await openAiCompletion(req, res, { apiProfile: profile });
+  } catch (error) {
+    return openAiError(res, error);
+  }
 }
 
 async function readDashboardAsset(name, nonce = "") {
@@ -6198,6 +6551,22 @@ const server = http.createServer(async (req, res) => {
   if (rateLimitError) {
     res.observability.errorCode = rateLimitError.code;
     return json(res, rateLimitError.status, { ok: false, error: { code: rateLimitError.code, message: rateLimitError.message } });
+  }
+  if (requestUrl.pathname === "/api/v1/local-apis" || /^\/api\/v1\/local-apis\/[a-f0-9-]{36}(?:\/requests)?$/i.test(requestUrl.pathname)) {
+    return handleLocalApiManagement(req, res, requestUrl.pathname);
+  }
+  if (requestUrl.pathname === "/api/local/v1/models" && req.method === "GET") {
+    try {
+      const state = await getLocalApiState();
+      const profile = localApiCredential(req, state.apis);
+      if (!profile) return json(res, 401, { error: { message: "Bearer API key không hợp lệ.", type: "authentication_error", code: "UNAUTHORIZED" } });
+      const models = await availableModels();
+      const model = resolveOpenAiModel(profile.model, models);
+      return json(res, 200, { object: "list", data: [{ id: profile.model, object: "model", created: 0, owned_by: model.provider, name: openAiModelDisplayName(model, models) }] });
+    } catch (error) { return openAiError(res, error); }
+  }
+  if (requestUrl.pathname === "/api/local/v1/chat/completions" && req.method === "POST") {
+    return openAiLocalApiCompletion(req, res);
   }
   if (requestUrl.pathname.startsWith("/api/v1/quota/")) {
     const route = requestUrl.pathname;
