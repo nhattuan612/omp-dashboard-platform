@@ -29,14 +29,14 @@ async function applyControl(ctx, logger) {
   if (!sessionId) throw new Error("KHỐNG CHẾ OMP không tìm thấy session OMP để ghim account");
 
   const authStorage = ctx.modelRegistry?.authStorage;
-  if (!authStorage || typeof authStorage.listOAuthAccounts !== "function" || typeof authStorage.pinSessionOAuthAccount !== "function") {
+  if (typeof authStorage?.oauth?.accounts !== "function" || typeof authStorage?.sessions?.pin !== "function") {
     throw new Error("KHỐNG CHẾ OMP không thể ghim OAuth account trên runtime này");
   }
   const account = authStorage
-    .listOAuthAccounts(PROVIDER, sessionId)
+    .oauth.accounts(PROVIDER, sessionId)
     .filter((item) => quotaAccountId(PROVIDER, item) === activeControl.accountId);
   if (account.length !== 1 || account[0].credentialId == null) throw new Error("KHỐNG CHẾ OMP không tìm thấy đúng OAuth account đã chọn ở Quota");
-  if (authStorage.pinSessionOAuthAccount(PROVIDER, sessionId, account[0].credentialId) !== true) throw new Error("KHỐNG CHẾ OMP không thể ghim OAuth account đã chọn");
+  if (authStorage.sessions.pin(PROVIDER, sessionId, account[0].credentialId) !== true) throw new Error("KHỐNG CHẾ OMP không thể ghim OAuth account đã chọn");
   logger.info("OMP account locked by quota dashboard", { email: account[0].email });
 }
 

@@ -23,10 +23,14 @@ function makeAuthStorage(pinResult = true, targetActive = false) {
   const accounts = [globalAccount, { ...dashboardAccount, active: targetActive }];
   return {
     pinned,
-    listOAuthAccounts(provider) { return accounts.filter((account) => account.provider === provider); },
-    pinSessionOAuthAccount(provider, sessionId, credentialId) {
-      pinned.set(`${provider}\0${sessionId}`, credentialId);
-      return pinResult;
+    oauth: {
+      accounts(provider, _sessionId) { return accounts.filter((account) => account.provider === provider); },
+    },
+    sessions: {
+      pin(provider, sessionId, credentialId) {
+        pinned.set(`${provider}\0${sessionId}`, credentialId);
+        return pinResult;
+      },
     },
   };
 }
@@ -56,4 +60,18 @@ test("OMP account control ignores legacy preference when off and pins only the c
   await writeFile(controlPath, `${JSON.stringify({ enabled: true, accountId: geminiQuotaAccountId(dashboardAccount.provider, dashboardAccount), provider: dashboardAccount.provider })}\n`, { mode: 0o600 });
   const strictContext = { modelRegistry: { authStorage: makeAuthStorage(false, true) }, sessionManager: { getSessionId: () => "strict-session" } };
   await assert.rejects(() => handlers.get("session_start")({}, strictContext), /KHỐNG CHẾ OMP/);
+  const unsupportedContext = { modelRegistry: { authStorage: {} }, sessionManager: { getSessionId: () => "unsupported-session" } };
+  await assert.rejects(() => handlers.get("session_start")({}, unsupportedContext), /KHỐNG CHẾ OMP/);
+
+  const ambiguousStorage = makeAuthStorage();
+  ambiguousStorage.oauth.accounts = () => [dashboardAccount, dashboardAccount];
+  ambiguousStorage.sessions.pin = () => assert.fail("ambiguous account must not be pinned");
+  const ambiguousContext = { modelRegistry: { authStorage: ambiguousStorage }, sessionManager: { getSessionId: () => "ambiguous-session" } };
+  await assert.rejects(() => handlers.get("session_start")({}, ambiguousContext), /KHỐNG CHẾ OMP/);
+
+  const missingCredentialStorage = makeAuthStorage();
+  missingCredentialStorage.oauth.accounts = () => [{ ...dashboardAccount, credentialId: undefined }];
+  missingCredentialStorage.sessions.pin = () => assert.fail("account without credential must not be pinned");
+  const missingCredentialContext = { modelRegistry: { authStorage: missingCredentialStorage }, sessionManager: { getSessionId: () => "missing-credential-session" } };
+  await assert.rejects(() => handlers.get("session_start")({}, missingCredentialContext), /KHỐNG CHẾ OMP/);
 });
