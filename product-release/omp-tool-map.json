@@ -1,7 +1,16 @@
 {
   "schemaVersion": 2,
   "mapVersion": "2026-10-02.1",
-  "verification": { "ompVersion": "18.4.6" },
+  "verification": {
+    "ompVersion": "18.4.6",
+    "toolSchemaDigests": {
+      "read": "7892cb2c5277f90f",
+      "grep": "ce0e78f4602dda5d",
+      "glob": "e9652da8396999b2",
+      "lsp": "9d3bda6e511c5166",
+      "eval": "800bd7188fc9c60a"
+    }
+  },
   "groups": [
     { "id": "workspace", "label": "WORKSPACE" },
     { "id": "code", "label": "CODE INTELLIGENCE" },

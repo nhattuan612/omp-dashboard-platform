@@ -12,14 +12,18 @@ function quotaAccountId(provider, account) {
 }
 
 async function control() {
+  let value;
   try {
-    const value = JSON.parse(await readFile(CONTROL_FILE, "utf8"));
-    return value?.enabled === true && value.provider === PROVIDER && /^acc-[a-f0-9]{12}$/.test(value.accountId || "")
-      ? value
-      : null;
-  } catch {
-    return null;
+    value = JSON.parse(await readFile(CONTROL_FILE, "utf8"));
+  } catch (error) {
+    throw new Error("KHỐNG CHẾ OMP không đọc được cấu hình account pin", { cause: error });
   }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("KHỐNG CHẾ OMP có cấu hình account pin không hợp lệ");
+  if (value?.enabled === false) return null;
+  if (value?.enabled !== true || value.provider !== PROVIDER || !/^acc-[a-f0-9]{12}$/.test(value.accountId || "")) {
+    throw new Error("KHỐNG CHẾ OMP có cấu hình account pin không hợp lệ");
+  }
+  return value;
 }
 
 async function applyControl(ctx, logger) {

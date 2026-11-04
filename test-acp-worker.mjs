@@ -16,8 +16,11 @@ const fakeSource = join(root, "fake-omp.mjs");
 const fakeBin = join(ompDir, "omp");
 
 const fakeOmp = `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 let nextSession = 0;
+let activeSessionStarts = 0;
+let maxActiveSessionStarts = 0;
 const configOptions = [
   { id: "model", name: "Model", currentValue: "openai/gpt-5.1", options: [{ value: "openai/gpt-5.1", name: "GPT 5.1" }, { value: "google/gemini-3.1-flash-image", name: "Gemini Image" }] },
   { id: "thinking", name: "Thinking", currentValue: "high", options: [{ value: "off", name: "Off" }, { value: "high", name: "High" }] },
@@ -25,7 +28,7 @@ const configOptions = [
 function send(frame) { process.stdout.write(JSON.stringify(frame) + "\\n"); }
 function reply(id, result = {}) { send({ jsonrpc: "2.0", id, result }); }
 function sendCommands(sessionId) { setTimeout(() => send({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update: { sessionUpdate: "available_commands_update", availableCommands: [{ name: "memory", source: "builtin" }, { name: "dashboard-gemini-pin", source: "extension" }] } } }), 10); }
-function createSession() { const sessionId = process.pid + "-session-" + (++nextSession); sendCommands(sessionId); return { sessionId, configOptions }; }
+function createSession() { const sessionId = process.pid + "-session-" + (++nextSession); return { sessionId, configOptions }; }
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
 for await (const line of lines) {
   let frame;
@@ -35,8 +38,20 @@ for await (const line of lines) {
     continue;
   } else if (frame.method === "initialize" || frame.method === "authenticate" || frame.method === "session/close" || frame.method === "session/set_config_option") {
     reply(frame.id, {});
-  } else if (frame.method === "session/new" || frame.method === "session/fork") {
-    reply(frame.id, createSession());
+  } else if (frame.method === "session/new") {
+    const session = createSession();
+    activeSessionStarts += 1;
+    maxActiveSessionStarts = Math.max(maxActiveSessionStarts, activeSessionStarts);
+    appendFileSync(process.env.ACPX_SESSION_NEW_STATS, activeSessionStarts + ":" + maxActiveSessionStarts + "\\n");
+    setTimeout(() => {
+      reply(frame.id, session);
+      sendCommands(session.sessionId);
+      activeSessionStarts -= 1;
+    }, Number(process.env.ACPX_SESSION_NEW_DELAY_MS || 0));
+  } else if (frame.method === "session/fork") {
+    const session = createSession();
+    reply(frame.id, session);
+    sendCommands(session.sessionId);
   } else if (frame.method === "session/load") {
     const sessionId = frame.params.sessionId;
     if (sessionId.startsWith("missing")) {
@@ -47,8 +62,25 @@ for await (const line of lines) {
     sendCommands(sessionId);
   } else if (frame.method === "session/prompt") {
     const text = (frame.params.prompt || []).map((part) => part.text || "").join("");
+    if (["A_ONLY", "B_ONLY"].includes(text)) appendFileSync(process.env.ACPX_PROMPT_TIMES, text + ":" + Date.now() + "\\n");
+    if (text.startsWith("/dashboard-gemini-pin ")) {
+      reply(frame.id, { stopReason: "end_turn" });
+      continue;
+    }
     if (text === "ERROR_429") {
       reply(frame.id, { stopReason: "error", error: { status: 429, message: "image quota exhausted" } });
+      continue;
+    }
+    if (text === "SLOW_ABORT") {
+      setTimeout(() => reply(frame.id, { stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1 } }), 100);
+      continue;
+    }
+    if (text === "ERROR_RPC") {
+      send({ jsonrpc: "2.0", id: frame.id, error: { code: -32603, message: "internal error" } });
+      continue;
+    }
+    if (text === "ERROR_RPC_STRING") {
+      send({ jsonrpc: "2.0", id: frame.id, error: { code: "SESSION_FAILED", message: "session failed" } });
       continue;
     }
     send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: frame.params.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: frame.params.sessionId + ":" + text } } } });
@@ -64,6 +96,7 @@ for await (const line of lines) {
 
 const runner = `
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { ConsoleBridge } from ${JSON.stringify(pathToFileURL(join(projectRoot, "console-bridge.mjs")).href)};
 const bridge = new ConsoleBridge({ env: process.env });
 const cwdA = ${JSON.stringify(cwdA)};
@@ -80,22 +113,55 @@ try {
   assert.equal(first.pid, second.pid, "matching workspace and launch policy must share one worker");
   assert.notEqual(first.id, second.id, "chats keep independent dashboard contexts");
   assert.notEqual(first.sessionId, second.sessionId, "chats keep independent OMP ACP sessions");
+  const parallelStarts = await Promise.all(Array.from({ length: 8 }, () => bridge.start({ protocol: "acp", cwd: cwdA, ...options })));
+  assert.equal(new Set(parallelStarts.map((session) => session.sessionId)).size, 8, "parallel session starts must each create their own OMP session");
+  assert.ok(parallelStarts.every((session) => session.sessionStartupTiming?.method === "new" && Number.isFinite(session.sessionStartupTiming.workerStartMs)), "session startup timing must expose worker startup and session/new phases");
+  const sessionStartStats = (await readFile(process.env.ACPX_SESSION_NEW_STATS, "utf8")).trim().split("\\n").map((line) => line.split(":").map(Number));
+  assert.ok(Math.max(...sessionStartStats.map(([, max]) => max)) > 1, "independent session/new calls must overlap instead of sharing one global queue");
+  passes.push("Independent ACP session creation runs concurrently on the shared worker");
   const clientA = bridge.createClient();
   const liveA = { chunks: [], write(chunk) { this.chunks.push(chunk); } };
   bridge.subscribe(first.id, clientA, liveA, { replay: false });
-  await bridge.send(first.id, { id: "prompt-a", type: "prompt", message: "A_ONLY" });
+  const pacedPromptsStartedAt = Date.now();
+  await Promise.all([
+    bridge.send(first.id, { id: "prompt-a", type: "prompt", message: "A_ONLY" }),
+    bridge.send(second.id, { id: "prompt-b", type: "prompt", message: "B_ONLY" }),
+  ]);
+  assert.ok(Date.now() - pacedPromptsStartedAt >= 950, "concurrent provider prompts must queue at the Safety Guard gap");
+  const promptStarts = (await readFile(process.env.ACPX_PROMPT_TIMES, "utf8")).trim().split("\\n").map((line) => Number(line.split(":").at(-1)));
+  assert.equal(promptStarts.length, 2, "both concurrent provider prompts must reach the fake provider");
+  assert.ok(Math.abs(promptStarts[1] - promptStarts[0]) >= 950, "provider prompt starts must respect the Safety Guard gap");
+  passes.push("Concurrent ACP model prompts queue at the Safety Guard gap");
   await wait(1050);
   const contextUsage = bridge.get(first.id).summary();
   assert.deepEqual(contextUsage.contextUsage, { used: 2048, size: 131072, cost: { amount: 0.01, currency: "USD" } }, "ACP usage_update must preserve used/size/cumulative cost separately from per-turn usage");
   assert.equal(contextUsage.usage.total, 2, "per-turn token usage must remain available alongside context window usage");
   passes.push("ACP context usage_update preserves current used/size and cumulative cost");
-  await bridge.send(second.id, { id: "prompt-b", type: "prompt", message: "B_ONLY" });
   const firstFrames = bridge.get(first.id).frames;
   const secondFrames = bridge.get(second.id).frames;
   assert.ok(firstFrames.some((frame) => JSON.stringify(frame).includes("A_ONLY")));
   assert.ok(!firstFrames.some((frame) => JSON.stringify(frame).includes("B_ONLY")), "one chat must not receive another session's output");
   assert.ok(secondFrames.some((frame) => JSON.stringify(frame).includes("B_ONLY")));
   assert.ok(!secondFrames.some((frame) => JSON.stringify(frame).includes("A_ONLY")), "sibling output must remain isolated");
+  await wait(1050);
+  const slowTurn = bridge.send(first.id, { id: "prompt-slow-abort", type: "prompt", message: "SLOW_ABORT" });
+  await wait(20);
+  const queuedFollowUp = bridge.send(first.id, { id: "follow-up-cancelled", type: "follow_up", message: "FOLLOWUP_CANCELLED" });
+  await bridge.send(first.id, { id: "abort-follow-up", type: "abort" });
+  await slowTurn;
+  await assert.rejects(queuedFollowUp, (error) => error.code === "ABORTED");
+  assert.ok(!bridge.get(first.id).frames.some((frame) => JSON.stringify(frame).includes("FOLLOWUP_CANCELLED")), "abort must cancel follow-ups already queued behind the active turn");
+  assert.equal(bridge.safety().activeTurns, 0, "aborting queued follow-ups must release the Safety Guard turn exactly once");
+  passes.push("Aborting an active turn cancels its queued follow-ups");
+  await wait(1050);
+  await bridge.send(first.id, { id: "prompt-cancel-start", type: "prompt", message: "CANCEL_START" });
+  const cancelledFrames = bridge.get(second.id).frames.length;
+  const queuedPrompt = bridge.send(second.id, { id: "prompt-cancel-pending", type: "prompt", message: "CANCEL_PENDING" });
+  await wait(20);
+  await bridge.send(second.id, { id: "abort-cancel-pending", type: "abort" });
+  await assert.rejects(queuedPrompt, (error) => error.code === "ABORTED");
+  assert.ok(!bridge.get(second.id).frames.slice(cancelledFrames).some((frame) => JSON.stringify(frame).includes("CANCEL_PENDING")), "aborted queued prompt must never reach the provider");
+  passes.push("Aborting an ACP prompt in the pacing queue prevents provider submission");
   await wait(1050);
   const errorFrameCount = bridge.get(second.id).frames.length;
   await bridge.send(second.id, { id: "prompt-error", type: "prompt", message: "ERROR_429" });
@@ -104,6 +170,16 @@ try {
   assert.equal(terminalError?.message?.errorStatus, 429, "ACP terminal errors must preserve their upstream status");
   assert.equal(terminalError?.message?.errorMessage, "image quota exhausted", "ACP terminal errors must preserve their upstream message");
   passes.push("ACP terminal errors preserve upstream status and message");
+  const followUpFrames = bridge.get(second.id).frames.length;
+  await assert.rejects(bridge.send(second.id, { id: "follow-up-during-cooldown", type: "follow_up", message: "FOLLOWUP_DURING_COOLDOWN" }));
+  assert.ok(!bridge.get(second.id).frames.slice(followUpFrames).some((frame) => JSON.stringify(frame).includes("FOLLOWUP_DURING_COOLDOWN")), "follow-up must not reach the provider during cooldown");
+  passes.push("ACP follow-up respects the provider cooldown");
+  const pinFrameCount = bridge.get(second.id).frames.length;
+  await bridge.send(second.id, { id: "pin-during-cooldown", type: "prompt", message: "/dashboard-gemini-pin acc-aaaaaaaaaaaa" });
+  const pinResponse = bridge.get(second.id).frames.slice(pinFrameCount).find((frame) => frame.type === "response" && frame.command === "prompt");
+  assert.equal(pinResponse?.success, true, "local pin command must bypass Google Safety Guard cooldown");
+  assert.equal(bridge.safety().blocked, true, "a local pin command must not clear provider cooldown");
+  passes.push("Local Gemini pin bypasses provider cooldown without clearing it");
   assert.equal(bridge.safety().blocked, true, "429 must start Safety Guard cooldown while protection is on");
   bridge.updateSafetyPolicy({ enabled: false, activeAccountProtected: true });
   const disabledSafety = bridge.safety();
@@ -114,6 +190,16 @@ try {
   await bridge.send(second.id, { id: "prompt-after-safety-off", type: "prompt", message: "SAFETY_OFF" });
   await wait(50);
   assert.ok(bridge.get(second.id).frames.some((frame) => JSON.stringify(frame).includes("SAFETY_OFF")), "a cancelled cooldown must not block the next request while protection is off");
+  const rpcErrorFrameCount = bridge.get(second.id).frames.length;
+  await bridge.send(second.id, { id: "prompt-rpc-error", type: "prompt", message: "ERROR_RPC" });
+  const rpcError = bridge.get(second.id).frames.slice(rpcErrorFrameCount).find((frame) => frame.type === "response" && frame.command === "prompt");
+  assert.equal(rpcError?.error?.rpcErrorNumber, -32603, "ACP JSON-RPC error code must survive the dashboard context");
+  passes.push("ACP JSON-RPC upstream error code survives the dashboard context");
+  const rpcStringErrorFrameCount = bridge.get(second.id).frames.length;
+  await bridge.send(second.id, { id: "prompt-rpc-string-error", type: "prompt", message: "ERROR_RPC_STRING" });
+  const rpcStringError = bridge.get(second.id).frames.slice(rpcStringErrorFrameCount).find((frame) => frame.type === "response" && frame.command === "prompt");
+  assert.equal(rpcStringError?.error?.rpcFailureKind, "SESSION_FAILED", "non-numeric ACP error code must survive redaction safely");
+  passes.push("ACP string error kind survives dashboard redaction safely");
   bridge.updateSafetyPolicy({ enabled: true, activeAccountProtected: true });
   passes.push("Safety Guard off cancels cooldown and request pacing");
   const frameCountBeforeReplay = firstFrames.length;
@@ -189,6 +275,9 @@ try {
     env: {
       ...process.env,
       HOME: home,
+      ACPX_PROMPT_TIMES: join(root, "prompt-times.log"),
+      ACPX_SESSION_NEW_STATS: join(root, "session-new-stats.log"),
+      ACPX_SESSION_NEW_DELAY_MS: "100",
       OMP_DASHBOARD_WORKSPACE: cwdA,
       OMP_DASHBOARD_GENERAL_WORKSPACE: cwdA,
       OMP_ALLOWED_WORKSPACES: [cwdA, cwdB, cwdC].join(delimiter),

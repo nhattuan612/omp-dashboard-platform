@@ -41,7 +41,12 @@ function acpImage(value) {
 }
 
 function jsonError(error) {
-  return { code: error?.code || "UPSTREAM_ERROR", message: String(error?.message || "OMP ACP request failed").slice(0, 300) };
+  return {
+    code: error?.code || "UPSTREAM_ERROR",
+    message: String(error?.message || "OMP ACP request failed").slice(0, 300),
+    ...(Number.isInteger(error?.upstreamCode) ? { rpcErrorNumber: error.upstreamCode } : {}),
+    ...(typeof error?.upstreamCode === "string" ? { rpcFailureKind: error.upstreamCode } : {}),
+  };
 }
 
 function promptResultError(result) {
@@ -82,6 +87,7 @@ export class AcpSessionContext {
     this.onIdle = onIdle;
     this.status = "idle";
     this.startedAt = null;
+    this.sessionStartupTiming = null;
     this.lastEventAt = null;
     this.lastError = null;
     this.closedAt = null;
@@ -106,12 +112,15 @@ export class AcpSessionContext {
     this.promptAgentInvoked = false;
     this.agentTurnStarted = false;
     this.activeTurn = false;
+    this.guardTurnStarted = false;
     this.lastPromptAt = 0;
     this.pendingFollowUps = 0;
+    this.followUpEpoch = 0;
     this.followUpFailed = false;
     this.pendingElicitations = new Map();
     this.activeLocalCommand = null;
     this.localCommandOutput = "";
+    this.pendingPrompt = null;
     this.commandQueue = Promise.resolve();
   }
 
@@ -121,9 +130,12 @@ export class AcpSessionContext {
     this.startedAt = Date.now();
     this.#emit("bridge_status", this.publicSummary());
     try {
+      const workerStartAt = Date.now();
       await this.worker.start();
+      const workerStartMs = Date.now() - workerStartAt;
       if (sessionId) await this.#loadSession(sessionId);
       else await this.#newSession();
+      this.sessionStartupTiming = { ...this.sessionStartupTiming, workerStartMs, totalMs: Date.now() - this.startedAt };
       this.status = "ready";
       this.#emit("bridge_status", this.publicSummary());
       return this.summary();
@@ -163,6 +175,7 @@ export class AcpSessionContext {
       pid: this.worker.summary().pid,
       protocolVersion: 1,
       startedAt: this.startedAt,
+      sessionStartupTiming: this.sessionStartupTiming,
       lastEventAt: this.lastEventAt,
       lastError: this.lastError,
       stderr: this.worker.summary().stderr,
@@ -225,20 +238,29 @@ export class AcpSessionContext {
     if (this.status !== "ready" || !this.sessionId) throw Object.assign(new Error("OMP ACP session chưa chạy"), { code: "UPSTREAM_UNAVAILABLE" });
     if (!frame || typeof frame !== "object" || Array.isArray(frame) || typeof frame.type !== "string") throw new Error("RPC frame phải là object có type");
     if (frame.type === "abort") {
-      this.worker.notify("session/cancel", { sessionId: this.sessionId });
+      if (this.pendingFollowUps) this.followUpEpoch += 1;
+      if (this.pendingPrompt) this.pendingPrompt.abortController.abort();
+      else if (this.activeTurn) this.worker.notify("session/cancel", { sessionId: this.sessionId });
       return;
     }
     if (frame.type === "extension_ui_response") return this.#answerElicitation(frame);
     if (frame.type === "steer") throw Object.assign(new Error("ACP chuẩn không hỗ trợ steering giữa lượt; có thể gửi follow-up sau khi lượt hiện tại kết thúc."), { code: "UNSUPPORTED_ACTION" });
     const isFollowUp = frame.type === "follow_up";
+    const followUpEpoch = this.followUpEpoch;
     if (isFollowUp) this.pendingFollowUps += 1;
-    const operation = this.commandQueue.then(() => this.#handleCommand(frame, isFollowUp));
+    const operation = this.commandQueue.then(() => {
+      if (isFollowUp && followUpEpoch !== this.followUpEpoch) throw Object.assign(new Error("ACP follow-up cancelled"), { code: "ABORTED" });
+      return this.#handleCommand(frame, isFollowUp);
+    });
     this.commandQueue = operation.catch((error) => {
       if (isFollowUp) {
         this.pendingFollowUps = Math.max(0, this.pendingFollowUps - 1);
         if (!this.pendingFollowUps && !this.activeTurn) {
           this.followUpFailed = false;
-          this.guard.endTurn();
+          if (this.guardTurnStarted) {
+            this.guard.endTurn();
+            this.guardTurnStarted = false;
+          }
           this.onSafetyChanged?.();
         }
       }
@@ -332,12 +354,18 @@ export class AcpSessionContext {
   async stop() {
     if (this.status === "closed") return this.summary();
     this.stopping = true;
+    if (this.pendingFollowUps) this.followUpEpoch += 1;
+    this.pendingPrompt?.abortController.abort();
+    this.pendingPrompt = null;
     clearTimeout(this.closeTimer);
     this.closeTimer = null;
     if (this.activeTurn && this.sessionId) {
       this.worker.notify("session/cancel", { sessionId: this.sessionId });
       this.activeTurn = false;
-      this.guard.endTurn();
+      if (this.guardTurnStarted) {
+        this.guard.endTurn();
+        this.guardTurnStarted = false;
+      }
       this.onSafetyChanged?.();
     }
     for (const pending of this.pendingElicitations.values()) {
@@ -362,7 +390,10 @@ export class AcpSessionContext {
     this.lastError = String(error?.message || "OMP ACP worker exited").slice(0, 300);
     if (this.activeTurn) {
       this.activeTurn = false;
-      this.guard.endTurn();
+      if (this.guardTurnStarted) {
+        this.guard.endTurn();
+        this.guardTurnStarted = false;
+      }
       this.onSafetyChanged?.();
     }
     for (const pending of this.pendingElicitations.values()) pending.resolve({ action: "cancel" });
@@ -373,17 +404,25 @@ export class AcpSessionContext {
 
   async #newSession() {
     this.#resetCommandBootstrap();
+    const startedAt = Date.now();
     const result = await this.worker.request("session/new", { cwd: this.cwd, mcpServers: [] }, RESPONSE_TIMEOUT_MS);
+    const rpcMs = Date.now() - startedAt;
     if (typeof result?.sessionId !== "string" || !result.sessionId) throw new Error("OMP ACP không trả sessionId mới");
     this.#attachSession(result.sessionId, result.configOptions);
+    const bootstrapStartedAt = Date.now();
     await this.#waitForCommandBootstrap();
+    this.sessionStartupTiming = { method: "new", rpcMs, bootstrapMs: Date.now() - bootstrapStartedAt, totalMs: Date.now() - startedAt };
   }
 
   async #loadSession(sessionId) {
     this.#resetCommandBootstrap();
+    const startedAt = Date.now();
     const result = await this.worker.request("session/load", { sessionId, cwd: this.cwd, mcpServers: [] }, RESPONSE_TIMEOUT_MS);
+    const rpcMs = Date.now() - startedAt;
     this.#attachSession(sessionId, result?.configOptions);
+    const bootstrapStartedAt = Date.now();
     await this.#waitForCommandBootstrap();
+    this.sessionStartupTiming = { method: "load", rpcMs, bootstrapMs: Date.now() - bootstrapStartedAt, totalMs: Date.now() - startedAt };
   }
 
   #attachSession(sessionId, configOptions) {
@@ -436,7 +475,7 @@ export class AcpSessionContext {
       case "follow_up":
         return this.#prompt(frame, { isFollowUp });
       case "set_model":
-        return this.#setConfig(frame, MODEL_CONFIG_ID, `${frame.provider || modelProvider(frame.modelId)}/${modelId(frame.modelId)}`);
+        return this.#setConfig(frame, MODEL_CONFIG_ID, `${frame.provider || modelProvider(frame.modelId)}/${frame.provider ? frame.modelId : modelId(frame.modelId)}`);
       case "set_thinking_level":
         return this.#setConfig(frame, THINKING_CONFIG_ID, frame.level === "none" ? "off" : frame.level);
       case "switch_session":
@@ -491,18 +530,30 @@ export class AcpSessionContext {
     if (isFollowUp && this.followUpFailed) throw Object.assign(new Error("Follow-up trước đó thất bại"), { code: "UPSTREAM_ERROR" });
     const commandMatch = /^\/([\w:-]+)/.exec(text);
     const commandName = commandMatch?.[1];
+    const pendingPrompt = { abortController: new AbortController() };
+    this.pendingPrompt = pendingPrompt;
     this.activeLocalCommand = ["memory", "dashboard-gemini-pin"].includes(commandName)
       && this.#supportsCommand(commandName) ? commandName : null;
     this.localCommandOutput = "";
-    const now = Date.now();
-    if (!isFollowUp) {
-      this.guard.beforeRequest();
-      if (this.guard.isEnabled() && this.lastPromptAt && now - this.lastPromptAt < 1000) {
-        throw Object.assign(new Error(`Google Safety Guard: chờ ${Math.ceil((1000 - (now - this.lastPromptAt)) / 1000)}s trước request tiếp theo.`), { code: "RATE_LIMITED" });
+    try {
+      if (this.activeLocalCommand !== "dashboard-gemini-pin") {
+        await this.guard.reserveRequest(pendingPrompt.abortController.signal);
+        if (this.stopping) throw Object.assign(new Error("ACP request cancelled"), { code: "ABORTED" });
+        if (!this.guardTurnStarted) {
+          this.guard.startTurn();
+          this.guardTurnStarted = true;
+        }
+        this.lastPromptAt = Date.now();
       }
-      this.guard.startTurn();
-      this.lastPromptAt = now;
+    } catch (error) {
+      if (this.pendingPrompt === pendingPrompt) this.pendingPrompt = null;
+      throw error;
     }
+    if (pendingPrompt.abortController.signal.aborted || this.stopping) {
+      if (this.pendingPrompt === pendingPrompt) this.pendingPrompt = null;
+      throw Object.assign(new Error("ACP request cancelled"), { code: "ABORTED" });
+    }
+    if (this.pendingPrompt === pendingPrompt) this.pendingPrompt = null;
     this.activeTurn = true;
     this.promptAgentInvoked = false;
     this.agentTurnStarted = false;
@@ -511,7 +562,13 @@ export class AcpSessionContext {
     this.lastUsageUpdatedAt = null;
     this.onSafetyChanged?.();
     try {
-      const result = await this.worker.request("session/prompt", { sessionId: this.sessionId, prompt }, 0);
+      const request = () => {
+        if (pendingPrompt.abortController.signal.aborted || this.stopping) throw Object.assign(new Error("ACP request cancelled"), { code: "ABORTED" });
+        return this.worker.request("session/prompt", { sessionId: this.sessionId, prompt }, 0);
+      };
+      const result = this.activeLocalCommand === "dashboard-gemini-pin"
+        ? await this.worker.runPinOperation(request)
+        : await request();
       if (this.activeLocalCommand) {
         const output = this.localCommandOutput || contentText(result?.content) || this.assistantContent.map((item) => item.text || "").join("");
         if (this.activeLocalCommand === "memory") this.#emit("omp", { type: "command_output", command: "memory", text: output });
@@ -636,15 +693,20 @@ export class AcpSessionContext {
     this.agentTurnStarted = false;
     const failure = frame?.message?.stopReason === "error";
     const rateLimited = frame?.message?.errorStatus === 429 || /429|resource[_ ]exhausted|quota|rate limit/i.test(String(frame?.message?.errorMessage || ""));
-    if (rateLimited) this.guard.on429();
-    else if (!failure) this.guard.onSuccess();
+    if (this.guardTurnStarted) {
+      if (rateLimited) this.guard.on429();
+      else if (!failure) this.guard.onSuccess();
+    }
     if (isFollowUp) {
       this.pendingFollowUps = Math.max(0, this.pendingFollowUps - 1);
       if (failure) this.followUpFailed = true;
     } else if (failure && this.pendingFollowUps) this.followUpFailed = true;
     if (!this.pendingFollowUps) {
       this.followUpFailed = false;
-      this.guard.endTurn();
+      if (this.guardTurnStarted) {
+        this.guard.endTurn();
+        this.guardTurnStarted = false;
+      }
     }
     this.onSafetyChanged?.();
     if (wasActive) this.onGenerationFinished?.({ frame, contextId: this.id });

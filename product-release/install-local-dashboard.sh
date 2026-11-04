@@ -12,6 +12,8 @@ NPM_BIN=$(command -v npm || true)
 USER_ID=$(/usr/bin/id -u)
 LAUNCH_DOMAIN="gui/$USER_ID"
 PLIST="$LAUNCH_DIR/$LABEL.plist"
+INITIAL_INSTALL=1
+if [ -e "$TARGET_DIR/server.mjs" ] || [ -d "$TARGET_DIR/backups" ] || [ -e "$PLIST" ]; then INITIAL_INSTALL=0; fi
 PLIST_BACKUP=LaunchAgent.plist
 BACKUP_ROOT="$TARGET_DIR/backups/deploy"
 APP_FILES='server.mjs omp-stats-history.mjs chat-output-mode.mjs omp-tool-catalog.mjs omp-tool-map.json console-bridge.mjs acp-worker.mjs acp-session-context.mjs gemini-account-pin-extension.mjs honpi-dashboard-mark-8138753b.png honpi-chat-dashboard-SKE.html honpi-quota-dashboard-SKE.html honpi-chat-dashboard-live.js honpi-chat-dashboard-legacy.js package.json package-lock.json scripts/fix-node-pty-helper.mjs'
@@ -39,6 +41,9 @@ case "$NODE_BIN" in /*) ;; *) fail "Node.js path must be absolute" ;; esac
 [ -x "${HOME}/.bun/bin/omp" ] || fail "OMP is required at ~/.bun/bin/omp"
 case "$LABEL" in ''|*[!A-Za-z0-9._-]*) fail "Invalid LaunchAgent label" ;; esac
 [ -f "$OMP_EXTENSION_SOURCE" ] || fail "Missing OMP extension release asset"
+if [ "$INITIAL_INSTALL" -eq 0 ] && [ ! -f "$TARGET_DIR/omp-account-control.json" ]; then
+  fail "Existing OMP account-control state is missing; repair it explicitly before upgrading"
+fi
 
 xml_escape() {
   printf '%s' "$1" | /usr/bin/sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
@@ -139,6 +144,10 @@ rollback_failed_install() {
 }
 
 /bin/mkdir -p "$TARGET_DIR" "$LAUNCH_DIR" "$BACKUP_ROOT"
+if [ "$INITIAL_INSTALL" -eq 1 ] && [ ! -e "$TARGET_DIR/omp-account-control.json" ]; then
+  printf '{"enabled":false}\n' > "$TARGET_DIR/omp-account-control.json"
+  /bin/chmod 600 "$TARGET_DIR/omp-account-control.json"
+fi
 /bin/chmod 700 "$TARGET_DIR/backups" "$BACKUP_ROOT"
 timestamp=$(/bin/date +%Y%m%d-%H%M%S)
 BACKUP_DIR="$BACKUP_ROOT/$timestamp-$$"

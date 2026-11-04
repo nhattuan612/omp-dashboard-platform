@@ -111,6 +111,7 @@ class ProviderSafetyGuard {
   #recent429At = [];
   #activeTurns = 0;
   #lastRequestAt = 0;
+  #requestQueue = Promise.resolve();
   #lastDecision = { code: "ready", at: Date.now(), message: "Safety Guard sẵn sàng" };
 
   constructor() {
@@ -165,6 +166,42 @@ class ProviderSafetyGuard {
       const waitSeconds = Math.ceil((SAFETY_MIN_REQUEST_GAP_MS - (now - this.#lastRequestAt)) / 1000);
       throw new Error(`Google Safety Guard: còn ${waitSeconds}s trước request tiếp theo.`);
     }
+  }
+
+  reserveRequest(signal) {
+    const assertNotAborted = () => {
+      if (signal?.aborted) throw Object.assign(new Error("ACP request cancelled"), { code: "ABORTED" });
+    };
+    const operation = this.#requestQueue.then(async () => {
+      assertNotAborted();
+      if (!this.isEnabled()) return;
+      if (this.#blockedUntil > Date.now()) {
+        const retryAt = new Date(this.#blockedUntil).toLocaleTimeString("vi-VN");
+        throw new Error(`Google Safety Guard đang cooldown đến ${retryAt}; không retry, không đổi model, không đổi account.`);
+      }
+      const waitMs = Math.max(0, this.#lastRequestAt + SAFETY_MIN_REQUEST_GAP_MS - Date.now());
+      if (waitMs) await new Promise((resolve, reject) => {
+        const onAbort = () => {
+          clearTimeout(timer);
+          reject(Object.assign(new Error("ACP request cancelled"), { code: "ABORTED" }));
+        };
+        const timer = setTimeout(() => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve();
+        }, waitMs);
+        signal?.addEventListener("abort", onAbort, { once: true });
+        if (signal?.aborted) onAbort();
+      });
+      assertNotAborted();
+      if (!this.isEnabled()) return;
+      if (this.#blockedUntil > Date.now()) {
+        const retryAt = new Date(this.#blockedUntil).toLocaleTimeString("vi-VN");
+        throw new Error(`Google Safety Guard đang cooldown đến ${retryAt}; không retry, không đổi model, không đổi account.`);
+      }
+      this.#lastRequestAt = Date.now();
+    });
+    this.#requestQueue = operation.catch(() => {});
+    return operation;
   }
 
   startTurn() {
@@ -372,28 +409,33 @@ export function loopbackBrowserEndpoint(value) {
   } catch { return null; }
 }
 
-function browserLaunchOptions(value, env) {
-  if (value == null) return { args: [], env, config: null };
-  const url = loopbackBrowserEndpoint(value.url);
-  if (!["omp-browser-relay", "chrome-electron"].includes(value.mode) || !url) throw Object.assign(new Error("Cấu hình browser phải dùng CDP loopback hợp lệ."), { code: "BAD_REQUEST", field: "browserMode" });
-  const config = { mode: value.mode, url };
-  const relay = config.mode === "omp-browser-relay";
-  const overlay = { browser: { enabled: true, relay, relayUrl: relay ? url : "", cdpUrl: relay ? "" : url, cmux: false, tern: false }, eval: { js: true }, tools: { xdev: false } };
+function browserLaunchOptions(value, env, advisorModel = null) {
+  if (value == null && !advisorModel) return { args: [], env, config: null };
+  const url = value == null ? null : loopbackBrowserEndpoint(value.url);
+  if (value != null && (!["omp-browser-relay", "chrome-electron"].includes(value.mode) || !url)) throw Object.assign(new Error("Cấu hình browser phải dùng CDP loopback hợp lệ."), { code: "BAD_REQUEST", field: "browserMode" });
+  const config = value == null ? null : { mode: value.mode, url };
+  const relay = config?.mode === "omp-browser-relay";
+  const overlay = {
+    ...(config ? { browser: { enabled: true, relay, relayUrl: relay ? url : "", cdpUrl: relay ? "" : url, cmux: false, tern: false }, eval: { js: true }, tools: { xdev: false } } : {}),
+    ...(advisorModel ? { modelRoles: { advisor: advisorModel } } : {}),
+  };
   const directory = join(homedir(), ".omp", "usage-dashboard", "browser-configs");
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const path = join(directory, `${fileSha256(Buffer.from(JSON.stringify(config)))}.json`);
+  const path = join(directory, `${fileSha256(Buffer.from(JSON.stringify({ config, advisorModel })))}.json`);
   writeFileSync(path, `${JSON.stringify(overlay)}\n`, { mode: 0o600 });
-  return { args: ["--config", path], env: { ...env, PI_BROWSER_RELAY: relay ? "1" : "0", PI_BROWSER_CMUX: "0", PI_BROWSER_TERN: "0" }, config };
+  return { args: ["--config", path], env: config ? { ...env, PI_BROWSER_RELAY: relay ? "1" : "0", PI_BROWSER_CMUX: "0", PI_BROWSER_TERN: "0" } : env, config };
 }
 
 class ConsoleContext {
-  constructor({ cwd, guard, onGenerationFinished, onSafetyChanged, onIdle, approvalMode = "always-ask", planYolo = false, planYoloModel = null, advisor = false, tools = [], browserConfig = null, env = process.env }) {
+  constructor({ cwd, guard, onGenerationFinished, onSafetyChanged, onIdle, approvalMode = "always-ask", planYolo = false, planYoloModel = null, advisor = false, advisorModel = null, noTools = false, tools = [], browserConfig = null, env = process.env }) {
     this.id = randomUUID();
     this.cwd = cwd;
     this.approvalMode = ["always-ask", "write", "yolo"].includes(approvalMode) ? approvalMode : "always-ask";
     this.planYolo = planYolo === true;
     this.planYoloModel = this.planYolo && typeof planYoloModel === "string" ? planYoloModel : null;
     this.advisor = advisor === true;
+    this.advisorModel = this.advisor && typeof advisorModel === "string" ? advisorModel : null;
+    this.noTools = noTools === true;
     this.tools = normalizeTools(tools);
     this.browserConfig = browserConfig;
     this.env = env;
@@ -461,9 +503,9 @@ class ConsoleContext {
     this.status = "starting";
     this.startedAt = Date.now();
     this.#broadcast("bridge_status", this.publicSummary());
-    const args = ["--approval-mode", this.approvalMode, ...(this.planYolo ? ["--plan-yolo", `--plan=${this.planYoloModel}`, `--plan-yolo-into=${this.planYoloModel}`] : []), ...(this.advisor ? ["--advisor"] : []), "--mode", "rpc", "--extension", GEMINI_PIN_EXTENSION];
+    const args = ["--approval-mode", this.approvalMode, ...(this.noTools ? ["--no-tools", "--no-extensions"] : []), ...(this.planYolo ? ["--plan-yolo", `--plan=${this.planYoloModel}`, `--plan-yolo-into=${this.planYoloModel}`] : []), ...(this.advisor ? ["--advisor"] : []), "--mode", "rpc", "--extension", GEMINI_PIN_EXTENSION];
     if (this.tools.length) args.push(`--tools=${this.tools.join(",")}`);
-    const browser = browserLaunchOptions(this.browserConfig, this.env);
+    const browser = browserLaunchOptions(this.browserConfig, this.env, this.advisorModel);
     args.push(...browser.args);
     const child = spawn(OMP_BIN, args, {
       cwd: this.cwd,
@@ -729,23 +771,23 @@ export class ConsoleBridge {
   async start(body = {}) {
     const cwd = await validCwd(body.cwd);
     if (body.protocol === "acp") return this.#startAcp(body, cwd);
-    const context = new ConsoleContext({ cwd, env: this.#env, guard: this.#guard, onGenerationFinished: this.#onGenerationFinished, onSafetyChanged: this.#onSafetyChanged, onIdle: (contextId) => this.#contexts.delete(contextId), approvalMode: body.approvalMode, planYolo: body.planYolo, planYoloModel: body.planYoloModel, advisor: body.advisor, tools: body.tools, browserConfig: body.browserConfig });
+    const context = new ConsoleContext({ cwd, env: this.#env, guard: this.#guard, onGenerationFinished: this.#onGenerationFinished, onSafetyChanged: this.#onSafetyChanged, onIdle: (contextId) => this.#contexts.delete(contextId), approvalMode: body.approvalMode, planYolo: body.planYolo, planYoloModel: body.planYoloModel, advisor: body.advisor, advisorModel: body.advisorModel, noTools: body.noTools, tools: body.tools, browserConfig: body.browserConfig });
     this.#contexts.set(context.id, context);
     await context.start();
     return context.summary();
   }
 
-  #acquireAcpWorker(cwd, approvalMode, planYolo, planYoloModel, advisor, tools, browserConfig = null) {
+  #acquireAcpWorker(cwd, approvalMode, planYolo, planYoloModel, advisor, advisorModel, tools, browserConfig = null, noTools = false) {
     const normalizedTools = [...tools].sort();
-    const browser = browserLaunchOptions(browserConfig, this.#env);
-    const key = JSON.stringify({ cwd, approvalMode, planYolo: planYolo === true, planYoloModel: planYolo ? planYoloModel : null, advisor: advisor === true, tools: normalizedTools, browserConfig: browser.config });
+    const browser = browserLaunchOptions(browserConfig, this.#env, advisor ? advisorModel : null);
+    const key = JSON.stringify({ cwd, approvalMode, planYolo: planYolo === true, planYoloModel: planYolo ? planYoloModel : null, advisor: advisor === true, advisorModel: advisor ? advisorModel : null, noTools: noTools === true, tools: normalizedTools, browserConfig: browser.config });
     let record = this.#acpWorkers.get(key);
     if (record && ["error", "closed"].includes(record.worker.status)) {
       this.#acpWorkers.delete(key);
       record = null;
     }
     if (!record) {
-      const args = ["--approval-mode", approvalMode, ...(planYolo ? ["--plan-yolo", `--plan=${planYoloModel}`, `--plan-yolo-into=${planYoloModel}`] : []), ...(advisor ? ["--advisor"] : []), "--extension", GEMINI_PIN_EXTENSION];
+      const args = ["--approval-mode", approvalMode, ...(noTools ? ["--no-tools", "--no-extensions"] : []), ...(planYolo ? ["--plan-yolo", `--plan=${planYoloModel}`, `--plan-yolo-into=${planYoloModel}`] : []), ...(advisor ? ["--advisor"] : []), "--extension", GEMINI_PIN_EXTENSION];
       if (normalizedTools.length) args.push(`--tools=${normalizedTools.join(",")}`);
       args.push(...browser.args);
       args.push("acp");
@@ -825,7 +867,7 @@ export class ConsoleBridge {
     const approvalMode = ["always-ask", "write", "yolo"].includes(body.approvalMode) ? body.approvalMode : "always-ask";
     const tools = normalizeTools(body.tools);
     const planYolo = body.planYolo === true;
-    const record = this.#acquireAcpWorker(cwd, approvalMode, planYolo, body.planYoloModel, body.advisor === true, tools, body.browserConfig);
+    const record = this.#acquireAcpWorker(cwd, approvalMode, planYolo, body.planYoloModel, body.advisor === true, body.advisorModel, tools, body.browserConfig, body.noTools === true);
     const context = this.#makeAcpContext(record, cwd, approvalMode, tools);
     try {
       await context.start({ sessionId: typeof body.ompSessionId === "string" ? body.ompSessionId : null });
@@ -846,7 +888,7 @@ export class ConsoleBridge {
     const cwd = await validCwd(body.cwd);
     const approvalMode = ["always-ask", "write", "yolo"].includes(body.approvalMode) ? body.approvalMode : "always-ask";
     const tools = normalizeTools(body.tools);
-    const record = this.#acquireAcpWorker(cwd, approvalMode, body.planYolo === true, body.planYoloModel, body.advisor === true, tools, body.browserConfig);
+    const record = this.#acquireAcpWorker(cwd, approvalMode, body.planYolo === true, body.planYoloModel, body.advisor === true, body.advisorModel, tools, body.browserConfig);
     const worker = await record.worker.start();
     if (!record.contexts.size) this.#scheduleAcpWorkerStop(record);
     return { status: worker.status, pid: worker.pid };

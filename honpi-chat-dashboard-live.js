@@ -20,9 +20,8 @@
   state.modelAccess = null;
   state.modelAccessInitialized = false;
   state.quotaRequestId = 0;
-  state.modelSource = localStorage.getItem('omp.chatModelSource') === 'omp' ? 'omp' : 'quota';
+  state.modelSource = 'quota';
   state.activeModelProvider = null;
-  state.loadedModelSource = null;
   state.loadedModelProvider = null;
   state.modelAccessRequestId = 0;
   state.folderLoadRequestId = 0;
@@ -138,13 +137,7 @@
       ? `Model "${modelId}" chỉ đọc/phân tích ảnh. Chọn "${candidate.name || candidate.id}" (Tạo ảnh) để nhận ảnh đầu ra.`
       : (imageGeneration?.reason || 'OMP chưa cung cấp tool tạo ảnh trong runtime này.');
   };
-  const modelAccessError = (modelId, modelSource = state.modelSource, modelProvider = state.activeModelProvider) => {
-    if (modelSource !== state.modelSource) return '';
-    if (modelSource === 'omp') {
-      if (!state.models.length) return 'OMP chưa công bố model khả dụng.';
-      if (!modelId || !state.models.some((model) => model.id === modelId && (!modelProvider || model.provider === modelProvider))) return 'Hãy chọn model trong danh mục OMP khả dụng.';
-      return '';
-    }
+  const modelAccessError = (modelId, modelProvider = state.activeModelProvider) => {
     const account = state.modelAccess?.account;
     if (!account) return state.modelAccessErrorCode === 'ACCOUNT_SELECTION_REQUIRED'
       ? 'Chat này chưa có account Gemini quota; hãy chọn account trong Quota.'
@@ -2756,9 +2749,9 @@
   }
   async function startPrompt(prompt, sessionId, settings = snapshotSettings(), attachments = [], options = {}) {
     const model = settings.model || state.activeModel;
-    const modelSource = settings.modelSource || state.modelSource;
+    const modelSource = 'quota';
     const modelProvider = settings.modelProvider || (model === state.activeModel ? state.activeModelProvider : null);
-    const accessError = modelAccessError(model, modelSource, modelProvider);
+    const accessError = modelAccessError(model, modelProvider);
     if (accessError) { if (options.draftId) removeDraftPromptPreview(); notify(accessError, true); return false; }
     const capabilityError = imageGenerationModelError(prompt, model, modelProvider);
     if (capabilityError) { if (options.draftId) removeDraftPromptPreview(); notify(capabilityError, true); return false; }
@@ -3041,7 +3034,7 @@
     if (!prompt) { notify('Vui lòng nhập nội dung trước khi gửi.', true); return; }
     if (state.activeId) {
       const promptSettings = snapshotSettings();
-      const accessError = modelAccessError(promptSettings.model, promptSettings.modelSource, promptSettings.modelProvider);
+      const accessError = modelAccessError(promptSettings.model, promptSettings.modelProvider);
       if (accessError) { notify(accessError, true); return; }
       const capabilityError = imageGenerationModelError(prompt, promptSettings.model, promptSettings.modelProvider);
       if (capabilityError) { notify(capabilityError, true); return; }
@@ -3500,13 +3493,11 @@
   }
   function syncModelControls(selected) {
     const model = selected && state.models.find((item) => item.id === selected.id && item.provider === selected.provider);
-    const account = state.modelSource === 'quota' ? state.modelAccess?.account : null;
+    const account = state.modelAccess?.account;
     state.activeModel = model?.id || null;
     state.activeModelProvider = model?.provider || null;
     const visibleName = model ? `${model.id}${supportsImageGeneration(model) ? ' · Tạo ảnh' : ''}` : 'Chưa chọn model';
-    const sourceStatus = state.modelSource === 'omp'
-      ? 'Toàn bộ danh mục model OMP; model ngoài account đã nhập không được tính vào Quota.'
-      : !account
+    const sourceStatus = !account
         ? state.modelAccessErrorCode === 'ACCOUNT_SELECTION_REQUIRED' ? 'Chọn thủ công một tài khoản Gemini để tải model.' : 'Chưa xác minh model theo quota account đang hoạt động.'
         : account.canUse
           ? `Danh mục model theo quota ${account.provider}.`
@@ -3531,66 +3522,52 @@
         const placeholder = document.createElement('option');
         placeholder.value = '';
         placeholder.textContent = state.models.length
-          ? (state.modelSource === 'omp' ? 'Chọn model OMP khả dụng' : 'Chọn model được quota cho phép')
-          : (state.modelSource === 'omp' ? 'OMP chưa có model khả dụng' : state.modelAccessErrorCode === 'ACCOUNT_SELECTION_REQUIRED' ? 'Chọn tài khoản Gemini trước' : 'Quota chưa có model khả dụng');
+          ? 'Chọn model được quota cho phép'
+          : state.modelAccessErrorCode === 'ACCOUNT_SELECTION_REQUIRED' ? 'Chọn tài khoản Gemini trước' : 'Quota chưa có model khả dụng';
         placeholder.disabled = true;
         options.unshift(placeholder);
       }
       select.replaceChildren(...options);
       select.value = model ? modelOptionValue(model) : '';
-      select.disabled = !state.models.length || (state.modelSource === 'quota' && !account?.canUse);
+      select.disabled = !state.models.length || !account?.canUse;
       select.title = sourceStatus;
     });
     syncPlanYoloModelControl();
   }
   async function loadModels() {
-    const source = state.modelSource;
-    const previousSource = state.loadedModelSource;
     const previousProvider = state.loadedModelProvider;
     const previousModel = state.activeModel;
     const previousModelProvider = state.activeModelProvider;
     const firstLoad = !state.modelAccessInitialized;
     const requestId = ++state.modelAccessRequestId;
     try {
-      const modelUrl = source === 'omp' ? `${API}/models` : `${API}/quota/models${quotaSessionQuery()}`;
+      const modelUrl = `${API}/quota/models${quotaSessionQuery()}`;
       const { payload } = await readJson(modelUrl);
-      if (requestId !== state.modelAccessRequestId || source !== state.modelSource) return;
-      let account = null;
-      let models;
-      if (source === 'quota') {
-        if (!payload?.account || !Array.isArray(payload.models)) throw new Error('Quota API không trả danh mục model theo account.');
-        account = payload.account;
-        models = payload.models;
-      } else {
-        models = Array.isArray(payload) ? payload : dataOf(payload, 'models');
-        if (!Array.isArray(models)) throw new Error('OMP API không trả danh mục model.');
-      }
+      if (requestId !== state.modelAccessRequestId) return;
+      if (!payload?.account || !Array.isArray(payload.models)) throw new Error('Quota API không trả danh mục model theo account.');
+      const account = payload.account;
+      const models = payload.models;
       state.modelAccessErrorCode = '';
-      state.modelAccess = source === 'quota' ? payload : null;
+      state.modelAccess = payload;
       state.models = models;
-      const sourceChanged = previousSource !== source;
-      const providerChanged = !sourceChanged && source === 'quota' && previousProvider !== account.providerKey;
-      let selected = !sourceChanged && !providerChanged
-        ? state.models.find((item) => item.id === previousModel && item.provider === previousModelProvider)
-        : null;
-      if ((firstLoad || sourceChanged) && source === 'omp') selected = state.models.find((item) => item.isDefault) || state.models[0] || null;
-      else if ((firstLoad || sourceChanged || providerChanged) && source === 'quota' && account.canUse) {
+      const providerChanged = previousProvider !== account.providerKey;
+      let selected = !providerChanged ? state.models.find((item) => item.id === previousModel && item.provider === previousModelProvider) : null;
+      if ((firstLoad || providerChanged) && account.canUse) {
         selected = state.models.find((item) => item.isDefault) || state.models[0] || null;
       }
-      state.loadedModelSource = source;
-      state.loadedModelProvider = source === 'quota' ? account.providerKey : null;
+      state.loadedModelProvider = account.providerKey;
       state.modelAccessInitialized = true;
       syncModelControls(selected);
-      if (previousModel && !selected && !sourceChanged) notify(`Model ${previousModel} không còn trong danh mục ${source === 'quota' ? 'quota account đang hoạt động' : 'OMP'}; hãy chọn lại.`, true);
+      if (previousModel && !selected && !providerChanged) notify(`Model ${previousModel} không còn trong danh mục quota account đang hoạt động; hãy chọn lại.`, true);
     } catch (error) {
-      if (requestId !== state.modelAccessRequestId || source !== state.modelSource) return;
+      if (requestId !== state.modelAccessRequestId) return;
       state.modelAccess = null;
       state.modelAccessErrorCode = error.code || '';
       state.models = [];
       state.activeModel = null;
       state.activeModelProvider = null;
       syncModelControls(null);
-      if (error.code !== 'ACCOUNT_SELECTION_REQUIRED') notify(`Không tải được model ${source === 'quota' ? 'theo quota' : 'từ OMP'}: ${error.message}`, true);
+      if (error.code !== 'ACCOUNT_SELECTION_REQUIRED') notify(`Không tải được model theo quota: ${error.message}`, true);
     }
   }
 
@@ -4422,36 +4399,6 @@
   }
 
   function bindProductionSettings() {
-  function ensureModelSourceSetting() {
-    if ($('settingsModelSourceSelect')) return;
-    const defaultRow = $('settingsDefaultModelSelect')?.closest('.settings-row');
-    if (!defaultRow) return;
-    const row = document.createElement('div');
-    row.className = 'settings-row';
-    const header = document.createElement('div');
-    header.className = 'settings-row-header';
-    const copy = document.createElement('div');
-    const label = document.createElement('label');
-    label.className = 'settings-row-label';
-    label.htmlFor = 'settingsModelSourceSelect';
-    label.textContent = 'Nguồn model Chat';
-    const description = document.createElement('div');
-    description.className = 'settings-row-subtext';
-    description.textContent = 'Quota chỉ thống kê model cùng provider với account đã nhập; nguồn OMP cho phép chọn toàn bộ model khả dụng.';
-    const select = document.createElement('select');
-    select.className = 'settings-select';
-    select.id = 'settingsModelSourceSelect';
-    for (const [value, textValue] of [['quota', 'Account đã nhập trong Quota'], ['omp', 'Toàn bộ model khả dụng từ OMP']]) {
-      const option = document.createElement('option');
-      option.value = value;
-      option.textContent = textValue;
-      select.append(option);
-    }
-    copy.append(label, description);
-    header.append(copy, select);
-    row.append(header);
-    defaultRow.before(row);
-  }
     const refresh = $('btnRefreshOmpCapabilities');
     if (refresh && refresh.dataset.bound !== 'true') {
       refresh.dataset.bound = 'true';
@@ -4486,16 +4433,6 @@
     ['sfFilterRunning', 'sfFilterUnread', 'sfFilterPinned'].forEach((id) => $(id)?.addEventListener('click', () => { const mode = id === 'sfFilterRunning' ? 'running' : id === 'sfFilterUnread' ? 'unread' : 'pinned'; localStorage.setItem('omp.sessionFilter', localStorage.getItem('omp.sessionFilter') === mode ? 'all' : mode); renderSessions(); }, true));
     document.querySelectorAll('.sf-origin-filter-item').forEach((item) => item.addEventListener('click', () => { localStorage.setItem('omp.sessionOriginFilter', item.dataset.originFilter || 'all'); renderSessions(); }, true));
     $('sfActionResetAll')?.addEventListener('click', () => { localStorage.setItem('omp.sessionSort', 'newest'); localStorage.setItem('omp.sessionFilter', 'all'); localStorage.setItem('omp.sessionOriginFilter', 'all'); renderSessions(); }, true);
-    ensureModelSourceSetting();
-    const modelSourceSelect = $('settingsModelSourceSelect');
-    if (modelSourceSelect) {
-      modelSourceSelect.value = state.modelSource;
-      modelSourceSelect.addEventListener('change', () => {
-        state.modelSource = modelSourceSelect.value === 'omp' ? 'omp' : 'quota';
-        localStorage.setItem('omp.chatModelSource', state.modelSource);
-        void loadModels();
-      }, true);
-    }
     bindAgentInstructionsSettings();
   }
 

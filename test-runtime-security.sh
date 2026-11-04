@@ -3,7 +3,14 @@ set -eu
 
 base_url=${OMP_DASHBOARD_BASE_URL:-http://127.0.0.1:4177}
 runtime_cwd=${OMP_DASHBOARD_RUNTIME_CWD:-/Users/trannhattuan/.omp/usage-dashboard}
+gateway_api_key=${OMP_GATEWAY_API_KEY:-}
 tmp_dir=$(mktemp -d)
+if [ -z "$gateway_api_key" ]; then
+  [ -f "$runtime_cwd/omp-gateway-api-key" ] || { echo "OMP Gateway API key file is missing" >&2; exit 1; }
+  gateway_api_key=$(/bin/cat "$runtime_cwd/omp-gateway-api-key")
+fi
+printf 'header = "Authorization: Bearer %s"\n' "$gateway_api_key" > "$tmp_dir/gateway-auth.conf"
+unset gateway_api_key
 symlink_path=
 cleanup() {
   [ -z "$symlink_path" ] || /bin/rm -f "$symlink_path"
@@ -27,8 +34,10 @@ assert_status 401 /usr/bin/curl -sS -o "$tmp_dir/unauth.json" -w '%{http_code}' 
 assert_status 200 /usr/bin/curl -sS -b "$tmp_dir/cookies" -o "$tmp_dir/state.json" -w '%{http_code}' "$base_url/api/console/state"
 ! /usr/bin/grep -q '"cwd"' "$tmp_dir/state.json"
 ! /usr/bin/grep -q 'OMP context có lỗi nội bộ; chi tiết không được gửi tới browser' "$tmp_dir/state.json"
-assert_status 200 /usr/bin/curl -sS -o "$tmp_dir/gateway-capabilities.json" -w '%{http_code}' "$base_url/api/omp/v1/capabilities"
-assert_status 403 /usr/bin/curl -sS -H 'Origin: https://evil.example' -o "$tmp_dir/gateway-origin.json" -w '%{http_code}' "$base_url/api/omp/v1/capabilities"
+assert_status 401 /usr/bin/curl -sS -o "$tmp_dir/gateway-no-key.json" -w '%{http_code}' "$base_url/api/omp/v1/capabilities"
+assert_status 401 /usr/bin/curl -sS -H 'Authorization: Bearer invalid' -o "$tmp_dir/gateway-invalid-key.json" -w '%{http_code}' "$base_url/api/omp/v1/capabilities"
+assert_status 200 /usr/bin/curl -sS --config "$tmp_dir/gateway-auth.conf" -o "$tmp_dir/gateway-capabilities.json" -w '%{http_code}' "$base_url/api/omp/v1/capabilities"
+assert_status 403 /usr/bin/curl -sS --config "$tmp_dir/gateway-auth.conf" -H 'Origin: https://evil.example' -o "$tmp_dir/gateway-origin.json" -w '%{http_code}' "$base_url/api/omp/v1/capabilities"
 assert_status 403 /usr/bin/curl -sS -H 'Host: evil.example' -o "$tmp_dir/host.json" -w '%{http_code}' "$base_url/healthz"
 
 assert_status 403 /usr/bin/curl -sS -b "$tmp_dir/cookies" -H 'Origin: https://evil.example' -o "$tmp_dir/origin.json" -w '%{http_code}' "$base_url/api/console/state"

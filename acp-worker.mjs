@@ -28,6 +28,7 @@ export class AcpWorker {
     this.onRequest = null;
     this.onClose = null;
     this.closeNotified = false;
+    this.pinOperationQueue = Promise.resolve();
   }
   
 
@@ -120,6 +121,12 @@ export class AcpWorker {
     });
   }
 
+  runPinOperation(operation) {
+    const result = this.pinOperationQueue.then(operation);
+    this.pinOperationQueue = result.catch(() => {});
+    return result;
+  }
+
   notify(method, params = {}) {
     if (this.failure) throw this.failure;
     this.#write({ jsonrpc: "2.0", method, params });
@@ -164,7 +171,12 @@ export class AcpWorker {
         const pending = this.pending.get(frame.id);
         if (!pending) continue;
         this.pending.delete(frame.id);
-        if (frame.error) pending.reject(Object.assign(new Error(frame.error.message || `${pending.method} failed`), { code: "UPSTREAM_ERROR" }));
+        if (frame.error) pending.reject(Object.assign(new Error(frame.error.message || `${pending.method} failed`), {
+          code: "UPSTREAM_ERROR",
+          ...(Number.isInteger(frame.error.code) || (typeof frame.error.code === "string" && /^[A-Za-z0-9_.-]{1,48}$/.test(frame.error.code))
+            ? { upstreamCode: frame.error.code }
+            : {}),
+        }));
         else pending.resolve(frame.result);
         continue;
       }

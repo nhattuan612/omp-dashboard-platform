@@ -14,6 +14,7 @@ import { readOmpStatsHistory, readOmpStatsTrend } from "./omp-stats-history.mjs"
 import { resolveChatOutputMode } from "./chat-output-mode.mjs";
 
 const ROOT = join(homedir(), ".omp/usage-dashboard");
+const OMP_GATEWAY_API_KEY_FILE = join(ROOT, "omp-gateway-api-key");
 const CA_BUNDLE = join(ROOT, "ca-bundle.pem");
 const OMP_ENV = {
   ...process.env,
@@ -226,6 +227,28 @@ function isAllowedOrigin(req) {
   return origin == null || DASHBOARD_ORIGINS.has(String(origin));
 }
 
+async function loadOmpGatewayApiKey() {
+  await mkdir(ROOT, { recursive: true, mode: 0o700 });
+  try {
+    const info = await lstat(OMP_GATEWAY_API_KEY_FILE);
+    const key = (await readFile(OMP_GATEWAY_API_KEY_FILE, "utf8")).trim();
+    if (!info.isFile() || (info.mode & 0o077) !== 0 || !/^omp-gateway-[A-Za-z0-9_-]{43}$/.test(key)) {
+      throw new Error("OMP Gateway API key file must be a regular 0600 file with a valid key.");
+    }
+    return key;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw Object.assign(new Error("OMP Gateway API key file is invalid or unreadable."), { cause: error });
+  }
+  const key = `omp-gateway-${randomBytes(32).toString("base64url")}`;
+  try {
+    await writeFile(OMP_GATEWAY_API_KEY_FILE, `${key}\n`, { mode: 0o600, flag: "wx" });
+    return key;
+  } catch (error) {
+    if (error.code === "EEXIST") return loadOmpGatewayApiKey();
+    throw error;
+  }
+}
+
 function requiresApiAuth(pathname) {
   return pathname === "/api" || pathname.startsWith("/api/");
 }
@@ -234,9 +257,18 @@ function requiresDashboardSession(pathname) {
   return requiresApiAuth(pathname) && !pathname.startsWith("/api/omp/v1/") && !pathname.startsWith("/api/local/v1/");
 }
 
+function validOmpGatewayApiKey(req) {
+  const supplied = /^Bearer ([A-Za-z0-9_-]+)$/.exec(String(req.headers.authorization || ""))?.[1] || "";
+  const expected = OMP_GATEWAY_API_KEY;
+  return supplied.length === expected.length && timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
+}
+
 function authorizeApiRequest(req, pathname) {
   if (!requiresApiAuth(pathname)) return null;
   if (!isAllowedOrigin(req)) return { status: 403, code: "FORBIDDEN_ORIGIN", message: "Origin không được phép." };
+  if (pathname.startsWith("/api/omp/v1/") && !validOmpGatewayApiKey(req)) {
+    return { status: 401, code: "UNAUTHORIZED", message: "OMP Gateway cần Bearer API key hợp lệ." };
+  }
   if (requiresDashboardSession(pathname) && !tokenMatches(readCookie(req, DASHBOARD_SESSION_COOKIE))) {
     return { status: 401, code: "UNAUTHORIZED", message: "Phiên dashboard không hợp lệ hoặc đã hết hạn." };
   }
@@ -1071,20 +1103,24 @@ async function selectedAccount() {
 }
 
 function normalizeOmpAccountControl(value) {
-  const source = value && typeof value === "object" ? value : {};
+  if (!value || typeof value !== "object" || Array.isArray(value) || typeof value.enabled !== "boolean") {
+    throw Object.assign(new Error("Cấu hình KHỐNG CHẾ OMP không hợp lệ."), { code: "INTERNAL_SERVER_ERROR" });
+  }
+  if (value.enabled === false) return { enabled: false, accountId: "", provider: "", email: "" };
+  const source = value;
   const accountId = typeof source.accountId === "string" ? source.accountId.trim() : "";
   const provider = typeof source.provider === "string" ? source.provider.trim().toLowerCase() : "";
-  return {
-    enabled: source.enabled === true && /^acc-[a-f0-9]{12}$/.test(accountId) && provider === LOGIN_PROVIDER,
-    accountId,
-    provider,
-    email: typeof source.email === "string" ? source.email.trim().toLowerCase() : "",
-  };
+  if (!/^acc-[a-f0-9]{12}$/.test(accountId) || provider !== LOGIN_PROVIDER) {
+    throw Object.assign(new Error("Cấu hình ghim account KHỐNG CHẾ OMP không hợp lệ."), { code: "INTERNAL_SERVER_ERROR" });
+  }
+  return { enabled: true, accountId, provider, email: typeof source.email === "string" ? source.email.trim().toLowerCase() : "" };
 }
 
 async function readOmpAccountControl() {
   try { return normalizeOmpAccountControl(JSON.parse(await readFile(OMP_ACCOUNT_CONTROL_FILE, "utf8"))); }
-  catch { return normalizeOmpAccountControl(null); }
+  catch (error) {
+    throw Object.assign(new Error("Không đọc được cấu hình KHỐNG CHẾ OMP; hãy sửa hoặc đặt rõ enabled:false."), { code: "INTERNAL_SERVER_ERROR", cause: error });
+  }
 }
 
 async function saveOmpAccountControl(value) {
@@ -1992,6 +2028,7 @@ async function updateAdvisorConfig(body) {
   if (!Number.isInteger(next.maxNotesPerUpdate) || next.maxNotesPerUpdate < 1 || next.maxNotesPerUpdate > 5) throw Object.assign(new Error("Advisor max notes phải từ 1 đến 5"), { code: "BAD_REQUEST", field: "maxNotesPerUpdate" });
   if (typeof next.evictStaleResults !== "boolean") throw Object.assign(new Error("Advisor evict stale results phải là boolean"), { code: "BAD_REQUEST", field: "evictStaleResults" });
   if (typeof next.model !== "string" || !next.model.trim() || next.model.length > 200) throw Object.assign(new Error("Model Advisor không hợp lệ"), { code: "BAD_REQUEST", field: "model" });
+  next.model = await quotaRestrictedModel(next.model, null, "model");
   if (!ADVISOR_TIERS.has(next.tier)) throw Object.assign(new Error("Service tier Advisor không hợp lệ"), { code: "BAD_REQUEST", field: "tier" });
   const raw = JSON.parse(await runOmpConfig(["list", "--json"])); const roles = { ...(raw?.modelRoles?.value || {}), advisor: next.model.trim() };
   for (const args of [
@@ -2098,6 +2135,16 @@ function planYoloModel(value) {
   const model = typeof value === "string" ? value.trim() : "";
   if (!model || model.length > 200) throw Object.assign(new Error("Plan YOLO cần model OMP hợp lệ"), { code: "BAD_REQUEST", field: "planYoloModel" });
   return model;
+}
+
+async function quotaRestrictedModel(value, sessionId = null, field = "model") {
+  const requestedModel = typeof value === "string" ? value.trim() : "";
+  if (!requestedModel || requestedModel.length > 200) throw Object.assign(new Error("Model ngoài giới hạn hợp lệ"), { code: "BAD_REQUEST", field });
+  const { models } = await quotaModelsForSession(sessionId);
+  let model;
+  try { model = resolveOpenAiModel(requestedModel, models); }
+  catch { throw Object.assign(new Error(`Model "${requestedModel}" không thuộc account Quota đang chọn.`), { code: "MODEL_NOT_ALLOWED_BY_QUOTA", field }); }
+  return openAiModelAlias(model);
 }
 
 async function headlessTools(approval, tools, nativeBrowser = false) {
@@ -2221,10 +2268,12 @@ async function gatewayLaunchConfig(body = {}) {
   const selectedApprovalMode = approvalMode(body.approvalMode);
   const selectedBrowserMode = body.browserMode == null ? null : browserMode(body.browserMode);
   const selectedPlanYolo = planYolo(body.planYolo);
-  const selectedPlanYoloModel = selectedPlanYolo ? planYoloModel(body.planYoloModel || body.model) : null;
+  const selectedPlanYoloModel = selectedPlanYolo ? await quotaRestrictedModel(planYoloModel(body.planYoloModel || body.model), body.sessionId, "planYoloModel") : null;
   const selectedAdvisor = advisor(body.advisor);
+  const selectedAdvisorModel = selectedAdvisor ? await quotaRestrictedModel((await advisorConfig()).model, body.sessionId, "model") : null;
   const browserConfig = await browserRuntimeConfig(selectedBrowserMode);
-  const selectedTools = await gatewayTools(selectedApprovalMode, selectedBrowserMode, body.tools);
+  const noTools = body.noTools === true || (Array.isArray(body.tools) && body.tools.length === 0);
+  const selectedTools = noTools ? [] : await gatewayTools(selectedApprovalMode, selectedBrowserMode, body.tools);
   return {
     approvalMode: selectedApprovalMode,
     browserMode: selectedBrowserMode,
@@ -2232,6 +2281,8 @@ async function gatewayLaunchConfig(body = {}) {
     planYolo: selectedPlanYolo,
     planYoloModel: selectedPlanYoloModel,
     advisor: selectedAdvisor,
+    advisorModel: selectedAdvisorModel,
+    noTools,
     tools: selectedTools,
     workerTools: selectedTools ?? [],
   };
@@ -2255,6 +2306,8 @@ async function createGatewaySession(body) {
       planYolo: launch.planYolo,
       planYoloModel: launch.planYoloModel,
       advisor: launch.advisor,
+      advisorModel: launch.advisorModel,
+      noTools: launch.noTools,
       tools: launch.workerTools,
       browserConfig: launch.browserConfig,
       ompSessionId: body.ompSessionId,
@@ -2290,7 +2343,7 @@ async function prewarmGateway(body = {}) {
   const launch = await gatewayLaunchConfig(body);
   const cwd = typeof body.cwd === "string" && body.cwd.trim() ? body.cwd.trim() : GENERAL_CHAT_CWD;
   if (cwd === GENERAL_CHAT_CWD) await mkdir(cwd, { recursive: true, mode: 0o700 });
-  return consoleBridge.prewarm({ cwd, approvalMode: launch.approvalMode, planYolo: launch.planYolo, planYoloModel: launch.planYoloModel, advisor: launch.advisor, tools: launch.workerTools, browserConfig: launch.browserConfig });
+  return consoleBridge.prewarm({ cwd, approvalMode: launch.approvalMode, planYolo: launch.planYolo, planYoloModel: launch.planYoloModel, advisor: launch.advisor, advisorModel: launch.advisorModel, tools: launch.workerTools, browserConfig: launch.browserConfig });
 }
 
 function normalizedChatMetadata(value) {
@@ -2671,8 +2724,8 @@ function chatModel(value) {
 }
 function chatModelSource(value) {
   const source = value == null ? "quota" : value;
-  if (source !== "quota" && source !== "omp") throw Object.assign(new Error("modelSource phải là quota hoặc omp"), { code: "BAD_REQUEST", field: "modelSource" });
-  return source;
+  if (source !== "quota" && source !== "omp") throw Object.assign(new Error("modelSource phải là quota hoặc giá trị omp tương thích cũ"), { code: "BAD_REQUEST", field: "modelSource" });
+  return "quota";
 }
 
 function chatModelProvider(value) {
@@ -2703,29 +2756,28 @@ function browserPrompt(prompt, mode, hasImages = false) {
 async function validateChatModel(model, requestedProvider = null) {
   const provider = chatModelProvider(requestedProvider);
   const models = await availableModels();
-  const selected = models.find((item) => item.id === model && (!provider || item.provider === provider));
+  const selected = (!provider && models.find((item) => item.id === model && item.provider === LOGIN_PROVIDER))
+    || models.find((item) => item.id === model && (!provider || item.provider === provider));
   if (!selected) throw Object.assign(new Error(`Model không tồn tại trong OMP: ${model}`), { code: "MODEL_NOT_FOUND", field: "model" });
   return { model: selected, models };
 }
 
-function normalizeChatModel(model, models, modelSource) {
-  if (modelSource !== "omp" || String(model.provider || "").toLowerCase() !== "google" || !isGeminiModel(model)) return model;
+function normalizeChatModel(model, models) {
+  if (String(model.provider || "").toLowerCase() !== "google" || !isGeminiModel(model)) return model;
   return models.find((item) => item.id === model.id && item.provider === LOGIN_PROVIDER)
     || models.find((item) => item.id === model.id.replace(/-preview$/i, "") && item.provider === LOGIN_PROVIDER)
     || model;
 }
 
-async function resolveChatModel(modelId, modelSource, modelProvider, sessionId, prompt = "", requestedOutputMode = null) {
+async function resolveChatModel(modelId, modelProvider, sessionId, prompt = "", requestedOutputMode = null) {
   const { mode: outputMode, source: modeSource } = resolveChatOutputMode(requestedOutputMode, prompt);
   const { model: catalogModel, models } = await validateChatModel(modelId, modelProvider);
-  const model = normalizeChatModel(catalogModel, models, modelSource);
+  const model = normalizeChatModel(catalogModel, models);
   const quotaCheckStartedAt = Date.now();
-  const requestedModel = modelSource === "quota"
-    ? await assertQuotaModelAllowed(modelId, models, modelProvider, sessionId)
-    : await assertGoogleQuotaModelAllowed(model, models, modelProvider, sessionId);
+  const { model: requestedModel, models: allowedModels } = await assertQuotaModelAllowed(model.id, models, model.provider, sessionId);
   return {
     requestedModel,
-    model: imageGenerationModelForPrompt(outputMode, requestedModel, models),
+    model: imageGenerationModelForPrompt(outputMode, requestedModel, allowedModels),
     outputMode,
     modeSource,
     quotaCheckMs: Date.now() - quotaCheckStartedAt,
@@ -2734,27 +2786,27 @@ async function resolveChatModel(modelId, modelSource, modelProvider, sessionId, 
 
 async function assertQuotaModelAllowed(modelId, models = null, requestedProvider = null, sessionId = null) {
   const catalog = models || await availableModels();
+  const { availability, models: allowedModels } = await quotaModelsForSession(sessionId, catalog);
+  if (!availability.canUse) throw Object.assign(new Error(availability.reason), { code: "ACCOUNT_UNAVAILABLE", field: "accountId" });
   const model = catalog.find((item) => item.id === modelId && (!requestedProvider || item.provider === requestedProvider));
   if (!model) throw Object.assign(new Error(`Model không tồn tại trong OMP: ${modelId}`), { code: "MODEL_NOT_FOUND", field: "model" });
-  const { account, availability } = await selectedGeminiAccountState(sessionId);
-  if (!availability.canUse) throw Object.assign(new Error(availability.reason), { code: "ACCOUNT_UNAVAILABLE", field: "accountId" });
-  const selected = quotaProviderModels(account.provider, catalog).find((item) => item.id === modelId && (!requestedProvider || item.provider === requestedProvider));
+  const selected = allowedModels.find((item) => item.id === modelId && (!requestedProvider || item.provider === requestedProvider));
   if (!selected) {
     throw Object.assign(new Error(`Model "${modelId}" không thuộc danh mục Google Antigravity của account đang chọn.`), { code: "MODEL_NOT_ALLOWED_BY_QUOTA", field: "model" });
   }
-  return selected;
+  return { model: selected, models: allowedModels };
 }
 
-async function assertGoogleQuotaModelAllowed(model, models, requestedProvider, sessionId = null) {
-  if (!isQuotaGoogleChatModel(model)) return model;
-  const { account, availability } = await selectedGeminiAccountState(sessionId);
+async function quotaModelsForSession(sessionId = null, catalog = null) {
+  const { account, availability, selection } = await selectedGeminiAccountState(sessionId);
   if (!availability.canUse) throw Object.assign(new Error(availability.reason), { code: "ACCOUNT_UNAVAILABLE", field: "accountId" });
-  const selected = quotaProviderModels(account.provider, models)
-    .find((item) => item.id === model.id && item.provider === model.provider);
-  if (!selected) {
-    throw Object.assign(new Error(`Model "${model.id}" không thuộc danh mục Google Antigravity của account đang chọn.`), { code: "MODEL_NOT_ALLOWED_BY_QUOTA", field: "model" });
-  }
-  return selected;
+  const models = catalog || await availableModels();
+  return {
+    account,
+    availability,
+    selection,
+    models: quotaProviderModels(account.provider, models).filter((model) => model.available === true || model.canUse === true || model.availabilityStatus === "available"),
+  };
 }
 
 function applyChatModel(record, model) {
@@ -3577,11 +3629,11 @@ async function waitGatewayReady(record, timeoutMs = 15000) {
   throw Object.assign(new Error("OMP context khởi động quá thời gian cho phép"), { code: "UPSTREAM_UNAVAILABLE" });
 }
 
-async function ensureChatSession(sessionId, body = {}, { requireExisting = false } = {}) {
+async function ensureChatSession(sessionId, body = {}, { requireExisting = false, skipPersisted = false } = {}) {
   const id = gatewaySessionId(sessionId);
   const pending = gatewaySessionEnsures.get(id);
   if (pending) return pending;
-  const operation = ensureChatSessionUnlocked(id, body, { requireExisting });
+  const operation = ensureChatSessionUnlocked(id, body, { requireExisting, skipPersisted });
   gatewaySessionEnsures.set(id, operation);
   try {
     return await operation;
@@ -3590,18 +3642,22 @@ async function ensureChatSession(sessionId, body = {}, { requireExisting = false
   }
 }
 
-async function ensureChatSessionUnlocked(sessionId, body = {}, { requireExisting = false } = {}) {
+async function ensureChatSessionUnlocked(sessionId, body = {}, { requireExisting = false, skipPersisted = false } = {}) {
+  const ensureStartedAt = Date.now();
   const id = gatewaySessionId(sessionId);
   const metadata = await readChatMetadata();
+  const metadataMs = Date.now() - ensureStartedAt;
   const stored = metadata.sessions[id] || {};
   if (stored.deleted || stored.archived) throw Object.assign(new Error("Session đã được lưu trữ hoặc xoá"), { code: "NOT_FOUND" });
   let record = liveGatewayRecord(id);
   let persisted = null;
-  if (!record) {
+  const persistedStartedAt = Date.now();
+  if (!record && !skipPersisted) {
     try { persisted = await readPersistedChatSession(id); } catch (error) {
       if (error.message !== "Không tìm thấy session OMP") throw error;
     }
   }
+  const persistedMs = Date.now() - persistedStartedAt;
   if (requireExisting && !record && !persisted && !Object.hasOwn(metadata.sessions, id)) {
     throw Object.assign(new Error("Session không tồn tại"), { code: "NOT_FOUND" });
   }
@@ -3613,14 +3669,16 @@ async function ensureChatSessionUnlocked(sessionId, body = {}, { requireExisting
   const selectedApprovalMode = requestedApprovalMode || record?.approvalMode || approvalMode(stored.approvalMode);
   const hasPlanYolo = Object.hasOwn(body, "planYolo");
   const selectedPlanYolo = hasPlanYolo ? planYolo(body.planYolo) : record?.planYolo === true || stored.planYolo === true;
-  const selectedPlanYoloModel = selectedPlanYolo ? planYoloModel(body.planYoloModel || body.model || record?.planYoloModel || stored.planYoloModel) : null;
+  const selectedPlanYoloModel = selectedPlanYolo ? await quotaRestrictedModel(planYoloModel(body.planYoloModel || body.model || record?.planYoloModel || stored.planYoloModel), id, "planYoloModel") : null;
   const hasAdvisor = Object.hasOwn(body, "advisor");
   const selectedAdvisor = hasAdvisor ? advisor(body.advisor) : record?.advisor === true || stored.advisor === true;
+  const selectedAdvisorModel = selectedAdvisor ? await quotaRestrictedModel((await advisorConfig()).model, id, "model") : null;
   const requestedTools = hasBrowserMode && useSkillBrowser
     ? null
     : body.tools == null
       ? (hasBrowserMode && record?.tools == null ? await gatewayTools(selectedApprovalMode, selectedBrowserMode, stored.tools) : null)
       : await gatewayTools(selectedApprovalMode, selectedBrowserMode || record?.browserMode, body.tools);
+  const optionsMs = Date.now() - persistedStartedAt - persistedMs;
   const browserContextChanged = Boolean(record && hasBrowserMode && ((record.browserMode || "none") !== (selectedBrowserMode || "none") || JSON.stringify(record.browserConfig || null) !== JSON.stringify(browserConfig) || (useSkillBrowser && record.tools !== null) || (!useSkillBrowser && record.tools === null)));
   if (browserContextChanged && (nativeBrowserMode(selectedBrowserMode) || nativeBrowserMode(record.browserMode)) && contextHasChatWork(record.contextId)) throw Object.assign(new Error("Dừng lượt đang chạy/chờ trước khi đổi browser native hoặc endpoint CDP."), { code: "CONFLICT", field: "browserMode" });
   if (record && ((requestedApprovalMode && record.approvalMode !== requestedApprovalMode) || (hasPlanYolo && (record.planYolo !== selectedPlanYolo || record.planYoloModel !== selectedPlanYoloModel)) || (hasAdvisor && record.advisor !== selectedAdvisor) || (requestedTools && JSON.stringify(record.tools || []) !== JSON.stringify(requestedTools)) || browserContextChanged) && !contextHasChatWork(record.contextId)) {
@@ -3630,6 +3688,7 @@ async function ensureChatSessionUnlocked(sessionId, body = {}, { requireExisting
   }
   let effectiveCwd = persisted?.cwd || stored.cwd || body.cwd || DEFAULT_CHAT_CWD;
   let migratedLegacyCwd = false;
+  const cwdStartedAt = Date.now();
   if (!record) {
     const gatewayOptions = () => ({
       sessionId: id,
@@ -3638,6 +3697,7 @@ async function ensureChatSessionUnlocked(sessionId, body = {}, { requireExisting
       planYolo: selectedPlanYolo,
       planYoloModel: selectedPlanYoloModel,
       advisor: selectedAdvisor,
+      advisorModel: selectedAdvisorModel,
       ...(hasBrowserMode ? { browserMode: selectedBrowserMode } : {}),
       tools: requestedTools ?? stored.tools,
       ...((persisted?.ompSessionId || stored.ompSessionId) ? { ompSessionId: persisted?.ompSessionId || stored.ompSessionId } : {}),
@@ -3663,6 +3723,7 @@ async function ensureChatSessionUnlocked(sessionId, body = {}, { requireExisting
       : null;
     if (savedGeminiAccount) await pinGeminiSession(record, id, savedGeminiAccount);
   } else await waitGatewayReady(record);
+  const gatewayMs = Date.now() - cwdStartedAt;
   if (record && typeof stored.geminiAccountId === "string" && stored.geminiAccountId.trim()) {
     record.geminiAccountId = stored.geminiAccountId.trim();
   }
@@ -4145,7 +4206,11 @@ async function queryGatewayResponse(record, command, timeoutMs = 10000, send = (
       if (frame.id != null && frame.id !== commandId) return;
       if (!frame.success) {
         const message = typeof frame.error === "string" ? frame.error : frame.error?.message;
-        return finish(reject, Object.assign(new Error(message || `OMP từ chối ${command.type}`), { code: "UPSTREAM_ERROR" }));
+        return finish(reject, Object.assign(new Error(message || `OMP từ chối ${command.type}`), {
+          code: "UPSTREAM_ERROR",
+          ...(Number.isInteger(frame.error?.rpcErrorNumber) ? { upstreamCode: frame.error.rpcErrorNumber } :
+            (typeof frame.error?.rpcFailureKind === "string" ? { upstreamCode: frame.error.rpcFailureKind } : {})),
+        }));
       }
       if (command.type === "prompt" && frame.data?.agentInvoked == null) {
         promptResponseData = frame.data;
@@ -4163,7 +4228,12 @@ async function queryGatewayResponse(record, command, timeoutMs = 10000, send = (
 }
 
 function geminiPinFailureCode(error) {
-  switch (String(error?.message || "")) {
+  const message = String(error?.message || "");
+  if (Number.isInteger(error?.upstreamCode)) return `GEMINI_PIN_ACP_${Math.abs(error.upstreamCode)}`;
+  if (typeof error?.upstreamCode === "string" && /^[A-Za-z0-9_.-]{1,48}$/.test(error.upstreamCode)) {
+    return `GEMINI_PIN_ACP_${error.upstreamCode.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}`;
+  }
+  switch (message) {
     case "OMP AuthStorage is unavailable":
       return "GEMINI_PIN_AUTH_STORAGE_UNAVAILABLE";
     case "OMP AuthStorage does not support strict Gemini account pinning":
@@ -4174,9 +4244,14 @@ function geminiPinFailureCode(error) {
       return "GEMINI_PIN_CREDENTIAL_NOT_AVAILABLE";
     case "OMP could not pin the selected Gemini credential":
       return "GEMINI_PIN_AFFINITY_REJECTED";
-    default:
-      return "GEMINI_PIN_EXTENSION_REJECTED";
   }
+  if (error?.name === "TypeError") return "GEMINI_PIN_RUNTIME_TYPE_ERROR";
+  if (/already.{0,40}pin|pin.{0,40}already/i.test(message)) return "GEMINI_PIN_ALREADY_APPLIED";
+  if (/authstorage|auth storage|oauth|credential|account/i.test(message)) return "GEMINI_PIN_RUNTIME_ACCOUNT_ERROR";
+  if (/session|context/i.test(message)) return "GEMINI_PIN_RUNTIME_SESSION_ERROR";
+  if (/pin/i.test(message)) return "GEMINI_PIN_RUNTIME_PIN_ERROR";
+  if (error?.code === "UPSTREAM_ERROR") return "GEMINI_PIN_ACP_CODE_MISSING";
+  return "GEMINI_PIN_EXTENSION_REJECTED";
 }
 
 async function pinGeminiSession(record, sessionId, account) {
@@ -4742,7 +4817,7 @@ async function streamChatTurn(req, res, requestUrl, input = {}) {
   const selectedApprovalMode = approvalMode(value("approvalMode"));
   const requestedOutputMode = value("outputMode");
   const modelValidationStartedAt = Date.now();
-  const { requestedModel: model, model: selectedModel, outputMode, modeSource, quotaCheckMs } = await resolveChatModel(requestedModel, modelSource, modelProvider, sessionId, prompt, requestedOutputMode);
+  const { requestedModel: model, model: selectedModel, outputMode, modeSource, quotaCheckMs } = await resolveChatModel(requestedModel, modelProvider, sessionId, prompt, requestedOutputMode);
   const modelValidationMs = Date.now() - modelValidationStartedAt;
   const attachments = normalizeChatAttachments(input?.attachments, { rejectInvalid: true });
   if (activeChatRequests.has(requestId)) throw Object.assign(new Error("requestId đang được xử lý"), { code: "CONFLICT" });
@@ -5079,6 +5154,10 @@ function openAiModelAlias(model) {
   return `${model.provider}/${model.id}`;
 }
 
+function visibleOpenAiModels(models) {
+  return models.filter((model) => !model.provider?.startsWith("google") || model.provider === LOGIN_PROVIDER);
+}
+
 function openAiModelDisplayName(model, models) {
   return models.some((item) => item.id === model.id && item.provider !== model.provider)
     ? `${model.name} (${model.provider})`
@@ -5088,9 +5167,10 @@ function openAiModelDisplayName(model, models) {
 function resolveOpenAiModel(modelId, models) {
   const alias = String(modelId || "").replace(/^omp\//, "");
   if (alias === OPENAI_OMP_MODEL) {
-    return models.find((item) => item.isDefault)
+    const model = models.find((item) => item.isDefault)
       || models.find((item) => item.provider === LOGIN_PROVIDER && item.id === "gemini-3.8-flash")
-      || models[0];
+    if (!model) throw Object.assign(new Error("Quota chưa có model mặc định khả dụng."), { code: "MODEL_NOT_FOUND", field: "model" });
+    return model;
   }
   const separator = alias.indexOf("/");
   const matches = separator > 0
@@ -5174,10 +5254,11 @@ async function openAiCompletion(req, res, { apiProfile = null } = {}) {
   try {
     const body = await jsonBody(req);
     if (body.model != null && typeof body.model !== "string") throw Object.assign(new Error("model phải là chuỗi."), { code: "BAD_REQUEST", field: "model" });
+    sessionId = `openwork-${randomUUID()}`;
     const requestedModel = apiProfile?.model === "all"
       ? (typeof body.model === "string" && body.model.trim() ? body.model.trim() : OPENAI_OMP_MODEL)
       : apiProfile?.model || (typeof body.model === "string" && body.model.trim() ? body.model.trim() : OPENAI_OMP_MODEL);
-    const models = await availableModels();
+    const { account, models } = await quotaModelsForSession(sessionId);
     const selectedModel = resolveOpenAiModel(requestedModel, models);
     if (apiProfile) res.localApiModel = openAiModelAlias(selectedModel);
     const thinking = openAiThinking(body);
@@ -5192,9 +5273,11 @@ async function openAiCompletion(req, res, { apiProfile = null } = {}) {
     const approvalHeader = req.headers["x-omp-approval-mode"];
     if (Array.isArray(approvalHeader) || (approvalHeader != null && typeof approvalHeader !== "string")) throw Object.assign(new Error("X-OMP-APPROVAL-MODE không hợp lệ."), { code: "BAD_REQUEST" });
     const selectedApproval = approvalMode(approvalHeader);
-    sessionId = `openwork-${randomUUID()}`;
-    await createGatewaySession({ sessionId, cwd, approvalMode: selectedApproval });
+    await createGatewaySession({ sessionId, cwd, approvalMode: selectedApproval, noTools: true });
     record = gatewayRecord(sessionId);
+    if (!record) throw Object.assign(new Error("Không tạo được OMP session."), { code: "UPSTREAM_UNAVAILABLE" });
+    record.selectedChatModel = selectedModel;
+    await pinGeminiSession(record, sessionId, account);
     if (disconnected) return;
     const completionId = `chatcmpl-${randomUUID()}`;
     let streamedText = false;
@@ -5349,14 +5432,15 @@ async function handleLocalApiManagement(req, res, pathname) {
   try {
     if (pathname === "/api/v1/local-apis" && req.method === "GET") {
       const state = await getLocalApiState();
-      const models = await availableModels().catch(() => []);
-      return json(res, 200, { apis: state.apis.map(localApiView), models: models.map((model) => ({ id: openAiModelAlias(model), name: openAiModelDisplayName(model, models), provider: model.provider })) });
+      const models = await quotaModelsForSession().then((result) => result.models).catch(() => []);
+      return json(res, 200, { apis: state.apis.map(localApiView), models: visibleOpenAiModels(models).map((model) => ({ id: openAiModelAlias(model), name: openAiModelDisplayName(model, models), provider: model.provider })) });
     }
     if (pathname === "/api/v1/local-apis" && req.method === "POST") {
       const body = await jsonBody(req);
       const name = typeof body?.name === "string" ? body.name.trim() : "";
       if (!name || name.length > 80 || typeof body?.model !== "string") return fail("BAD_REQUEST", "Tên API và model hợp lệ là bắt buộc.");
-      const model = body.model === "all" ? "all" : openAiModelAlias(resolveOpenAiModel(body.model, await availableModels()));
+      const models = (await quotaModelsForSession()).models;
+      const model = body.model === "all" ? "all" : openAiModelAlias(resolveOpenAiModel(body.model, models));
       const key = `sk-omp-local-${randomBytes(32).toString("base64url")}`;
       const api = { id: randomUUID(), name, model, key, keyHint: key.slice(0, 18), secretHash: createHash("sha256").update(key).digest("hex"), createdAt: new Date().toISOString() };
       await mutateLocalApiState((state) => { state.apis.push(api); });
@@ -5369,7 +5453,7 @@ async function handleLocalApiManagement(req, res, pathname) {
     }
     if (apiIdMatch && !apiIdMatch[2] && req.method === "PUT") {
       const body = await jsonBody(req);
-      const models = typeof body?.model === "string" && body.model !== "all" ? await availableModels() : null;
+      const models = typeof body?.model === "string" && body.model !== "all" ? (await quotaModelsForSession()).models : null;
       const name = body?.name == null ? null : typeof body.name === "string" ? body.name.trim() : "";
       if (name === "" || (name != null && name.length > 80)) return fail("BAD_REQUEST", "Tên API phải có từ 1 đến 80 ký tự.");
       const model = typeof body?.model === "string" ? (body.model === "all" ? "all" : openAiModelAlias(resolveOpenAiModel(body.model, models))) : null;
@@ -5831,7 +5915,7 @@ async function authorizeChatCommand(command, record = null, sessionId = null) {
   let selectedModel = record?.selectedChatModel || null;
   if (command.type === "set_model") {
     const modelProvider = chatModelProvider(command.provider);
-    ({ model: selectedModel } = await resolveChatModel(chatModel(command.modelId), modelSource, modelProvider, id));
+    ({ model: selectedModel } = await resolveChatModel(chatModel(command.modelId), modelProvider, id));
     command.modelId = selectedModel.id;
     command.provider = selectedModel.provider;
     if (record) record.selectedChatModel = selectedModel;
@@ -6565,9 +6649,9 @@ const server = http.createServer(async (req, res) => {
       const state = await getLocalApiState();
       const profile = localApiCredential(req, state.apis);
       if (!profile) return json(res, 401, { error: { message: "Bearer API key không hợp lệ.", type: "authentication_error", code: "UNAUTHORIZED" } });
-      const models = await availableModels();
+      const models = (await quotaModelsForSession()).models;
       const selectedModels = profile.model === "all" ? models : [resolveOpenAiModel(profile.model, models)];
-      return json(res, 200, { object: "list", data: selectedModels.map((model) => ({ id: openAiModelAlias(model), object: "model", created: 0, owned_by: model.provider, name: openAiModelDisplayName(model, models) })) });
+      return json(res, 200, { object: "list", data: visibleOpenAiModels(selectedModels).map((model) => ({ id: openAiModelAlias(model), object: "model", created: 0, owned_by: model.provider, name: openAiModelDisplayName(model, models) })) });
     } catch (error) { return openAiError(res, error); }
   }
   if (requestUrl.pathname === "/api/local/v1/chat/completions" && req.method === "POST") {
@@ -6745,7 +6829,7 @@ const server = http.createServer(async (req, res) => {
             : withinRoot(OPEN_DESIGN_APP_CWD_ROOT, cwd)
               ? { originType: "app", originApp: "Open Design", originConfidence: "inferred" }
               : { originType: "unknown", originConfidence: "unknown" };
-        const record = await ensureChatSession(sessionId, { cwd, title: body.title, ...(body.browserMode != null ? { browserMode: body.browserMode } : {}), ...(body.approvalMode != null ? { approvalMode: body.approvalMode } : {}), ...(body.planYolo != null ? { planYolo: body.planYolo } : {}), ...(body.planYoloModel != null ? { planYoloModel: body.planYoloModel } : {}), ...(body.advisor != null ? { advisor: body.advisor } : {}), ...(body.tools != null ? { tools: body.tools } : {}) });
+        const record = await ensureChatSession(sessionId, { cwd, title: body.title, ...(body.browserMode != null ? { browserMode: body.browserMode } : {}), ...(body.approvalMode != null ? { approvalMode: body.approvalMode } : {}), ...(body.planYolo != null ? { planYolo: body.planYolo } : {}), ...(body.planYoloModel != null ? { planYoloModel: body.planYoloModel } : {}), ...(body.advisor != null ? { advisor: body.advisor } : {}), ...(body.tools != null ? { tools: body.tools } : {}) }, { skipPersisted: true });
         const now = new Date(record.createdAt || Date.now()).toISOString();
         const title = String(body.title || "Phiên làm việc mới").trim() || "Phiên làm việc mới";
         const stored = await updateChatMetadata(sessionId, {
@@ -6913,7 +6997,7 @@ const server = http.createServer(async (req, res) => {
       const sessionId = typeof body.sessionId === "string" && body.sessionId.trim() ? gatewaySessionId(body.sessionId.trim()) : randomUUID();
       const requestId = chatRequestId(body.requestId);
       if (activeChatRequests.has(requestId)) throw Object.assign(new Error("requestId đang được xử lý"), { code: "CONFLICT" });
-      const { model: selectedModel, outputMode, modeSource } = await resolveChatModel(chatModel(body.model), modelSource, modelProvider, sessionId, prompt, body.outputMode);
+      const { model: selectedModel, outputMode, modeSource } = await resolveChatModel(chatModel(body.model), modelProvider, sessionId, prompt, body.outputMode);
       const record = await ensureChatSession(sessionId, { ...body, approvalMode: selectedApprovalMode, browserMode: selectedBrowserMode });
       if (Object.hasOwn(body, "planYolo") || Object.hasOwn(body, "advisor")) await updateChatMetadata(sessionId, { planYolo: record.planYolo === true, planYoloModel: record.planYoloModel || null, advisor: record.advisor === true }, { touchUpdatedAt: false });
       record.selectedChatModel = selectedModel;
@@ -6941,7 +7025,7 @@ const server = http.createServer(async (req, res) => {
     catch (error) { if (!res.headersSent) return chatError(res, error); res.end(); return; }
   }
   if (requestUrl.pathname === "/api/v1/models" && req.method === "GET") {
-    try { return json(res, 200, await availableModels()); }
+    try { return json(res, 200, (await quotaModelsForSession()).models); }
     catch (error) { return chatError(res, error); }
   }
   if ((requestUrl.pathname === "/api/v1/omp/prewarm" || requestUrl.pathname === "/api/omp/v1/prewarm") && req.method === "POST") {
@@ -7147,7 +7231,10 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.url === "/api/console/start" && req.method === "POST") {
     try {
-      const context = await consoleBridge.start(await jsonBody(req));
+      const body = await jsonBody(req);
+      if (planYolo(body.planYolo)) body.planYoloModel = await quotaRestrictedModel(planYoloModel(body.planYoloModel), body.sessionId, "planYoloModel");
+      if (advisor(body.advisor)) body.advisorModel = await quotaRestrictedModel((await advisorConfig()).model, body.sessionId, "model");
+      const context = await consoleBridge.start(body);
       return json(res, 200, { ok: true, context: consoleBridge.publicSummary(context.id) });
     }
     catch (error) { return errorResponse(res, error); }
@@ -7337,6 +7424,7 @@ server.on("upgrade", (req, socket, head) => {
   });
 });
 
+const OMP_GATEWAY_API_KEY = await loadOmpGatewayApiKey();
 server.listen(PORT, "127.0.0.1", () => {
   void logEvent("info", "dashboard_started", { port: PORT, quotaOnlyMode: QUOTA_ONLY_MODE });
   const initialRefresh = refresh();

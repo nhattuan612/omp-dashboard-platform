@@ -132,6 +132,7 @@ fi
 
 [ -z "$command" ] || [ "$command" = "--restart" ] || fail "Dùng: $0 [--restart]"
 [ -d "$runtime_dir" ] || fail "Runtime chưa tồn tại: $runtime_dir"
+[ -f "$runtime_dir/omp-account-control.json" ] || fail "Thiếu trạng thái KHỐNG CHẾ OMP; hãy khôi phục rõ enabled:false trước khi deploy"
 [ -f "$launch_agent" ] || fail "LaunchAgent plist chưa tồn tại: $launch_agent"
 /bin/launchctl print "$launch_domain/$agent_label" >/dev/null 2>&1 || fail "LaunchAgent đích chưa được nạp"
 /usr/bin/curl -fsS http://127.0.0.1:4177/healthz >/dev/null 2>&1 || fail "Runtime chưa healthy trước deploy"

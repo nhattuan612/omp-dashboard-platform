@@ -333,9 +333,14 @@ async function fakeOmp(args) {
     process.stdout.write(`${await readFakeMemoryBackend()}\n`);
     return;
   }
+  if (args[0] === "config" && args[1] === "set") {
+    if (args[2] === "modelRoles") await writeFile(homePath(process.env.HOME, "test-omp-model-roles.json"), args[3], { mode: 0o600 });
+    return;
+  }
   if (args[0] === "config" && args.includes("list")) {
     if (await stat(homePath(process.env.HOME, "test-tool-audit-error")).then(() => true, () => false)) { process.exitCode = 7; return; }
     const browserConfig = JSON.parse(await readFile(homePath(process.env.HOME, "test-browser-config.json"), "utf8").catch(() => "{}"));
+    const modelRoles = JSON.parse(await readFile(homePath(process.env.HOME, "test-omp-model-roles.json"), "utf8").catch(() => '{"advisor":"smoke-model"}'));
     process.stdout.write(`${JSON.stringify({
       "grep.enabled": { value: true },
       "glob.enabled": { value: true },
@@ -352,7 +357,7 @@ async function fakeOmp(args) {
       "advisor.immuneTurns": { value: 3 },
       "advisor.maxNotesPerUpdate": { value: 4 },
       "advisor.evictStaleResults": { value: true },
-      "modelRoles": { value: { advisor: "smoke-advisor" } },
+      "modelRoles": { value: modelRoles },
       "tier.advisor": { value: "none" },
       "test.filler": { value: "x".repeat(6000) },
     })}\n`);
@@ -947,6 +952,18 @@ async function runContract() {
       try { payload = JSON.parse(text); } catch { payload = text; }
       return { status: response.status, payload };
     }
+    async function apiOmp(method, path, body) {
+      const key = (await readFile(homePath(home, "usage-dashboard", "omp-gateway-api-key"), "utf8")).trim();
+      const response = await fetch(`${baseUrl}${path}`, {
+        method,
+        headers: { authorization: `Bearer ${key}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      const text = await response.text();
+      let payload;
+      try { payload = JSON.parse(text); } catch { payload = text; }
+      return { status: response.status, payload };
+    }
     async function apiWithSplitUtf8(path, body, marker) {
       const bytes = Buffer.from(JSON.stringify(body));
       const markerBytes = Buffer.from(marker);
@@ -1051,21 +1068,21 @@ async function runContract() {
     assert.ok(!capabilities.payload.commands.includes("set_session_name"), "ACP capability catalog must exclude unimplemented commands");
     passes.push("ACP capability catalog excludes steer, Agent Hub and unsupported session naming");
     passes.push("full-access OMP session accepts every advertised supported tool");
-    const planYoloSession = await api("POST", "/api/v1/sessions", { title: "Plan YOLO session", cwd: workspaceRoot, planYolo: true, planYoloModel: "smoke-model", tools: ["read"] });
-    assert.equal(planYoloSession.status, 201, `Plan YOLO session should create: ${JSON.stringify(planYoloSession.payload)}`);
-    assert.equal((planYoloSession.payload.session || planYoloSession.payload).planYolo, true);
+    const planYoloWithoutQuota = await api("POST", "/api/v1/sessions", { title: "Plan YOLO without Quota", cwd: workspaceRoot, planYolo: true, planYoloModel: "smoke-model", tools: ["read"] });
+    assert.equal(planYoloWithoutQuota.status, 409, `Plan YOLO must fail closed without a selected Quota account: ${JSON.stringify(planYoloWithoutQuota.payload)}`);
+    assert.equal(planYoloWithoutQuota.payload.error?.code, "ACCOUNT_SELECTION_REQUIRED");
     assert.match(bridgeSource, /"--plan-yolo"/, "Plan YOLO must be passed to the OMP worker");
-    const advisorSession = await api("POST", "/api/v1/sessions", { title: "Advisor session", cwd: workspaceRoot, advisor: true, tools: ["read"] });
-    assert.equal(advisorSession.status, 201, `Advisor session should create: ${JSON.stringify(advisorSession.payload)}`);
-    assert.equal((advisorSession.payload.session || advisorSession.payload).advisor, true);
+    const advisorWithoutQuota = await api("POST", "/api/v1/sessions", { title: "Advisor without Quota", cwd: workspaceRoot, advisor: true, tools: ["read"] });
+    assert.equal(advisorWithoutQuota.status, 409, `Advisor must fail closed without a selected Quota account: ${JSON.stringify(advisorWithoutQuota.payload)}`);
+    assert.equal(advisorWithoutQuota.payload.error?.code, "ACCOUNT_SELECTION_REQUIRED");
     assert.match(bridgeSource, /"--advisor"/, "Advisor must be passed to the OMP worker");
-    passes.push("Plan YOLO is mapped, verified, persisted, and passed to OMP");
+    passes.push("Plan YOLO requires an explicitly selected Quota account");
     const prewarmInput = { cwd: workspaceRoot, approvalMode: "write", browserMode: "ego-browser", tools: [] };
     const prewarmed = await api("POST", "/api/v1/omp/prewarm", prewarmInput);
     assert.equal(prewarmed.status, 202, `ACP prewarm should start a worker: ${JSON.stringify(prewarmed.payload)}`);
     assert.equal(prewarmed.payload.worker.status, "ready");
     assert.ok(Number.isInteger(prewarmed.payload.worker.pid));
-    const prewarmedAgain = await api("POST", "/api/omp/v1/prewarm", prewarmInput);
+    const prewarmedAgain = await apiOmp("POST", "/api/omp/v1/prewarm", prewarmInput);
     assert.equal(prewarmedAgain.status, 202);
     assert.equal(prewarmedAgain.payload.worker.pid, prewarmed.payload.worker.pid, "prewarm aliases must reuse the workspace worker");
     const prewarmState = await api("GET", "/api/console/state");
@@ -1106,12 +1123,9 @@ async function runContract() {
       assert.equal(browserSession.status, 201);
       await waitForFakeLaunch(home, (launch) => launch.protocol === "rpc" && launch.overlay?.browser?.cdpUrl === cdpUrl);
       const nativeSessionId = (browserSession.payload.session || browserSession.payload).id;
-      const launchesBeforeOff = (await readFakeLaunches(home)).length;
-      const browserOff = await api("POST", "/api/v1/chat/send", { sessionId: nativeSessionId, prompt: "AUTO_TITLE_CONTRACT BROWSER_NATIVE_OFF_CONTRACT", model: "smoke-external-model", modelSource: "omp", browserMode: "none" });
-      assert.equal(browserOff.status, 200, `native browser should switch off without supplied tools: ${JSON.stringify(browserOff.payload)}`);
-      const offLaunch = (await readFakeLaunches(home)).slice(launchesBeforeOff).find((launch) => launch.protocol === "rpc" && !launch.args.includes("--no-session"));
-      assert.ok(offLaunch && !offLaunch.args.includes("--config"), "switching off must remove the native browser overlay");
-      assert.ok(!offLaunch.args.find((arg) => arg.startsWith("--tools="))?.split("=")[1].split(",").includes("eval"), "always-ask must remove auto-added eval when native browser is off");
+      const browserOff = await api("POST", "/api/v1/chat/send", { sessionId: nativeSessionId, prompt: "AUTO_TITLE_CONTRACT BROWSER_NATIVE_OFF_CONTRACT", model: "smoke-model", modelSource: "omp", browserMode: "none" });
+      assert.equal(browserOff.status, 409, `legacy OMP modelSource must require an explicitly selected Quota account: ${JSON.stringify(browserOff.payload)}`);
+      assert.equal(browserOff.payload.error?.code, "ACCOUNT_SELECTION_REQUIRED");
       remoteWebsocket = true;
       const invalidCdp = await api("GET", "/api/v1/omp/capabilities");
       assert.equal(invalidCdp.payload.browsers.find((mode) => mode.id === "chrome-electron").reasonCode, "invalid_cdp");
@@ -1138,7 +1152,7 @@ async function runContract() {
       passes.push("native browser probes require ready loopback CDP and expose setup/disconnection reasons");
       passes.push("OMP Browser Relay can bootstrap before its local endpoint is ready; Chrome/Electron still requires live CDP");
       passes.push("native browser config reaches RPC/ACP workers without changing approval or global settings");
-      passes.push("switching native browser off recalculates tool policy and removes its worker overlay");
+      passes.push("legacy OMP source cannot start chat before an explicit Quota account selection");
     } finally {
       await rm(browserConfigFixture, { force: true });
       await new Promise((resolve) => browserCdp.close(resolve));
@@ -1155,11 +1169,6 @@ async function runContract() {
 
     const splitUtf8Session = await createFixture("OMP split UTF-8");
     const splitUtf8Text = "Tiếng Việt 🧪";
-    const splitUtf8Stream = await openStream(splitUtf8Session.id, "SPLIT_UTF8_OMP_CONTRACT preserve output", `split-utf8-${randomUUID()}`, [], "smoke-external-model", "omp");
-    const splitUtf8Delta = await splitUtf8Stream.reader.waitFor((event) => event.event === "delta", "split UTF-8 OMP delta");
-    assert.equal(splitUtf8Delta.data.content, splitUtf8Text, "OMP frames must preserve a multibyte character split across stdout chunks");
-    await splitUtf8Stream.reader.waitFor((event) => event.event === "end", "split UTF-8 OMP stream end");
-    passes.push("OMP JSONL decoder preserves split UTF-8 assistant text");
     const unicodeBridgeSession = await createFixture("ACP split 🧪");
     const listedBridgeSessions = await api("GET", "/api/console/sessions");
     assert.equal(listedBridgeSessions.status, 200, `ACP session listing failed: ${JSON.stringify(listedBridgeSessions.payload)}`);
@@ -1416,10 +1425,18 @@ async function runContract() {
     const unselectedModels = await api("GET", "/api/v1/quota/models");
     assert.equal(unselectedModels.status, 409);
     assert.equal(unselectedModels.payload.error?.code, "ACCOUNT_SELECTION_REQUIRED");
+    await writeFile(homePath(home, "usage-dashboard", "omp-account-control.json"), `${JSON.stringify({ enabled: false })}\n`, { mode: 0o600 });
     const baselineSelection = await api("POST", "/api/v1/quota/switch", { accountId: googleAccount.id });
     assert.equal(baselineSelection.status, 200, `baseline account selection failed: ${JSON.stringify(baselineSelection.payload)}`);
     const baselineModels = await api("GET", "/api/v1/quota/models");
     assert.equal(baselineModels.payload.account.id, googleAccount.id, "baseline account selection must update the chat default");
+    const splitSessionQuota = await api("POST", "/api/v1/quota/switch", { accountId: googleAccount.id, sessionId: splitUtf8Session.id });
+    assert.equal(splitSessionQuota.status, 200, `existing UTF-8 session should be pinned explicitly: ${JSON.stringify(splitSessionQuota.payload)}`);
+    const splitUtf8Stream = await openStream(splitUtf8Session.id, "SPLIT_UTF8_OMP_CONTRACT preserve output", `split-utf8-${randomUUID()}`, [], "smoke-model", "omp");
+    const splitUtf8Delta = await splitUtf8Stream.reader.waitFor((event) => event.event === "delta", "split UTF-8 OMP delta");
+    assert.equal(splitUtf8Delta.data.content, splitUtf8Text, "OMP frames must preserve a multibyte character split across stdout chunks");
+    await splitUtf8Stream.reader.waitFor((event) => event.event === "end", "split UTF-8 OMP stream end");
+    passes.push("OMP JSONL decoder preserves split UTF-8 assistant text through Quota");
     const allOmpModelsBeforeSelection = await api("GET", "/api/v1/models");
     assert.equal(allOmpModelsBeforeSelection.status, 200);
     assert.ok(allOmpModelsBeforeSelection.payload.some((model) => model.id === "smoke-antigravity-claude"));
@@ -1443,10 +1460,51 @@ async function runContract() {
     const defaultSwitch = await api("POST", "/api/v1/quota/switch", { accountId: googleAccount.id });
     assert.equal(defaultSwitch.status, 200, `Gemini default selection failed: ${JSON.stringify(defaultSwitch.payload)}`);
     assert.equal(defaultSwitch.payload.scope, "default");
+    const advisorConfigUpdate = await api("POST", "/api/v1/omp/advisor-config", { model: "smoke-model" });
+    assert.equal(advisorConfigUpdate.status, 200, `Quota-backed Advisor model should save: ${JSON.stringify(advisorConfigUpdate.payload)}`);
+    const externalAdvisorConfig = await api("POST", "/api/v1/omp/advisor-config", { model: "smoke-external-model" });
+    assert.equal(externalAdvisorConfig.status, 409);
+    assert.equal(externalAdvisorConfig.payload.error?.code, "MODEL_NOT_ALLOWED_BY_QUOTA");
+    await writeFile(homePath(home, "test-omp-model-roles.json"), JSON.stringify({ advisor: "smoke-model" }), { mode: 0o600 });
+    const planYoloSession = await api("POST", "/api/v1/sessions", { title: "Plan YOLO Quota session", cwd: workspaceRoot, planYolo: true, planYoloModel: "smoke-model", tools: ["read"] });
+    assert.equal(planYoloSession.status, 201, `Plan YOLO Quota model should create: ${JSON.stringify(planYoloSession.payload)}`);
+    assert.equal((planYoloSession.payload.session || planYoloSession.payload).planYolo, true);
+    assert.equal((planYoloSession.payload.session || planYoloSession.payload).planYoloModel, "google-antigravity/smoke-model");
+    const advisorSession = await api("POST", "/api/v1/sessions", { title: "Advisor Quota session", cwd: workspaceRoot, advisor: true, tools: ["read"] });
+    assert.equal(advisorSession.status, 201, `Quota-backed Advisor session should create: ${JSON.stringify(advisorSession.payload)}`);
+    assert.equal((advisorSession.payload.session || advisorSession.payload).advisor, true);
+    const advisorChat = await api("POST", "/api/v1/chat/send", { sessionId: advisorSession.payload.id, prompt: "FAKE_ANTIGRAVITY_QUOTA_SEND Advisor route smoke", model: "smoke-model", modelSource: "omp" });
+    assert.equal(advisorChat.status, 200, `Quota-backed Advisor chat should complete: ${JSON.stringify(advisorChat.payload)}`);
+    const advisorLaunch = (await readFakeLaunches(home)).filter((item) => item.args.includes("--advisor")).at(-1);
+    assert.equal(advisorLaunch?.overlay?.modelRoles?.advisor, "google-antigravity/smoke-model", "worker overlay must normalize legacy Advisor model IDs without mutating global OMP config");
+    const externalPlanYolo = await api("POST", "/api/v1/sessions", { title: "Plan YOLO external model", cwd: workspaceRoot, planYolo: true, planYoloModel: "smoke-external-model", tools: ["read"] });
+    assert.equal(externalPlanYolo.status, 409);
+    assert.equal(externalPlanYolo.payload.error?.code, "MODEL_NOT_ALLOWED_BY_QUOTA");
+    passes.push("Plan YOLO passes only a model available from the selected Quota account");
     const preDefaultModels = await api("GET", `/api/v1/quota/models?sessionId=${encodeURIComponent(preDefaultSession.id)}`);
     assert.equal(preDefaultModels.status, 409);
     assert.equal(preDefaultModels.payload.error?.code, "ACCOUNT_SELECTION_REQUIRED", "a pre-existing chat without a pin or creation snapshot must never inherit a later default");
     const parent = await createFixture("Contract parent", workspaceRoot, { titleFirst: true });
+    const externalChat = await api("POST", "/api/v1/chat/send", { sessionId: parent.id, prompt: "Quota-only model gate", model: "smoke-external-model", modelSource: "omp" });
+    assert.equal(externalChat.status, 409);
+    assert.equal(externalChat.payload.error?.code, "MODEL_NOT_ALLOWED_BY_QUOTA");
+    assert.equal((await readFakeFrames(home)).some((item) => item.frame.type === "prompt" && String(item.frame.message || "").includes("Quota-only model gate")), false);
+    const earlyImplicitQuotaProvider = await api("POST", "/api/v1/chat/send", { sessionId: parent.id, prompt: "FAKE_ANTIGRAVITY_QUOTA_SEND duplicate ID compatibility", model: "smoke-model", modelSource: "omp" });
+    assert.equal(earlyImplicitQuotaProvider.status, 200, `legacy OMP source should resolve duplicate IDs to Quota: ${JSON.stringify(earlyImplicitQuotaProvider.payload)}`);
+    assert.ok((await readFakeFrames(home)).some((item) => item.frame.type === "set_model" && item.frame.provider === "google-antigravity" && item.frame.modelId === "smoke-model"));
+    const openWorkModels = await apiOmp("GET", "/api/omp/v1/openai/models");
+    assert.equal(openWorkModels.status, 200);
+    assert.ok(openWorkModels.payload.data.filter(({ id }) => id !== "omp-default").every(({ owned_by }) => owned_by === "google-antigravity"));
+    const localApi = await api("POST", "/api/v1/local-apis", { name: "Quota-only test", model: "all" });
+    assert.equal(localApi.status, 201, `all-model API profile should use Quota: ${JSON.stringify(localApi.payload)}`);
+    const localApiModelsResponse = await fetch(`${baseUrl}/api/local/v1/models`, { headers: { authorization: `Bearer ${localApi.payload.api.key}` } });
+    assert.equal(localApiModelsResponse.status, 200);
+    const localApiModels = (await localApiModelsResponse.json()).data;
+    assert.ok(localApiModels.length > 0 && localApiModels.every((model) => model.owned_by === "google-antigravity"));
+    const externalApiProfile = await api("POST", "/api/v1/local-apis", { name: "Rejected external model", model: "anthropic/smoke-external-model" });
+    assert.notEqual(externalApiProfile.status, 201);
+    await api("DELETE", `/api/v1/local-apis/${localApi.payload.api.id}`);
+    passes.push("chat, OpenWork Gateway, and local API model catalogs are restricted to the selected Quota account");
     const changedDefault = await api("POST", "/api/v1/quota/switch", { accountId: googleAltAccount.id });
     assert.equal(changedDefault.status, 200, `Google Antigravity default change failed: ${JSON.stringify(changedDefault.payload)}`);
     const parentModelsAfterDefaultChange = await api("GET", `/api/v1/quota/models?sessionId=${encodeURIComponent(parent.id)}`);
@@ -1897,10 +1955,10 @@ async function runContract() {
       model: "smoke-external-model",
       modelSource: "omp",
     });
-    assert.equal(allCatalogSend.status, 200, `OMP source should permit any catalog model: ${JSON.stringify(allCatalogSend.payload)}`);
-    assert.equal(allCatalogSend.payload.reply, "quota-model-guard-response");
-    assert.ok((await readFakeFrames(home)).some((item) => item.frame.type === "set_model" && item.frame.provider === "anthropic" && item.frame.modelId === "smoke-external-model"), "OMP should receive the external provider model");
-    passes.push("Chat OMP source can send a model outside the quota account catalog");
+    assert.equal(allCatalogSend.status, 409, `OMP compatibility source must still enforce Quota: ${JSON.stringify(allCatalogSend.payload)}`);
+    assert.equal(allCatalogSend.payload.error?.code, "MODEL_NOT_ALLOWED_BY_QUOTA");
+    assert.equal((await readFakeFrames(home)).some((item) => item.frame.type === "prompt" && String(item.frame.message || "").includes("QUOTA_MODEL_GUARD_CONTRACT all-source external model")), false, "model outside Quota must not reach OMP");
+    passes.push("legacy OMP modelSource is restricted to the selected Quota account");
 
     const genericGoogleSend = await api("POST", "/api/v1/chat/send", {
       sessionId: parent.id,
@@ -1909,9 +1967,9 @@ async function runContract() {
       modelProvider: "google",
       modelSource: "omp",
     });
-    assert.equal(genericGoogleSend.status, 200, `OMP source should permit a generic Google catalog model: ${JSON.stringify(genericGoogleSend.payload)}`);
+    assert.equal(genericGoogleSend.status, 200, `legacy OMP source should normalize a Google model into Quota: ${JSON.stringify(genericGoogleSend.payload)}`);
     assert.ok((await readFakeFrames(home)).some((item) => item.frame.type === "set_model" && item.frame.provider === "google-antigravity" && item.frame.modelId === "smoke-model"), "OMP should normalize a duplicate generic Google Gemini model to Antigravity");
-    passes.push("Chat OMP source normalizes duplicate generic Google Gemini models to Antigravity");
+    passes.push("legacy OMP source normalizes duplicate Google Gemini models to Antigravity Quota");
 
     const previewGoogleSend = await api("POST", "/api/v1/chat/send", {
       sessionId: parent.id,
@@ -1920,24 +1978,17 @@ async function runContract() {
       modelProvider: "google",
       modelSource: "omp",
     });
-    assert.equal(previewGoogleSend.status, 200, `OMP source should normalize a Google preview model: ${JSON.stringify(previewGoogleSend.payload)}`);
+    assert.equal(previewGoogleSend.status, 200, `legacy OMP source should normalize a Google preview model into Quota: ${JSON.stringify(previewGoogleSend.payload)}`);
     assert.ok((await readFakeFrames(home)).some((item) => item.frame.type === "set_model" && item.frame.provider === "google-antigravity" && item.frame.modelId === "smoke-model"), "OMP should normalize a Google preview model to its Antigravity base model");
-    passes.push("Chat OMP source normalizes Google preview Gemini models to their Antigravity base model");
+    passes.push("legacy OMP source normalizes Google preview models to their Antigravity Quota model");
 
-    const allCatalogStream = await openStream(
-      parent.id,
-      "QUOTA_MODEL_GUARD_CONTRACT all-source stream",
-      `all-model-${randomUUID()}`,
-      [],
-      "smoke-external-model",
-      "omp",
-    );
-    assert.equal(allCatalogStream.response.status, 200, "OMP source should allow the external model on chat stream");
-    const allCatalogStarted = await allCatalogStream.reader.waitFor((event) => event.event === "start", "all-source stream start");
-    assert.equal(allCatalogStarted.data.model, "smoke-external-model");
-    const allCatalogEnded = await allCatalogStream.reader.waitFor((event) => event.event === "end", "all-source stream end");
-    assert.equal(allCatalogEnded.data.done, true);
-    passes.push("Chat OMP source can stream a model outside the quota account catalog");
+    const allCatalogStream = await fetch(`${baseUrl}/api/v1/chat/stream`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json", accept: "text/event-stream" },
+      body: JSON.stringify({ sessionId: parent.id, requestId: `all-model-${randomUUID()}`, prompt: "QUOTA_MODEL_GUARD_CONTRACT all-source stream", model: "smoke-external-model", modelSource: "omp", tools: ["read"] }),
+    });
+    assert.equal(allCatalogStream.status, 409, `stream must reject an OMP-only model before dispatch: ${await allCatalogStream.text()}`);
+    passes.push("chat stream rejects a model outside the selected Quota account");
     const statusErrorSentinel = "STATUS_OMP_STDERR_SENTINEL";
     const usageFailurePath = homePath(home, "usage-dashboard", "test-usage-stderr.txt");
     await mkdir(dirname(usageFailurePath), { recursive: true, mode: 0o700 });
@@ -1956,7 +2007,7 @@ async function runContract() {
     const restoredRefresh = await api("POST", "/api/refresh", {});
     assert.equal(restoredRefresh.status, 200, `status fixture cleanup refresh failed: ${JSON.stringify(restoredRefresh.payload)}`);
 
-    const chatFailure = await openStream(splitUtf8Session.id, "SSE_ERROR_REDACTION_CONTRACT raw provider error", `sse-error-${randomUUID()}`, [], "smoke-external-model", "omp");
+    const chatFailure = await openStream(splitUtf8Session.id, "SSE_ERROR_REDACTION_CONTRACT raw provider error", `sse-error-${randomUUID()}`, [], "smoke-model", "omp");
     let chatErrorEventText = "";
     try { await chatFailure.reader.waitFor(() => false, "chat upstream error event"); }
     catch (error) { chatErrorEventText = error.message; }
@@ -1967,7 +2018,7 @@ async function runContract() {
     );
     assert.match(chatErrorEventText, /UPSTREAM_ERROR/);
     assert.match(chatErrorEventText, /Yêu cầu không thành công/);
-    const verificationFailure = await openStream(splitUtf8Session.id, "ACCOUNT_VERIFICATION_CONTRACT", `account-verification-${randomUUID()}`, [], "smoke-external-model", "omp");
+    const verificationFailure = await openStream(splitUtf8Session.id, "ACCOUNT_VERIFICATION_CONTRACT", `account-verification-${randomUUID()}`, [], "smoke-model", "omp");
     const verificationText = await assertStreamError(verificationFailure.reader, "ACCOUNT_VERIFICATION_REQUIRED", "account verification error");
     assert.match(verificationText, /cần xác minh lại/);
     assert.equal(verificationText.includes("test@example.com"), false, "account verification SSE must not expose provider details");
@@ -1992,17 +2043,16 @@ async function runContract() {
     assert.ok((await readFakeFrames(home)).some((item) => item.frame.type === "set_model" && item.frame.provider === "google-antigravity" && item.frame.modelId === "smoke-model"));
     passes.push("Quota source resolves duplicate model IDs to the selected provider when modelProvider is omitted");
 
-    const allCatalogCommand = await api("POST", `/api/omp/v1/sessions/${encodeURIComponent(parent.id)}/command`, {
+    const allCatalogCommand = await apiOmp("POST", `/api/omp/v1/sessions/${encodeURIComponent(parent.id)}/command`, {
       type: "set_model",
       provider: "anthropic",
       modelId: "smoke-external-model",
       modelSource: "omp",
     });
-    assert.equal(allCatalogCommand.status, 202, `OMP source set_model should accept external catalog model: ${JSON.stringify(allCatalogCommand.payload)}`);
-    const allCatalogModelFrame = (await readFakeFrames(home)).find((item) => item.frame.type === "set_model" && item.frame.provider === "anthropic" && item.frame.modelId === "smoke-external-model");
-    assert.ok(allCatalogModelFrame, "external catalog model should reach OMP");
-    assert.equal(allCatalogModelFrame.frame.modelSource, undefined, "dashboard-only model source must not leak to OMP");
-    passes.push("Gateway set_model accepts an OMP catalog model in OMP source mode");
+    assert.equal(allCatalogCommand.status, 409, `OMP gateway command must reject a model outside Quota: ${JSON.stringify(allCatalogCommand.payload)}`);
+    assert.equal(allCatalogCommand.payload.error?.code, "MODEL_NOT_ALLOWED_BY_QUOTA");
+    assert.equal((await readFakeFrames(home)).some((item) => item.frame.type === "set_model" && item.frame.provider === "anthropic" && item.frame.modelId === "smoke-external-model"), false);
+    passes.push("Gateway set_model cannot choose a model outside Quota");
 
     const deniedQuotaGpt = await api("POST", "/api/v1/chat/send", {
       sessionId: parent.id,
@@ -2013,7 +2063,7 @@ async function runContract() {
     assert.equal(deniedQuotaGpt.status, 409, `Quota source must reject a separate OpenAI provider model: ${JSON.stringify(deniedQuotaGpt.payload)}`);
     assert.equal(deniedQuotaGpt.payload.error?.code, "MODEL_NOT_ALLOWED_BY_QUOTA");
     assert.equal((await readFakeFrames(home)).some((item) => item.frame.type === "prompt" && String(item.frame.message || "").includes("QUOTA_GPT_DENIED_CONTRACT")), false, "rejected quota model must not reach OMP");
-    const deniedQuotaModelCommand = await api("POST", `/api/omp/v1/sessions/${encodeURIComponent(parent.id)}/command`, {
+    const deniedQuotaModelCommand = await apiOmp("POST", `/api/omp/v1/sessions/${encodeURIComponent(parent.id)}/command`, {
       type: "set_model",
       provider: "openai-codex",
       modelId: "smoke-openai-model",
@@ -2029,15 +2079,15 @@ async function runContract() {
       model: "smoke-openai-model",
       modelSource: "omp",
     });
-    assert.equal(ompChatGptSend.status, 200, `OMP ChatGPT source should remain available: ${JSON.stringify(ompChatGptSend.payload)}`);
-    assert.equal(ompChatGptSend.payload.reply, "quota-model-guard-response");
-    assert.ok((await readFakeFrames(home)).some((item) => item.frame.type === "set_model" && item.frame.provider === "openai-codex" && item.frame.modelId === "smoke-openai-model"), "OMP should receive the independent ChatGPT model");
+    assert.equal(ompChatGptSend.status, 409, `legacy OMP source must not bypass Quota: ${JSON.stringify(ompChatGptSend.payload)}`);
+    assert.equal(ompChatGptSend.payload.error?.code, "MODEL_NOT_ALLOWED_BY_QUOTA");
+    assert.equal((await readFakeFrames(home)).some((item) => item.frame.type === "prompt" && String(item.frame.message || "").includes("QUOTA_MODEL_GUARD_CONTRACT OMP ChatGPT remains independent")), false);
     const quotaModelsIncludeAllAntigravityFamilies = await api("GET", "/api/v1/quota/models");
     assert.equal(quotaModelsIncludeAllAntigravityFamilies.payload.account.id, googleAccount.id);
     assert.deepEqual(quotaModelsIncludeAllAntigravityFamilies.payload.models.map((model) => model.id), ["smoke-model", "smoke-image-model", "smoke-antigravity-claude", "smoke-antigravity-gpt"]);
     const antigravityFamilySession = await createFixture("Quota accepts Antigravity Claude and GPT models");
     for (const modelId of ["smoke-antigravity-claude", "smoke-antigravity-gpt"]) {
-      const acceptedFamilyModel = await api("POST", `/api/omp/v1/sessions/${encodeURIComponent(antigravityFamilySession.id)}/command`, {
+      const acceptedFamilyModel = await apiOmp("POST", `/api/omp/v1/sessions/${encodeURIComponent(antigravityFamilySession.id)}/command`, {
         type: "set_model",
         provider: "google-antigravity",
         modelId,
@@ -2061,11 +2111,11 @@ async function runContract() {
     assert.ok(antigravitySendFrames.some((item) => item.frame.type === "prompt" && String(item.frame.message || "").includes("FAKE_ANTIGRAVITY_QUOTA_SEND")));
     passes.push("Chat send routes non-Gemini models through the pinned Google Antigravity account without a live model call");
     const fullCatalog = await api("GET", "/api/v1/models");
-    assert.ok(fullCatalog.payload.some((model) => model.id === "smoke-openai-model"));
-    assert.ok(fullCatalog.payload.some((model) => model.id === "smoke-external-model"));
+    assert.equal(fullCatalog.payload.some((model) => model.id === "smoke-openai-model"), false);
+    assert.equal(fullCatalog.payload.some((model) => model.id === "smoke-external-model"), false);
     assert.equal(fullCatalog.payload.find((model) => model.id === "smoke-model-preview")?.isDefault, false, "generic Google API models must not become the dashboard default");
     assert.deepEqual((await api("GET", "/api/v1/quota/accounts")).payload.filter((account) => account.isActive).map((account) => account.id), [googleAccount.id]);
-    passes.push("ChatGPT and other OMP models remain available independently of Gemini quota accounts");
+    passes.push("dashboard model catalog exposes only models available from the selected Quota account");
 
     const firstGeminiStream = await openStream(
       parent.id,
@@ -2097,7 +2147,7 @@ async function runContract() {
       geminiAccountSelectedAt: Date.now(),
     };
     await writeFile(localChatMetadataPath, `${JSON.stringify(hydrationMetadata)}\n`, { mode: 0o600 });
-    const hydrationBlocker = await openStream(hydrationSession.id, "CONCURRENT_SLOW_GEMINI_HYDRATION_BLOCKER", `gemini-hydration-blocker-${randomUUID()}`, [], "smoke-external-model", "omp");
+    const hydrationBlocker = await openStream(hydrationSession.id, "CONCURRENT_SLOW_GEMINI_HYDRATION_BLOCKER", `gemini-hydration-blocker-${randomUUID()}`, [], "smoke-model", "omp");
     await hydrationBlocker.reader.waitFor((event) => event.event === "lifecycle" && event.data.type === "turn_start", "Gemini hydration blocker start");
     const hydrationGemini = await openStream(hydrationSession.id, "CONCURRENT_GEMINI_METADATA_HYDRATION", `gemini-hydration-${randomUUID()}`);
     await Promise.all([
@@ -2239,12 +2289,12 @@ async function runContract() {
     const blockingStreamReader = createSseReader(blockingStreamResponse);
     await blockingStreamReader.waitFor((event) => event.event === "start", "blocking stream start");
     await waitForFakeFrame(home, (item) => item.frame.type === "prompt" && String(item.frame.message || "").includes("CONCURRENT_SLOW_BLOCKER"));
-    const rawPromptDuringChat = await api("POST", `/api/omp/v1/sessions/${encodeURIComponent(queuedAbortSession.id)}/prompt`, {
+    const rawPromptDuringChat = await apiOmp("POST", `/api/omp/v1/sessions/${encodeURIComponent(queuedAbortSession.id)}/prompt`, {
       behavior: "prompt",
       message: "RAW_PROMPT_DURING_CHAT_CONTRACT",
     });
     assert.equal(rawPromptDuringChat.status, 409, "raw gateway prompt must not bypass the per-session Chat queue");
-    const rawSetModelDuringChat = await api("POST", `/api/omp/v1/sessions/${encodeURIComponent(queuedAbortSession.id)}/command`, {
+    const rawSetModelDuringChat = await apiOmp("POST", `/api/omp/v1/sessions/${encodeURIComponent(queuedAbortSession.id)}/command`, {
       command: { type: "set_model", provider: "google-antigravity", modelId: "smoke-model" },
     });
     assert.equal(rawSetModelDuringChat.status, 409, "raw set_model must not race with a queued Chat turn");

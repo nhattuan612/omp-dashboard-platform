@@ -24,7 +24,7 @@ Dashboard không phải backend cloud, không tự lưu credential Google lên G
 
 ## Giao diện
 
-Dashboard gồm hai khu vực chính: `/quota` để theo dõi tài khoản, OAuth và quota; `/chat` để chat streaming với OMP.
+Dashboard gồm hai khu vực chính: `/quota` để theo dõi tài khoản, OAuth và quota; `/chat` để chat streaming qua OMP. Các request từ `/chat`, OpenAI-compatible API và local API đều chỉ dùng model khả dụng của account Quota đang chọn; API key xác thực caller, không cấp tuyến model ngoài Quota.
 
 <p align="center">
   <img src="product-release/honpi-dashboard-mark-8138753b.png" alt="OMP Dashboard" width="128">
@@ -41,6 +41,12 @@ Dashboard gồm hai khu vực chính: `/quota` để theo dõi tài khoản, OAu
 | Sáng | Tối |
 |---|---|
 | <img src="docs/screenshots/chat-dashboard-light.png" alt="Chat dashboard giao diện sáng" width="420"> | <img src="docs/screenshots/chat-dashboard-dark.png" alt="Chat dashboard giao diện tối" width="420"> |
+
+### Điểm mới ở 1.1.0
+
+- `/chat`, OpenAI-compatible API và local API chỉ định tuyến qua model của account Quota đang chọn; OMP Gateway dùng Bearer key riêng.
+- ACP tạo nhiều session độc lập trên worker dùng chung. Session mới bỏ bước quét lịch sử OMP; Safety Guard vẫn giãn prompt toàn dashboard tối thiểu 1 giây và cooldown khi gặp 429.
+- Account được ghim theo session; nếu cấu hình ghim bị lỗi, request dừng an toàn thay vì tự chuyển sang account khác.
 
 ## Kiến trúc và thành phần
 
@@ -200,6 +206,8 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4177/quota
 | `POST /api/v1/chat/abort` | Hủy lượt chat đang chạy. |
 
 API dashboard được bảo vệ bằng session cookie local; không coi đây là API public để expose ra mạng.
+
+OMP Gateway (`/api/omp/v1/*`) yêu cầu Bearer key riêng, được tạo lần đầu khi service khởi động và lưu tại `~/.omp/usage-dashboard/omp-gateway-api-key` với quyền `0600`. Key này khác key của `/api/local/v1`; client cần gửi `Authorization: Bearer <key>` và giữ key trong cấu hình bí mật của client.
 
 ## Kiểm tra service và log
 
